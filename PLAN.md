@@ -20,7 +20,7 @@ A step-by-step, test-first plan for building the `pig` library. Every task start
 
 These are two separate channels serving two different audiences:
 
-| | `:telemetry` (`pig/obs`) | `glight` (`:logger`) |
+| | `:telemetry` (`pig/obs`) | `:logger` (`logging`) |
 |---|---|---|
 | **Audience** | Library users & tooling (JSONL, OTel, dashboards) | Library developers (us, debugging `pig` internals) |
 | **Content** | Structured events with typed measurements + metadata | Freeform debug text |
@@ -30,7 +30,7 @@ These are two separate channels serving two different audiences:
 
 **Golden rule: Never duplicate information across both channels.**
 - If telemetry covers it (inference start/stop, tool execution), don't also log it.
-- `glight` is for the gaps: HTTP transport debugging, configuration validation warnings, internal state that isn't a user-facing "event."
+- `:logger` (via the `logging` package) is for the gaps: HTTP transport debugging, configuration validation warnings, internal state that isn't a user-facing "event."
 - `pig/obs/terminal` is NOT a logger — it's a telemetry handler that formats events for human reading.
 
 **Build Order Rationale:**
@@ -131,7 +131,7 @@ src/pig/obs/events.gleam
 ```
 - Define constants/functions for event names.
 - Define metadata record types for each event.
-- Define `emit_inference_start`, `emit_inference_stop`, `emit_tool_start`, `emit_tool_stop` helper functions that call `telemetry.execute/3` (via a thin wrapper or Erlang FFI if glight doesn't expose it directly).
+- Define `emit_inference_start`, `emit_inference_stop`, `emit_tool_start`, `emit_tool_stop` helper functions that call `telemetry.execute/3` (via Erlang FFI).
 
 **Helpful:** SPEC §3.4, §6 (Telemetry events list); TESTING_STRATEGY §Part II Area: pig/obs
 
@@ -181,7 +181,7 @@ src/pig/ai/http.gleam
 - `post(url: String, headers: List(#(String, String)), body: String) -> Result(String, AiError)`
 - `build_request/3` — pure function constructing a `gleam/http.Request`.
 - `map_http_error` — pure function mapping HTTP error responses → `AiError` variants.
-- Uses `glight` for internal debug logging (request URL, response status, timing). This is NOT telemetry — it's developer-facing diagnostic output.
+- Uses the `logging` package for internal debug logging (request URL, response status, timing). This is NOT telemetry — it's developer-facing diagnostic output.
 - This is the single place provider modules import for HTTP — swapping the client later means changing one file.
 
 **Dependencies to add:** `gleam_http`, `gleam_httpc` in `gleam.toml`
@@ -628,7 +628,7 @@ mise.toml — add test-integration task
 
 ## Resolved Decisions
 
-1. **HTTP:** Use `gleam_http` + `gleam_httpc` with a thin wrapper (`pig/ai/http.gleam`). `glight` is for logging only.
+1. **HTTP:** Use `gleam_http` + `gleam_httpc` with a thin wrapper (`pig/ai/http.gleam`). The `logging` package is for internal logging only.
 2. **Streaming:** Deferred to a later phase. Provider interface is request/response only for v1.
 3. **Middleware:** Deferred until we have a working base.
 4. **Session Stores:** JSONL file only for now.
