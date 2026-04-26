@@ -2,21 +2,29 @@ import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/httpc
+import gleam/int
 import gleam/result
+import logging
 import pig/ai/error.{type AiError}
 
 /// Build a POST request from URL, headers, and body.
-/// Pure — no network IO.
+/// Pure — no network IO. Returns Error if URL is malformed.
 pub fn build_request(
   url: String,
   headers: List(#(String, String)),
   body: String,
-) -> Request(String) {
-  let assert Ok(req) = request.to(url)
-  req
-  |> request.set_method(http.Post)
-  |> set_headers(headers)
-  |> request.set_body(body)
+) -> Result(Request(String), AiError) {
+  case request.to(url) {
+    Ok(req) ->
+      Ok(
+        req
+        |> request.set_method(http.Post)
+        |> set_headers(headers)
+        |> request.set_body(body),
+      )
+    Error(_) ->
+      Error(error.ApiError("Invalid URL: " <> url))
+  }
 }
 
 /// Map an HTTP response to a Result(String, AiError).
@@ -28,7 +36,7 @@ pub fn map_response(resp: Response(String)) -> Result(String, AiError) {
     429 -> Error(error.RateLimited)
     status ->
       Error(error.ApiError(
-        "HTTP " <> int_to_string(status) <> ": " <> resp.body,
+        "HTTP " <> int.to_string(status) <> ": " <> resp.body,
       ))
   }
 }
@@ -53,10 +61,15 @@ pub fn post(
   headers: List(#(String, String)),
   body: String,
 ) -> Result(String, AiError) {
-  let req = build_request(url, headers, body)
+  logging.log(logging.Debug, "POST " <> url)
+  use req <- result.try(build_request(url, headers, body))
   use resp <- result.try(
     httpc.send(req)
     |> result.map_error(map_http_error),
+  )
+  logging.log(
+    logging.Debug,
+    "Response: HTTP " <> int.to_string(resp.status),
   )
   map_response(resp)
 }
@@ -89,5 +102,4 @@ fn format_socket_error(err: httpc.ConnectError) -> String {
   }
 }
 
-@external(erlang, "erlang", "integer_to_binary")
-fn int_to_string(i: Int) -> String
+

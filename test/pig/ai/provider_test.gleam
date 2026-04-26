@@ -1,4 +1,5 @@
 import gleeunit
+import jscheam/schema
 import pig/ai/message
 import pig/ai/tool_definition
 import pig/ai/error
@@ -57,7 +58,7 @@ pub fn provider_with_tools_test() {
     tool_definition.ToolDefinition(
       name: "calc",
       description: "does math",
-      parameters: "{}",
+      parameters: schema.object([]),
     ),
   ]
   let result = stub_provider([], tools)

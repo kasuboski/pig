@@ -14,20 +14,20 @@ pub fn main() -> Nil {
 // === build_request tests (pure) ===
 
 pub fn build_request_sets_method_to_post_test() {
-  let req =
+  let assert Ok(req) =
     ai_http.build_request("https://api.example.com/v1/chat/completions", [], "{}")
   req.method == http.Post
 }
 
 pub fn build_request_sets_body_test() {
   let body = "{\"model\":\"gpt-4\"}"
-  let req =
+  let assert Ok(req) =
     ai_http.build_request("https://api.example.com/v1/chat/completions", [], body)
   req.body == body
 }
 
 pub fn build_request_sets_url_test() {
-  let req =
+  let assert Ok(req) =
     ai_http.build_request("https://api.example.com/v1/chat/completions", [], "")
   req.host == "api.example.com"
   && req.scheme == http.Https
@@ -39,7 +39,7 @@ pub fn build_request_sets_headers_test() {
     #("authorization", "Bearer sk-test"),
     #("content-type", "application/json"),
   ]
-  let req =
+  let assert Ok(req) =
     ai_http.build_request("https://api.example.com/v1/test", headers, "")
   request.get_header(req, "authorization") == Ok("Bearer sk-test")
   && request.get_header(req, "content-type") == Ok("application/json")
@@ -78,6 +78,14 @@ pub fn map_response_400_returns_api_error_test() {
     response.Response(status: 400, headers: [], body: "bad request")
   ai_http.map_response(resp)
     == Error(error.ApiError("HTTP 400: bad request"))
+}
+
+pub fn build_request_invalid_url_returns_error_test() {
+  let result = ai_http.build_request("not a url", [], "")
+  case result {
+    Error(error.ApiError(msg)) -> string.contains(msg, "Invalid URL")
+    _ -> False
+  }
 }
 
 // === map_http_error tests (pure) ===
