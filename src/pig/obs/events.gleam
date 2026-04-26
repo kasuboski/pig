@@ -21,6 +21,11 @@ fn ffi_execute(
 @external(erlang, "pig_obs_ffi", "system_time")
 fn ffi_system_time() -> Int
 
+/// Get the current monotonic system time. Used for duration measurements.
+pub fn system_time() -> Int {
+  ffi_system_time()
+}
+
 // ── Event Union Type ─────────────────────────────────────────────────
 //// All pig telemetry events as typed variants. Construct these directly
 //// and pass to `emit()`.
