@@ -1,0 +1,23 @@
+# pig
+
+A Gleam library for building and orchestrating agents on the BEAM. `pig` is inspired by the architecture of [pi](https://pi.dev).
+
+### Features
+
+*   **Provider Normalization:** Provides a unified interface for interacting with different model APIs, such as Anthropic and OpenAI. It translates messages and tool calls into a consistent format.
+*   **Actor-Based Loop:** Uses Gleam actors to manage conversation state, history, and the execution loop. Each agent runs in its own isolated process.
+*   **Parallel Tool Execution:** Executes multiple tool calls concurrently using BEAM processes, allowing for faster task completion when multiple resources are needed.
+*   **Telemetry:** Emits structured events via the `:telemetry` library. This allows for monitoring inference steps, token usage, and tool performance through standard BEAM observability tools.
+*   **Session Persistence:** Supports recording interaction traces to disk as JSONL files, enabling the review of agent activity after a session is complete.
+*   **Context Management:** Handles the assembly of system prompts, tool definitions, and message history into a format suitable for various model providers.
+
+### Architecture
+
+`pig` is designed to run within an OTP supervision tree. It separates the model-specific logic from the execution loop, allowing users to swap providers or adjust persistence strategies without changing the core agent definitions. Since the state is immutable, conversation history can be branched or replayed for debugging and testing.
+
+## Development
+
+```sh
+gleam run   # Run the project
+gleam test  # Run the tests
+```
