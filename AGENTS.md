@@ -7,6 +7,7 @@ High-Level Goals
 *   **Deep Observability:** Native integration with BEAM `:telemetry` for world-class tracing and debugging.
 *   **Target BEAM:** No javascript platform is necessary
 
+No backwards compatibility is necessary - use the latest versions and NO deprecated methods.
 
 Related project knowledge can be found in the knowledge folder. Use this before trying to search the web.
 - SPEC.md includes a high level specification of what we are building
@@ -14,7 +15,25 @@ Related project knowledge can be found in the knowledge folder. Use this before 
 - GLEAM_OVERVIEW.md is the entire gleam language tour site.
 - repos/ includes git repos that provide reference e.g. the pi-mono repo is there.
 
-Use glight for logging Examples:
+## Observability: Telemetry vs Logging
+
+**Two channels, two audiences. Never duplicate information across both.**
+
+| | `:telemetry` (`pig/obs`) | `glight` (`:logger`) |
+|---|---|---|
+| Audience | Library users (JSONL, OTel, dashboards) | Library developers (us, debugging pig internals) |
+| What | Structured events: `[:pig, :inference, :stop]` with measurements + metadata | Freeform text: HTTP transport details, config validation, internal state |
+| Where | `pig/obs/events.gleam` emits; `pig/obs/terminal` and `pig/obs/session` consume | Any module, for gaps telemetry doesn't cover |
+| Visibility | User-facing, always-on when handlers attached | Off by default, enabled via log level |
+
+**Rules:**
+- If telemetry covers it (inference, tool execution), do NOT also log it.
+- `glight` is for gaps: HTTP transport debugging, unexpected states, config warnings.
+- `pig/obs/terminal` is a telemetry handler, not a logger.
+
+## glight Usage
+
+Use glight for logging. Examples:
 ```gleam
 import glight.{
   alert, critical, debug, emergency, error, info, logger, notice, warning, with,
