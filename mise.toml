@@ -1,2 +1,4 @@
 [tools]
 gleam = "latest"
+erlang = "latest"
+rebar = "latest"

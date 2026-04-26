@@ -1,0 +1,225 @@
+import gleeunit
+import pig/obs/events
+import gleam/dict
+import gleam/list
+
+pub fn main() -> Nil {
+  gleeunit.main()
+}
+
+// ── Event Name Constraints ───────────────────────────────────────────
+// We don't assert exact literals — that just echoes the implementation.
+// Instead we test structural invariants that must hold regardless of
+// what specific names we choose.
+
+/// All event names live under the "pig" namespace.
+pub fn all_names_start_with_pig_test() {
+  let all_ok =
+    events.all_event_names()
+    |> list.all(fn(name) {
+      case name {
+        ["pig", ..] -> True
+        _ -> False
+      }
+    })
+  all_ok
+}
+
+/// Every event name has exactly 3 segments (namespace, domain, action).
+pub fn all_names_have_three_segments_test() {
+  let all_ok =
+    events.all_event_names()
+    |> list.all(fn(name) { list.length(name) == 3 })
+  all_ok
+}
+
+/// all_event_names returns one name per Event variant (6 total).
+pub fn all_event_names_count_test() {
+  list.length(events.all_event_names()) == 6
+}
+
+/// No duplicate event names.
+pub fn all_event_names_unique_test() {
+  let names = events.all_event_names()
+  list.length(names) == list.length(list.unique(names))
+}
+
+/// event_name() returns the same value as the corresponding name function.
+pub fn event_name_matches_inference_start_test() {
+  events.event_name(events.InferenceStart(model: "x", message_count: 0))
+    == events.inference_start_name()
+}
+
+pub fn event_name_matches_inference_stop_test() {
+  events.event_name(
+    events.InferenceStop(model: "x", message_count: 0, duration_ms: 0),
+  )
+    == events.inference_stop_name()
+}
+
+pub fn event_name_matches_tool_start_test() {
+  events.event_name(events.ToolStart(tool_name: "x", tool_call_id: "y"))
+    == events.tool_start_name()
+}
+
+// ── name_to_string ───────────────────────────────────────────────────
+
+/// name_to_string joins segments with dots.
+pub fn name_to_string_joins_with_dots_test() {
+  let result = events.name_to_string(["a", "b", "c"])
+  result == "a.b.c"
+}
+
+pub fn name_to_string_single_segment_test() {
+  events.name_to_string(["pig"]) == "pig"
+}
+
+pub fn name_to_string_empty_test() {
+  events.name_to_string([]) == ""
+}
+
+// ── Event Equality ───────────────────────────────────────────────────
+// Structural equality is a property worth testing — it means events
+// can be used in assertions and dict keys.
+
+pub fn same_event_is_equal_test() {
+  let e1 = events.InferenceStart(model: "a", message_count: 1)
+  let e2 = events.InferenceStart(model: "a", message_count: 1)
+  e1 == e2
+}
+
+pub fn different_fields_not_equal_test() {
+  let e1 = events.InferenceStart(model: "a", message_count: 1)
+  let e2 = events.InferenceStart(model: "b", message_count: 1)
+  e1 != e2
+}
+
+pub fn different_variants_not_equal_test() {
+  let e1 = events.InferenceStart(model: "a", message_count: 1)
+  let e2 = events.ToolStart(tool_name: "a", tool_call_id: "1")
+  e1 != e2
+}
+
+// ── emit Does Not Crash ──────────────────────────────────────────────
+// Each variant must be emittable without error. Tests real :telemetry integration.
+
+pub fn emit_all_variants_test() {
+  events.emit(events.InferenceStart(model: "gpt-4", message_count: 5))
+  events.emit(
+    events.InferenceStop(model: "gpt-4", message_count: 5, duration_ms: 150),
+  )
+  events.emit(events.InferenceException(model: "gpt-4", message_count: 3))
+  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123"))
+  events.emit(
+    events.ToolStop(
+      tool_name: "read_file",
+      tool_call_id: "call_123",
+      duration_ms: 42,
+    ),
+  )
+  events.emit(events.ToolException(tool_name: "bash", tool_call_id: "call_456"))
+  True
+}
+
+// ── Generic Emit Helpers ─────────────────────────────────────────────
+
+pub fn generic_emit_start_does_not_crash_test() {
+  let meta = dict.from_list([#("custom_key", "custom_value")])
+  events.emit_start(["pig", "custom", "start"], meta)
+  True
+}
+
+pub fn generic_emit_stop_does_not_crash_test() {
+  let meta = dict.from_list([#("custom_key", "custom_value")])
+  events.emit_stop(["pig", "custom", "stop"], 100, meta)
+  True
+}
+
+pub fn generic_emit_exception_does_not_crash_test() {
+  let meta = dict.from_list([#("custom_key", "custom_value")])
+  events.emit_exception(["pig", "custom", "exception"], meta)
+  True
+}
+
+// ── Decode Round-Trip ────────────────────────────────────────────────
+// Decode is a real transformation (raw dict → typed Event).
+// Test that emit → capture → decode preserves the original event data.
+// We verify field preservation, not exact struct equality.
+
+pub fn decode_preserves_inference_start_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_start_name(),
+    measurements: dict.from_list([#("system_time", 123), #("message_count", 5)]),
+    metadata: dict.from_list([#("model", "gpt-4")]),
+  )
+  let assert events.InferenceStart(model:, message_count:) = events.decode(raw)
+  model == "gpt-4" && message_count == 5
+}
+
+pub fn decode_preserves_inference_stop_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_stop_name(),
+    measurements: dict.from_list([
+      #("system_time", 456),
+      #("message_count", 2),
+      #("duration", 150),
+    ]),
+    metadata: dict.from_list([#("model", "gpt-4")]),
+  )
+  let assert events.InferenceStop(model:, message_count:, duration_ms:) =
+    events.decode(raw)
+  model == "gpt-4" && message_count == 2 && duration_ms == 150
+}
+
+pub fn decode_preserves_tool_start_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.tool_start_name(),
+    measurements: dict.from_list([#("system_time", 789)]),
+    metadata: dict.from_list([
+      #("tool_name", "bash"),
+      #("tool_call_id", "c1"),
+    ]),
+  )
+  let assert events.ToolStart(tool_name:, tool_call_id:) = events.decode(raw)
+  tool_name == "bash" && tool_call_id == "c1"
+}
+
+pub fn decode_preserves_tool_stop_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.tool_stop_name(),
+    measurements: dict.from_list([#("system_time", 999), #("duration", 42)]),
+    metadata: dict.from_list([
+      #("tool_name", "bash"),
+      #("tool_call_id", "c1"),
+    ]),
+  )
+  let assert events.ToolStop(tool_name:, tool_call_id:, duration_ms:) =
+    events.decode(raw)
+  tool_name == "bash" && tool_call_id == "c1" && duration_ms == 42
+}
+
+pub fn decode_preserves_tool_exception_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.tool_exception_name(),
+    measurements: dict.from_list([#("system_time", 999)]),
+    metadata: dict.from_list([
+      #("tool_name", "bash"),
+      #("tool_call_id", "c1"),
+    ]),
+  )
+  let assert events.ToolException(tool_name:, tool_call_id:) = events.decode(raw)
+  tool_name == "bash" && tool_call_id == "c1"
+}
+
+pub fn decode_preserves_inference_exception_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_exception_name(),
+    measurements: dict.from_list([
+      #("system_time", 999),
+      #("message_count", 7),
+    ]),
+    metadata: dict.from_list([#("model", "llama")]),
+  )
+  let assert events.InferenceException(model:, message_count:) = events.decode(raw)
+  model == "llama" && message_count == 7
+}

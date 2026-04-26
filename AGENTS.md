@@ -9,8 +9,16 @@ High-Level Goals
 
 No backwards compatibility is necessary - use the latest versions and NO deprecated methods.
 
+
 Code Quality:
-- Fix compiler warnings
+- Fix compiler warnings — zero warnings is the baseline
+- Prefer union types over multiple related types — a single `Event` custom type with variants
+  is better than six separate `FooMeta` record types. It gives exhaustiveness checking,
+  pattern matching, and single-function APIs (`emit(Event)` not `emit_foo(FooMeta)`).
+- Make illegal states unrepresentable — if a combination of fields shouldn't exist,
+  the type system should prevent constructing it.
+- Types should encode intent — a type named `Event` with `ToolStart` and `InferenceStop`
+  variants is self-documenting; `Dict(String, String)` is not.
 
 Related project knowledge can be found in the knowledge folder. Use this before trying to search the web.
 - SPEC.md includes a high level specification of what we are building
