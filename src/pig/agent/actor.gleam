@@ -6,8 +6,9 @@
 //// Logic lives in `pig/agent/core.gleam` and `pig/agent/parallel.gleam`.
 //// This module is wiring only.
 
-import gleam/erlang/process.{type Subject}
-import gleam/otp/actor.{type StartError}
+import gleam/erlang/process.{type Name, type Subject}
+import gleam/otp/actor.{type StartError, Started}
+import gleam/otp/supervision
 import pig/agent/core
 import pig/agent/parallel
 import pig/agent/state
@@ -51,6 +52,28 @@ pub fn run(
 /// Send a stop message to the agent actor.
 pub fn stop(subject: Subject(AgentMessage)) -> Nil {
   actor.send(subject, Stop)
+}
+
+/// Create a ChildSpecification for use with static_supervisor.
+///
+/// Starts a named actor so the Subject can be recovered after
+/// supervisor start via `process.named_subject(name)`.
+/// Returns `ChildSpecification(Nil)` — data is discarded per
+/// static_supervisor convention.
+pub fn supervised(
+  config: state.AgentConfig,
+  name: Name(AgentMessage),
+) -> supervision.ChildSpecification(Nil) {
+  supervision.worker(fn() {
+    let builder =
+      actor.new(config)
+      |> actor.on_message(handle_message)
+      |> actor.named(name)
+    case actor.start(builder) {
+      Ok(started) -> Ok(Started(data: Nil, pid: started.pid))
+      Error(e) -> Error(e)
+    }
+  })
 }
 
 /// Internal: message handler for the actor.

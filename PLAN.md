@@ -497,20 +497,48 @@ src/pig/skill/librarian.gleam
 ```
 test/pig_test.gleam
 ```
-- Test `pig.new(provider)` returns an `AgentConfig` with defaults.
-- Test `pig.with_skill(config, skill)` adds the skill and registers the librarian tool.
+- Test `pig.new(provider)` returns a `PigConfig` with defaults (empty tool registry, no system prompt, no persistence).
+- Test `pig.with_skill(config, skill)` adds the skill and registers the librarian tool in the registry.
 - Test `pig.with_tool(config, tool)` adds the tool to the registry.
 - Test `pig.with_persistence(config, path)` sets the session directory.
-- Test the full flow: `new → with_skill → with_tool → start → run` using a mock provider returns the expected result.
+- Test `pig.with_system_prompt(config, prompt)` sets the system prompt.
+- Test `pig.with_model(config, model)` sets the model name.
+- Test the full flow: `new → with_tool → start → run` using a mock provider returns the expected result.
+- Test the full flow with `run_with_timeout`.
 
 **Implementation:**
 ```
 src/pig.gleam
 ```
-- `AgentConfig` builder: `new(Provider)`, `with_skill(Skill)`, `with_tool(Tool)`, `with_persistence(String)`.
-- `start(AgentConfig) -> Result(Actor, StartError)` — spawns the agent actor.
-- `run(Actor, String) -> Result(Message, AgentError)` — sends a prompt and waits for the result.
-- `test_harness()` — a helper that returns a config with a deterministic mock provider (for external test suites using `pig`).
+- `PigConfig` (opaque) wraps `AgentConfig` + `skills` + `persistence_path`. Builder pattern:
+  - `new(Provider) -> PigConfig` — wraps `agent/state.config(provider)` with defaults.
+  - `with_tool(PigConfig, Tool) -> PigConfig` — registers tool in registry.
+  - `with_skill(PigConfig, Skill) -> PigConfig` — adds skill + registers librarian tool.
+  - `with_persistence(PigConfig, String) -> PigConfig` — sets session directory (for Phase 9).
+  - `with_system_prompt(PigConfig, String) -> PigConfig` — sets system prompt.
+  - `with_model(PigConfig, String) -> PigConfig` — sets model name.
+- `Agent` (opaque) wraps `Subject(AgentMessage)` — the handle to a running agent.
+- `start(PigConfig) -> Result(Agent, StartError)` — spawns the agent actor via `pig/agent/actor.start`.
+- `run(Agent, String) -> Result(Message, AiError)` — 30s default timeout, delegates to `run_with_timeout`.
+- `run_with_timeout(Agent, String, Int) -> Result(Message, AiError)` — sends prompt, waits for response.
+- `stop(Agent) -> Nil` — stops the agent actor.
+- `test_harness() -> PigConfig` — returns a config with a deterministic mock provider.
+
+**Also modify:**
+```
+src/pig/agent/actor.gleam
+```
+- Add `supervised(config: AgentConfig, name: process.Name(AgentMessage)) -> ChildSpecification(Nil)`:
+  - Creates a named actor (`actor.named(name)`) so the Subject can be recovered after supervisor start.
+  - Returns `ChildSpecification(Nil)` — data is discarded per `static_supervisor` convention.
+  - The start fn wraps `actor.start` and maps `Started(Subject)` to `Started(Nil)`.
+
+**Supervisor architecture notes:**
+- `gleam/otp/static_supervisor` stores `List(ChildSpecification(Nil))` — child data is discarded on add.
+- To recover the agent's `Subject(AgentMessage)` after supervisor start, the actor must be named.
+- `process.named_subject(name)` recovers the Subject from the registered name.
+- `static_supervisor` has no stop API. Kill the supervisor pid to shut down — OTP cascades to children.
+- Session writer (Phase 9) not built yet — supervisor only manages agent for now.
 
 **Helpful:** SPEC §5 (Example Usage); TESTING_STRATEGY §Part III (Centralized `check` function)
 
@@ -522,19 +550,27 @@ src/pig.gleam
 ```
 test/pig/supervisor_test.gleam
 ```
-- Test `pig.start_supervised(config)` returns `Ok` with a running supervisor and a usable agent.
-- Test that the supervisor's child processes (session writer, agent) are running.
-- Test that `pig.run` works through the supervised agent.
-- Test that stopping the supervisor cleans up all child processes.
+- Test `start_supervised(config)` returns `Ok(SupervisedAgent)`.
+- Test `run(supervised, prompt)` returns the expected result through the supervised agent.
+- Test `run_with_timeout(supervised, prompt, timeout)` works with explicit timeout.
+- Test `stop(supervised)` terminates supervisor and agent — monitor on supervisor pid confirms `ProcessDown`.
+- Test agent actor is still usable after `run` (not one-shot).
 
 **Implementation:**
 ```
 src/pig/supervisor.gleam
 ```
-- `start_supervised(AgentConfig) -> Result(SupervisedAgent, StartError)` — starts a `gleam/otp/supervisor` with the session writer and agent as children.
-- `SupervisedAgent` wraps the agent actor and supervisor reference.
-- `stop(SupervisedAgent) -> Nil` — graceful shutdown.
-- Components can still be started standalone for advanced users (no supervisor required).
+- `SupervisedAgent` record: `SupervisedAgent(agent: Agent, sup_pid: Pid)`.
+- `start_supervised(PigConfig) -> Result(SupervisedAgent, StartError)`:
+  1. Create unique name via `process.new_name()`.
+  2. Build `ChildSpecification(Nil)` via `pig/agent/actor.supervised(config, name)`.
+  3. Build `static_supervisor.new(OneForOne) |> add(spec) |> start`.
+  4. Recover agent Subject: `process.named_subject(name)`.
+  5. Return `SupervisedAgent(agent: Agent(subject), sup_pid: started.pid)`.
+- `run(SupervisedAgent, String) -> Result(Message, AiError)` — 30s default, delegates to `run_with_timeout`.
+- `run_with_timeout(SupervisedAgent, String, Int) -> Result(Message, AiError)` — delegates to `pig.run_with_timeout`.
+- `stop(SupervisedAgent) -> Nil` — kills supervisor pid via `process.send_exit(sup_pid, shutdown)`. OTP cascades shutdown to agent child.
+- Components can still be started standalone via `pig.start` for advanced users (no supervisor required).
 
 **Helpful:** SPEC §6.1 (Supervision Trees)
 
@@ -620,7 +656,7 @@ mise.toml — add test-integration task
 | 5 | `src/pig/agent/state.gleam`, `src/pig/agent/core.gleam` | `test/pig/agent/state_test.gleam`, `test/pig/agent/core_test.gleam`, `test/pig/agent/telemetry_test.gleam`, `test/support/harness.gleam` | `test_data/scenarios/*.json` |
 | 6 | `src/pig/agent.gleam`, `src/pig/agent/actor.gleam`, `src/pig/agent/parallel.gleam` | `test/pig/agent/actor_test.gleam`, `test/pig/agent/parallel_tools_test.gleam` | — |
 | 7 | `src/pig/skill.gleam`, `src/pig/skill/librarian.gleam` | `test/pig/skill/load_test.gleam`, `test/pig/skill/librarian_test.gleam` | `test_data/skills/**/*` |
-| 8 | `src/pig.gleam`, `src/pig/supervisor.gleam` | `test/pig_test.gleam`, `test/pig/supervisor_test.gleam` | — |
+| 8 | `src/pig.gleam`, `src/pig/supervisor.gleam`, `src/pig/agent/actor.gleam` (add `supervised`) | `test/pig_test.gleam`, `test/pig/supervisor_test.gleam` | — |
 | 9 | `src/pig/obs/session.gleam`, `src/pig/obs/terminal.gleam` | `test/pig/obs/session_test.gleam`, `test/pig/obs/terminal_test.gleam` | — |
 | 10 | — | `test/integration/*.gleam` | — |
 

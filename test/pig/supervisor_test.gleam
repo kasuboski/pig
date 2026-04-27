@@ -1,0 +1,121 @@
+//// Supervised agent tests.
+////
+//// Per PLAN Task 8.2: verify start_supervised, run, stop, and
+//// process lifecycle through the OTP static_supervisor.
+//// Per TESTING_STRATEGY §Axiom 1: test features, not implementation.
+
+import gleam/erlang/process
+import gleam/option.{None}
+import gleeunit
+import pig
+import pig/agent/state
+import pig/ai/message
+import pig/supervisor
+import support/harness
+
+pub fn main() -> Nil {
+  gleeunit.main()
+}
+
+// ── Helper: build AgentConfig from pig.PigConfig ─────────────────
+
+fn agent_config(config: pig.PigConfig) -> state.AgentConfig {
+  pig.build_agent_config(config)
+}
+
+// ── start_supervised ─────────────────────────────────────────────
+
+/// start_supervised returns Ok(SupervisedAgent).
+pub fn start_supervised_succeeds_test() {
+  let response = message.Assistant("hi", [], None)
+  let config =
+    pig.new(harness.fixed_provider(response))
+    |> agent_config
+  let assert Ok(_sup) = supervisor.start_supervised(config)
+}
+
+// ── run through supervised agent ─────────────────────────────────
+
+/// run returns the provider's response through the supervised agent.
+pub fn run_returns_response_test() {
+  let response = message.Assistant("hello!", [], None)
+  let config =
+    pig.new(harness.fixed_provider(response))
+    |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config)
+  let assert Ok(msg) = supervisor.run(sup, "hi")
+  let assert True = msg == response
+  supervisor.stop(sup)
+}
+
+// ── run_with_timeout ─────────────────────────────────────────────
+
+/// run_with_timeout works with explicit timeout.
+pub fn run_with_timeout_works_test() {
+  let response = message.Assistant("timed!", [], None)
+  let config =
+    pig.new(harness.fixed_provider(response))
+    |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config)
+  let assert Ok(msg) =
+    supervisor.run_with_timeout(sup, "hi", 5000)
+  let assert True = msg == response
+  supervisor.stop(sup)
+}
+
+// ── stop terminates supervisor and agent ─────────────────────────
+
+/// stop kills the supervisor. Monitor confirms process down.
+pub fn stop_terminates_processes_test() {
+  let response = message.Assistant("hi", [], None)
+  let config =
+    pig.new(harness.fixed_provider(response))
+    |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config)
+  let monitor = process.monitor(sup.sup_pid)
+  supervisor.stop(sup)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+}
+
+// ── agent reusable after run ─────────────────────────────────────
+
+/// Agent is not one-shot. Multiple runs on same supervised agent work.
+pub fn agent_reusable_after_run_test() {
+  let response = message.Assistant("ok", [], None)
+  let config =
+    pig.new(harness.fixed_provider(response))
+    |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config)
+  let assert Ok(m1) = supervisor.run(sup, "first")
+  let assert True = m1 == response
+  let assert Ok(m2) = supervisor.run(sup, "second")
+  let assert True = m2 == response
+  supervisor.stop(sup)
+}
+
+// ── supervised agent with tool ───────────────────────────────────
+
+/// Tool execution works through the supervised path.
+pub fn supervised_tool_call_works_test() {
+  let tc =
+    message.ToolCall(
+      id: "c1",
+      name: "echo",
+      arguments_json: "{\"msg\":\"supervised\"}",
+    )
+  let tool_resp = message.Assistant("", [tc], None)
+  let final = message.Assistant("done!", [], None)
+  let config =
+    pig.new(harness.sequenced_provider_for_actor([tool_resp, final]))
+    |> pig.with_tool(harness.echo_tool())
+    |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config)
+  let assert Ok(msg) =
+    supervisor.run_with_timeout(sup, "use echo", 5000)
+  let assert True = msg == final
+  supervisor.stop(sup)
+}
