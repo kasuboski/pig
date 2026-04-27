@@ -33,7 +33,7 @@ pub fn check_scenario(
   tools: List(tool.Tool),
 ) -> Result(message.Message, error.AiError) {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider(provider_responses)
+  let provider = sequenced_provider_for_actor(provider_responses)
   let st =
     state.config(provider)
     |> state.with_tools(registry)
@@ -59,7 +59,7 @@ pub fn state_for_step(
   tools: List(tool.Tool),
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider(provider_responses)
+  let provider = sequenced_provider_for_actor(provider_responses)
   state.config(provider)
     |> state.with_tools(registry)
     |> state.new()
@@ -72,7 +72,7 @@ pub fn state_with_max_iterations(
   max: Int,
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider(provider_responses)
+  let provider = sequenced_provider_for_actor(provider_responses)
   state.config(provider)
     |> state.with_tools(registry)
     |> state.with_max_iterations(max)
@@ -86,7 +86,7 @@ pub fn state_with_system_prompt(
   prompt: String,
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider(provider_responses)
+  let provider = sequenced_provider_for_actor(provider_responses)
   state.config(provider)
     |> state.with_tools(registry)
     |> state.with_system_prompt(prompt)
@@ -148,11 +148,12 @@ pub fn failing_provider(
   Error(error.ApiError("provider failed"))
 }
 
-// ── Internal: sequenced provider ─────────────────────────────────
+// ── Public: sequenced provider for actor tests ──────────────────
 
 /// Provider that returns responses in sequence.
 /// Tracks position by counting assistant messages in the history it receives.
-fn sequenced_provider(
+/// Public so actor tests can construct a Provider value for AgentConfig.
+pub fn sequenced_provider_for_actor(
   responses: List(message.Message),
 ) -> fn(
   List(message.Message),
@@ -200,7 +201,7 @@ pub fn capture_scenario(
 ) {
   let handle = listener.attach()
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider(responses)
+  let provider = sequenced_provider_for_actor(responses)
   let st =
     state.config(provider)
     |> state.with_tools(registry)
