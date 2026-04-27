@@ -15,30 +15,38 @@ A step-by-step, test-first plan for building the `pig` library. Every task start
 6. **Target:** Erlang only. Set `target = "erlang"` in `gleam.toml`.
 7. **Provider v1:** OpenAI-compatible only. Configurable `base_url` + arbitrary model string for inference provider compatibility. No Anthropic provider in v1.
 8. **Logging vs Telemetry:** See "Observability Model" section below.
+9. **Provider Return Type:** `Provider` returns `Result(InferenceResult, AiError)` — not bare `Result(Message, AiError)`. `InferenceResult` carries the `Message` plus `InferenceMetadata` (response ID, token counts, finish reason, response model). See Phase 9 Task 9.0a.
+10. **Agent Identity:** `AgentConfig` carries optional `agent_id`, `agent_name`, `agent_description`, `agent_version`, `provider_name`. All default to `None`. See Phase 9 Task 9.0d.
+11. **Two-Channel Observability:** Two first-class event channels. `SessionEvent` carries full content for pig-specific consumers (session writer, terminal, OTel with GenAI semantics). `:telemetry` carries lightweight metrics for BEAM ecosystem integration (LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`). See Phase 9 "Event Distribution Architecture".
+12. **SessionEvent is canonical for pig consumers.** ALL pig observability modules (session writer, terminal, future OTel exporter) read from `SessionEvent`s. `:telemetry` serves the broader BEAM ecosystem — it is not a bridge, it is a first-class channel for a different audience.
 
-**Observability Model — Logging vs Telemetry:**
+**Observability Model — Two First-Class Channels + Logging:**
 
-These are two separate channels serving two different audiences:
+pig emits events through two independent channels, each serving a different ecosystem. Neither is a bridge or shim — both are first-class.
 
-| | `:telemetry` (`pig/obs`) | `:logger` (`logging`) |
-|---|---|---|
-| **Audience** | Library users & tooling (JSONL, OTel, dashboards) | Library developers (us, debugging `pig` internals) |
-| **Content** | Structured events with typed measurements + metadata | Freeform debug text |
-| **Examples** | `[:pig, :inference, :stop]` with `%{duration_ms: 150}` | `[debug] pig/ai/http: POST /v1/chat/completions -> 429, retrying` |
-| **Consumers** | `pig/obs/terminal`, `pig/obs/session`, future `pig/obs/otel` | Console, dev-time log files |
-| **Visibility** | User-facing, always-on when handlers are attached | Off by default, enabled via log level configuration |
+| | `SessionEvent` (pig consumers) | `:telemetry` (BEAM ecosystem) | `:logger` (`logging`) |
+|---|---|---|---|
+| **Audience** | pig-specific consumers | BEAM ecosystem tools (LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`, AppSignal) | Library developers (us, debugging `pig` internals) |
+| **Content** | Full message content, metadata, tool args/results, token counts | Lightweight metrics (counts, durations, token counts, model name) | Freeform debug text |
+| **Examples** | `InferenceCompleted(message, input_messages, token_counts)` | `[:pig, :inference, :stop]` with `%{duration_ms: 150}` | `[debug] pig/ai/http: POST /v1/chat/completions -> 429, retrying` |
+| **Transport** | Gleam actor messages (fan-out to registered consumers) | `telemetry.execute/3` (broadcast) | Erlang `:logger` |
+| **Consumers** | `pig/obs/session`, `pig/obs/terminal`, future `pig/obs/otel` | Any `:telemetry` handler in the BEAM ecosystem | Console, dev-time log files |
+| **Visibility** | User-facing, on when consumers are registered | Always emitted — zero-config for BEAM users | Off by default |
+| **Why it exists** | OTel GenAI semantics need full message bodies; pig-specific tooling needs full content | BEAM standard — Phoenix, Ecto, Oban all emit `:telemetry`. Users with existing dashboards get pig metrics for free. | Internal diagnostics only |
 
-**Golden rule: Never duplicate information across both channels.**
-- If telemetry covers it (inference start/stop, tool execution), don't also log it.
-- `:logger` (via the `logging` package) is for the gaps: HTTP transport debugging, configuration validation warnings, internal state that isn't a user-facing "event."
-- `pig/obs/terminal` is NOT a logger — it's a telemetry handler that formats events for human reading.
+**Golden rule: Two first-class channels, zero duplication.**
+- `SessionEvent` carries full content (messages, tool args/results, token counts, timing). All pig-specific consumers read from it.
+- `:telemetry` carries lightweight metrics (durations, counts, model name). BEAM ecosystem tools consume it natively — pig users get LiveDashboard, Telemetry.Metrics, and generic OTel bridging for free.
+- Both are always emitted from the same code paths. Neither is optional or a shim.
+- `:logger` (via the `logging` package) is for internal developer diagnostics only: HTTP transport debugging, configuration validation warnings.
+- Never duplicate data across channels. If `SessionEvent` covers it, don't also log it.
 
 **Build Order Rationale:**
 ```
-pig/ai types ──► pig/obs events ──► pig/ai http ──► pig/ai/openai ──► pig/tool ──► pig/agent (pure) ──► pig/agent (actor) ──► pig/skill ──► pig (top-level + supervisor) ──► pig/obs persistence
+pig/ai types ──► pig/obs events ──► pig/ai http ──► pig/ai/openai ──► pig/tool ──► pig/agent (pure) ──► pig/agent (actor) ──► pig/skill ──► pig (top-level + supervisor) ──► pig/obs persistence + enriched types
 ```
 
-Types come first (everything depends on `Message` and `AiError`). Telemetry event definitions come next so every subsequent layer can emit events as it's built — observability is not bolted on later. The HTTP wrapper goes before the provider so it has something to build on. The pure agent loop is tested before the OTP wrapper. Skills come after tools since the "librarian" is itself a tool.
+Types come first (everything depends on `Message` and `AiError`). Telemetry event definitions come next so every subsequent layer can emit events as it's built — observability is not bolted on later. The HTTP wrapper goes before the provider so it has something to build on. The pure agent loop is tested before the OTP wrapper. Skills come after tools since the "librarian" is itself a tool. Phase 9 enriches the provider return type (`InferenceResult`) and adds session persistence as a separate channel from telemetry — this must come after the agent and supervisor are working.
 
 ---
 
@@ -576,46 +584,413 @@ src/pig/supervisor.gleam
 
 ---
 
-## Phase 9: Session Persistence
+## Phase 9: Session Persistence & Enriched Observability
 
-### Task 9.1 — `pig/obs` JSONL Session Writer
+Phase 9 redesigns the observability layer with two goals:
+1. **Session persistence** — full-fidelity JSONL recording for conversation replay and debugging.
+2. **OTel forward-compatibility** — ensure the data we capture can populate OpenTelemetry GenAI semantic conventions (spans with `gen_ai.*` attributes) without restructuring later.
+
+**Key architectural decision:** Two first-class event channels, emitted from the same code paths:
+1. **`SessionEvent`** — rich, typed events sent directly to registered pig consumers. Carries full message content, tool arguments/results, token counts, timing. All pig observability modules (session writer, terminal printer, future OTel exporter) read from `SessionEvent`s.
+2. **`:telemetry`** — lightweight metrics emitted via `telemetry.execute/3`. The BEAM ecosystem standard — gives pig users zero-config integration with LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`, AppSignal, etc. Carries durations, counts, model name — no message content.
+
+Neither channel is a bridge or shim. Both are always emitted.
+
+See "Event Distribution Architecture" below and Resolved Decisions #9–#10.
+
+---
+
+### Event Distribution Architecture
+
+The agent emits two types of event for each significant action — a rich `SessionEvent` and a lightweight `:telemetry` event — from the same code paths.
+
+**`SessionEvent` channel (pig consumers):**
+```
+pig/agent/core.gleam
+  ↓ emits SessionEvent (fan-out to all registered consumers)
+  ↓
+  ├── pig/obs/session  (JSONL writer — full content)
+  ├── pig/obs/terminal (pretty printer — lightweight fields)
+  └── future pig/obs/otel (OTel GenAI semantics — full messages + spans)
+```
+
+**`:telemetry` channel (BEAM ecosystem):**
+```
+pig/obs/events.gleam
+  ↓ emits [:pig, inference, :stop] etc. via telemetry.execute/3
+  ↓
+  └── ANY BEAM TELEMETRY CONSUMER (LiveDashboard, Telemetry.Metrics,
+      opentelemetry_telemetry, AppSignal, custom handlers)
+```
+
+The agent never blocks on event delivery — all sends are fire-and-forget (`actor.send`, not `actor.call`).
+
+**How SessionEvent consumers register:**
+- The agent's `AgentConfig` holds a `List(Subject(SessionEvent))` of registered consumers.
+- `pig.with_session_writer(config, path)` creates a session writer actor and registers its `Subject`.
+- `pig.with_terminal_output(config)` creates a terminal printer actor and registers its `Subject`.
+- On each event, the agent iterates the list and sends to each consumer. A crashed consumer is silently skipped (it's supervised separately).
+- `:telemetry` events are always emitted — no registration needed (standard BEAM behavior).
+
+---
+
+### OTel GenAI Semantic Conventions Coverage
+
+The enriched types (Phase 9 prerequisites) and `SessionEvent` ensure we capture everything needed for future `pig/obs/otel`. Since OTel needs full message bodies (`gen_ai.input.messages`, `gen_ai.output.messages`), the OTel exporter reads from `SessionEvent`s — the same canonical source as the session writer.
+
+| OTel Attribute | Source | Available After |
+|---------------|--------|----------------|
+| `gen_ai.operation.name` | Hardcoded `"chat"` | Already |
+| `gen_ai.provider.name` | `AgentConfig.provider_name` | Task 9.0d |
+| `gen_ai.request.model` | `AgentConfig.model` | Already |
+| `gen_ai.response.id` | `InferenceMetadata.response_id` → `SessionEvent` | Task 9.0a |
+| `gen_ai.response.model` | `InferenceMetadata.response_model` → `SessionEvent` | Task 9.0a |
+| `gen_ai.response.finish_reasons` | `InferenceMetadata.finish_reason` → `SessionEvent` | Task 9.0a |
+| `gen_ai.usage.input_tokens` | `InferenceMetadata.input_tokens` → `SessionEvent` | Task 9.0a |
+| `gen_ai.usage.output_tokens` | `InferenceMetadata.output_tokens` → `SessionEvent` | Task 9.0a |
+| `gen_ai.input.messages` | `SessionEvent.InferenceCompleted.input_messages` | Task 9.1 |
+| `gen_ai.output.messages` | `SessionEvent.InferenceCompleted.message` | Task 9.1 |
+| `gen_ai.system_instructions` | `SessionEvent.SessionStarted.system_prompt` | Task 9.1 |
+| `gen_ai.agent.id` | `AgentConfig.agent_id` → `SessionEvent` | Task 9.0d |
+| `gen_ai.agent.name` | `AgentConfig.agent_name` → `SessionEvent` | Task 9.0d |
+| `gen_ai.agent.description` | `AgentConfig.agent_description` → `SessionEvent` | Task 9.0d |
+| `gen_ai.agent.version` | `AgentConfig.agent_version` → `SessionEvent` | Task 9.0d |
+| `server.address` | Parse from `OpenAIConfig.base_url` | Already |
+| `server.port` | Parse from `OpenAIConfig.base_url` | Already |
+| `error.type` | `AiError` variant + detail → `SessionEvent.InferenceFailed` | Task 9.0a |
+
+Deferred (not needed for v1 session persistence, add when building OTel exporter):
+- `gen_ai.request.max_tokens`, `gen_ai.request.top_p`, `gen_ai.request.temperature` — request parameters not currently exposed.
+
+---
+
+### Task 9.0a — Enrich Provider Return Type (`InferenceResult`)
+
+**Breaking change.** The `Provider` type alias currently returns `Result(Message, AiError)`. This drops critical metadata from provider responses (token counts, response IDs, finish reasons) that both session persistence and OTel need.
+
+**Test first:**
+```
+test/pig/ai/provider_test.gleam (update)
+test/pig/ai/inference_metadata_test.gleam (new)
+```
+- Test constructing `InferenceMetadata` with all optional fields.
+- Test `InferenceMetadata.default()` returns all fields as `None`.
+- Test that a provider function matching the new signature `fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)` compiles and returns correctly.
+- Test `InferenceResult.message(result)` accessor.
+- Test `InferenceResult.metadata(result)` accessor.
+
+**Implementation:**
+```
+src/pig/ai/provider.gleam (modify)
+```
+- Define `InferenceMetadata` record:
+  ```gleam
+  pub type InferenceMetadata {
+    InferenceMetadata(
+      response_id: Option(String),      // "chatcmpl-9J3u..."
+      response_model: Option(String),   // "gpt-4-0613" (may differ from request)
+      finish_reason: Option(String),     // "stop", "tool_calls", "length"
+      input_tokens: Option(Int),
+      output_tokens: Option(Int),
+    )
+  }
+  ```
+- Define `InferenceResult` record:
+  ```gleam
+  pub type InferenceResult {
+    InferenceResult(message: Message, metadata: InferenceMetadata)
+  }
+  ```
+- Change `Provider` type alias:
+  ```gleam
+  pub type Provider = fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)
+  ```
+- Provide `InferenceMetadata.default() -> InferenceMetadata` (all `None`s) — convenience for constructing results where metadata isn't available.
+- Provide `InferenceResult.from_message(Message) -> InferenceResult` — convenience constructor using default metadata.
+
+**Impact:** All modules that call a `Provider` or construct one need updating:
+- `pig/ai/openai.gleam` — Task 9.0b
+- `pig/agent/core.gleam` — Task 9.0c
+- `pig/agent/state.gleam` — no change (history still stores `Message`)
+- All test files with mock providers — Task 9.0f
+
+**Helpful:** OTel GenAI semantic conventions (`gen_ai.response.*`, `gen_ai.usage.*`)
+
+---
+
+### Task 9.0b — Update OpenAI Provider to Parse Response Metadata
+
+**Test first:**
+```
+test/pig/ai/openai_test.gleam (update)
+test_data/providers/openai_text_response.json (update with usage/id/model fields)
+test_data/providers/openai_tool_call_response.json (update)
+test_data/providers/openai_multi_tool_call_response.json (update)
+```
+- **Updated golden file tests:** Existing fixtures get enriched with top-level `id`, `model`, `usage` fields and per-choice `finish_reason`. Test that `parse_response` now returns `Ok(InferenceResult)` with correct metadata.
+- Test `InferenceMetadata` fields are populated: `response_id`, `response_model`, `input_tokens`, `output_tokens`, `finish_reason`.
+- Test that a response missing `usage` or `id` still parses (fields default to `None`).
+- Test that the provider function returns `InferenceResult` (not bare `Message`).
+
+**Implementation:**
+```
+src/pig/ai/openai.gleam (modify)
+```
+- Update `response_decoder()` to decode top-level `id` and `model` fields.
+- Add `usage_decoder()` decoding `prompt_tokens` and `completion_tokens`.
+- Decode `finish_reason` from each choice.
+- `do_inference` wraps the parsed message + metadata into `InferenceResult`.
+- `build_request_body` — no changes needed.
+
+**Helpful:** OpenAI Chat Completions API response format
+
+---
+
+### Task 9.0c — Update Agent Core to Handle `InferenceResult`
+
+**Test first:**
+```
+test/pig/agent/core_test.gleam (update)
+test/pig/agent/telemetry_test.gleam (update)
+```
+- Update mock providers in test harness to return `InferenceResult` instead of bare `Message`.
+- All existing scenario tests should still pass (verify `step` unwraps the message correctly).
+- Test that `step` passes `InferenceMetadata` to telemetry events (token counts, response ID).
+
+**Implementation:**
+```
+src/pig/agent/core.gleam (modify)
+```
+- `step()` calls `st.config.provider(msgs, defs)` which now returns `Result(InferenceResult, AiError)`.
+- Unwrap `InferenceResult.message` for the `StepResult` branching logic (no change to `StepResult` type).
+- Pass `InferenceResult.metadata` to `events.emit()` calls (enriched telemetry).
+- `run_to_completion` return type unchanged — still `Result(Message, AiError)`.
+
+**Helpful:** Existing core.gleam structure
+
+---
+
+### Task 9.0d — Add Agent Identity + Event Consumers to Config
+
+**Test first:**
+```
+test/pig/agent/state_test.gleam (update)
+test/pig_test.gleam (update)
+```
+- Test `config_with_agent_name(config, "Math Tutor")` sets the field.
+- Test defaults: `agent_id`, `agent_name`, `agent_description`, `agent_version`, `provider_name` all default to `None`.
+- Test `pig.with_agent_name(...)`, `pig.with_agent_id(...)` builder methods.
+- Test `pig.with_provider_name(config, "ollama")` sets provider_name.
+- Test `pig.with_session_writer(config, path)` creates a session writer and registers it as a consumer.
+- Test `pig.with_terminal_output(config)` registers a terminal printer as a consumer.
+- Test that registered consumers receive `SessionEvent`s when the agent runs.
+
+**Implementation:**
+```
+src/pig/agent/state.gleam (modify)
+src/pig.gleam (modify)
+```
+- Add to `AgentConfig`:
+  ```gleam
+  agent_id: Option(String),
+  agent_name: Option(String),
+  agent_description: Option(String),
+  agent_version: Option(String),
+  provider_name: Option(String),  // "openai", "ollama", etc.
+  event_consumers: List(Subject(SessionEvent)),
+  ```
+- All default to `None` / `[]` in `config()` constructor.
+- Add setter functions in `state.gleam` and builder methods in `pig.gleam`.
+- `pig.with_session_writer(PigConfig, path) -> PigConfig` — creates session writer actor, registers `Subject`.
+- `pig.with_terminal_output(PigConfig) -> PigConfig` — creates terminal printer actor, registers `Subject`.
+- `state.add_event_consumer(config, consumer) -> AgentConfig` — adds a `Subject(SessionEvent)` to the list.
+
+**Helpful:** OTel `gen_ai.agent.*` attributes; Phase 9 "Event Distribution Architecture"
+
+---
+
+### Task 9.0e — Enrich Telemetry Events with Response Metadata
+
+**Test first:**
+```
+test/pig/obs/events_test.gleam (update)
+test/pig/agent/telemetry_test.gleam (update)
+```
+- Test that `InferenceStop` now carries `input_tokens`, `output_tokens`, `response_id`, `finish_reason` fields.
+- Test `InferenceException` carries `error_type` string.
+- Test that captured telemetry events include the new metadata.
+
+**Implementation:**
+```
+src/pig/obs/events.gleam (modify)
+```
+- Update `InferenceStop` variant:
+  ```gleam
+  InferenceStop(
+    model: String,
+    message_count: Int,
+    duration_ms: Int,
+    response_id: Option(String),
+    finish_reason: Option(String),
+    input_tokens: Option(Int),
+    output_tokens: Option(Int),
+  )
+  ```
+- Update `InferenceException` to carry `error_type: String`.
+- Update `emit()` and `decode()` to handle new fields.
+- Telemetry remains lightweight — no message content, just IDs and counts.
+
+**Helpful:** OTel GenAI semantic conventions
+
+---
+
+### Task 9.0f — Update Existing Tests for Provider Type Change
+
+**Test updates:**
+```
+test/pig/ai/message_test.gleam      — likely no change
+test/pig/ai/error_test.gleam         — likely no change
+test/pig/ai/tool_definition_test.gleam — likely no change
+test/pig/ai/provider_test.gleam      — update for InferenceResult
+test/pig/ai/openai_test.gleam        — update for InferenceResult
+test/pig/ai/http_test.gleam          — likely no change
+test/pig/tool/definition_test.gleam  — likely no change
+test/pig/tool/execution_test.gleam   — likely no change
+test/pig/agent/state_test.gleam      — update mock providers
+test/pig/agent/core_test.gleam       — update mock providers
+test/pig/agent/telemetry_test.gleam  — update for enriched events
+test/pig/agent/actor_test.gleam      — update mock providers
+test/pig/agent/parallel_tools_test.gleam — update mock providers
+test/pig/skill/load_test.gleam       — likely no change
+test/pig/skill/librarian_test.gleam  — likely no change
+test/pig_test.gleam                  — update test_harness + mock providers
+test/pig/supervisor_test.gleam       — update mock providers
+test/support/harness.gleam           — update mock provider helpers
+```
+
+- Every mock provider currently returns `Ok(Assistant(...))`. Must now return `Ok(InferenceResult.from_message(Assistant(...)))`.
+- Use `InferenceResult.from_message()` for mocks that don't care about metadata.
+- Run full test suite and confirm all pass.
+
+---
+
+### Task 9.1 — `pig/obs/session` JSONL Session Writer
+
+The session writer is an OTP actor that receives `SessionEvent`s as a registered consumer. It is the primary concrete implementation of the event consumer pattern — the model for how future consumers (OTel exporter, etc.) will work.
+
+**Define `SessionEvent` type in a shared location** so it can be imported by `pig/agent/state.gleam` (for the consumer list type), `pig/obs/session.gleam`, `pig/obs/terminal.gleam`, and future consumers. Define it in `pig/obs/events.gleam` alongside the existing telemetry types.
 
 **Test first:**
 ```
 test/pig/obs/session_test.gleam
 ```
-- Test `session_entry(event, metadata, timestamp) -> String` produces valid JSONL (one JSON object per line).
-- Test that the JSONL contains the expected fields: event name, timestamp, metadata.
-- Test with a real file: attach the session writer, emit some events, read the file, assert line count and contents.
+- **Pure serialization tests:**
+  - Test `format_event(SessionStarted(...)) -> String` produces valid JSON (parseable).
+  - Test `format_event(InferenceCompleted(...))` includes `message`, `input_messages`, `input_tokens`, `output_tokens`, `response_id`, `finish_reason`, `duration_ms`.
+  - Test `format_event(ToolExecuted(...))` includes `tool_call` (with `arguments_json`), `result`, `duration_ms`.
+  - Test `format_event(InferenceFailed(...))` includes error detail.
+  - Test `format_event(SessionEnded(...))` includes reason.
+  - Test that each `format_event` output is a single line (no embedded newlines).
+- **Actor integration tests:**
+  - Test `start(path)` returns `Ok(SessionWriter)`.
+  - Test sending a `SessionEvent` to the writer, then reading the file and asserting line count and contents.
+  - Test sending multiple events produces multiple JSONL lines in order.
+  - Test `stop(SessionWriter)` terminates the actor cleanly.
 
 **Implementation:**
 ```
 src/pig/obs/session.gleam
 ```
-- `SessionWriter` — an OTP actor that listens to telemetry events and appends JSONL lines to a file.
-- `start(path: String) -> Result(SessionWriter, StartError)`
-- `stop(SessionWriter) -> Nil`
-- Pure serialization function: `format_entry(event, meta, ts) -> String`.
+- Define `SessionEvent` type:
+  ```gleam
+  pub type SessionEvent {
+    SessionStarted(
+      agent_id: Option(String),
+      agent_name: Option(String),
+      model: String,
+      provider_name: Option(String),
+      system_prompt: Option(String),
+    )
+    InferenceCompleted(
+      message: Message,
+      response_id: Option(String),
+      response_model: Option(String),
+      finish_reason: Option(String),
+      input_tokens: Option(Int),
+      output_tokens: Option(Int),
+      duration_ms: Int,
+      input_messages: List(Message),
+    )
+    ToolExecuted(
+      tool_call: ToolCall,
+      result: String,
+      duration_ms: Int,
+    )
+    InferenceFailed(
+      error: AiError,
+      duration_ms: Int,
+      input_messages: List(Message),
+    )
+    SessionEnded(reason: SessionEndReason)
+  }
 
-**Helpful:** SPEC §3.4 (Session Store, JSONL); TESTING_STRATEGY §Axiom 5 (slow tests isolated)
+  pub type SessionEndReason {
+    NormalEnd
+    Error(AiError)
+    MaxIterationsExceeded(Int)
+    Interrupted
+  }
+  ```
+- `SessionWriter` — opaque type wrapping `Subject(SessionEvent)`.
+- `start(path: String) -> Result(SessionWriter, StartError)` — spawns the file-writing actor.
+- `stop(SessionWriter) -> Nil` — sends stop message.
+- `record(SessionWriter, SessionEvent) -> Nil` — sends event to writer (async, fire-and-forget).
+- Pure serialization: `format_event(SessionEvent) -> String` — one JSON object per line.
+  - Timestamp auto-populated from system clock inside `format_event`.
+  - `Message` serialized with role, content, tool_calls (including `arguments_json`), thinking.
+  - `ToolCall` serialized with id, name, arguments_json.
+
+**Actor behavior:**
+- Holds the file path as state.
+- On each `SessionEvent`, appends `format_event(event) <> "\n"` to the file.
+- On stop, closes gracefully.
+- Async — never blocks the agent.
+
+**JSONL format example:**
+```jsonl
+{"ts":"2025-01-15T10:30:00Z","event":"session_started","agent_name":"Math Tutor","model":"gpt-4","provider":"openai","system_prompt":"You are a helpful math tutor"}
+{"ts":"2025-01-15T10:30:01Z","event":"inference_completed","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","name":"calculator","arguments":"{\"expr\":\"2+2\"}"}]},"response_id":"chatcmpl-9J3u","response_model":"gpt-4-0613","finish_reason":"tool_calls","input_tokens":52,"output_tokens":15,"duration_ms":150,"input_messages":[{"role":"user","content":"What is 2+2?"}]}
+{"ts":"2025-01-15T10:30:01Z","event":"tool_executed","tool_call":{"id":"call_1","name":"calculator","arguments":"{\"expr\":\"2+2\"}"},"result":"4","duration_ms":3}
+{"ts":"2025-01-15T10:30:02Z","event":"inference_completed","message":{"role":"assistant","content":"2+2 equals 4!","tool_calls":[]},"response_id":"chatcmpl-9J3v","response_model":"gpt-4-0613","finish_reason":"stop","input_tokens":78,"output_tokens":8,"duration_ms":200}
+{"ts":"2025-01-15T10:30:02Z","event":"session_ended","reason":"normal_end"}
+```
+
+**Helpful:** SPEC §3.4 (Session Store, JSONL); TESTING_STRATEGY §Axiom 5 (slow tests isolated); OTel GenAI semantic conventions
 
 ---
 
 ### Task 9.2 — `pig/obs/terminal` Pretty Printer
 
+The terminal printer is a registered event consumer that receives `SessionEvent`s. It replaces the previous telemetry-handler-based design.
+
 **Test first:**
 ```
 test/pig/obs/terminal_test.gleam
 ```
-- Test `format_event(event, metadata) -> String` returns a human-readable string for each event type.
+- Test `format_event(SessionEvent) -> String` returns a human-readable string for each event variant.
+- Test that `InferenceCompleted` events display token counts and finish reason when present.
+- Test that `ToolExecuted` events show tool name, arguments summary, and duration.
+- Test that `SessionStarted` shows agent name and model.
 - Pure function — no actual terminal output.
 
 **Implementation:**
 ```
 src/pig/obs/terminal.gleam
 ```
-- `attach()` — attaches a telemetry handler that prints formatted events to stdout.
-- `format_event/2` — pure formatting.
+- `start() -> Result(Subject(SessionEvent), StartError)` — spawns an actor that receives `SessionEvent`s and prints formatted output to stdout.
+- `format_event(SessionEvent) -> String` — pure formatting for each variant.
+- Shows token counts, durations, tool names, finish reasons — picks the lightweight fields.
+- Registered as a consumer via `pig.with_terminal_output(config)`.
 
 **Helpful:** SPEC §5.2 (terminal.attach())
 
@@ -657,7 +1032,7 @@ mise.toml — add test-integration task
 | 6 | `src/pig/agent.gleam`, `src/pig/agent/actor.gleam`, `src/pig/agent/parallel.gleam` | `test/pig/agent/actor_test.gleam`, `test/pig/agent/parallel_tools_test.gleam` | — |
 | 7 | `src/pig/skill.gleam`, `src/pig/skill/librarian.gleam` | `test/pig/skill/load_test.gleam`, `test/pig/skill/librarian_test.gleam` | `test_data/skills/**/*` |
 | 8 | `src/pig.gleam`, `src/pig/supervisor.gleam`, `src/pig/agent/actor.gleam` (add `supervised`) | `test/pig_test.gleam`, `test/pig/supervisor_test.gleam` | — |
-| 9 | `src/pig/obs/session.gleam`, `src/pig/obs/terminal.gleam` | `test/pig/obs/session_test.gleam`, `test/pig/obs/terminal_test.gleam` | — |
+| 9 | `src/pig/ai/provider.gleam` (modify), `src/pig/ai/openai.gleam` (modify), `src/pig/agent/core.gleam` (modify), `src/pig/agent/state.gleam` (modify), `src/pig/obs/events.gleam` (modify), `src/pig/obs/session.gleam`, `src/pig/obs/terminal.gleam`, `src/pig.gleam` (modify) | `test/pig/ai/inference_metadata_test.gleam`, `test/pig/obs/session_test.gleam`, `test/pig/obs/terminal_test.gleam`, + updates to ~10 existing test files | — |
 | 10 | — | `test/integration/*.gleam` | — |
 
 ---
@@ -670,3 +1045,7 @@ mise.toml — add test-integration task
 4. **Session Stores:** JSONL file only for now.
 5. **Supervisor:** Export `pig.start_supervised(config)` as the easy path. All components also startable standalone.
 6. **Target:** Erlang only. `target = "erlang"` in `gleam.toml`.
+7. **Provider Return Type:** `Provider` returns `Result(InferenceResult, AiError)` — not bare `Result(Message, AiError)`. `InferenceResult` carries the `Message` plus `InferenceMetadata` (response ID, token counts, finish reason, response model). This ensures session persistence and OTel have access to provider response metadata without re-parsing.
+8. **Agent Identity:** `AgentConfig` carries optional `agent_id`, `agent_name`, `agent_description`, `agent_version`, and `provider_name`. These populate OTel `gen_ai.agent.*` attributes and session headers. All default to `None` — opt-in.
+9. **Two First-Class Event Channels:** pig emits two independent event channels from the same code paths. (1) `SessionEvent` — rich typed events sent directly to registered pig consumers (session writer, terminal printer, OTel exporter). Carries full message content. (2) `:telemetry` — lightweight metrics emitted via `telemetry.execute/3`. The BEAM ecosystem standard — zero-config integration with LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`, AppSignal. Neither is a bridge or shim.
+10. **SessionEvent is canonical for pig consumers.** ALL pig observability modules (session writer, terminal, future OTel) read from `SessionEvent`s. `:telemetry` serves the broader BEAM ecosystem — it is a first-class channel for a different audience.
