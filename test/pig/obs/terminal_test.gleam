@@ -4,6 +4,7 @@ import pig/ai/error.{ApiError}
 import pig/ai/message.{Assistant, ToolCall}
 import gleam/option.{None, Some}
 import gleam/string
+import gleeunit/should
 
 pub fn format_session_started_shows_model_test() {
   let event = events.SessionStarted(
@@ -16,9 +17,9 @@ pub fn format_session_started_shows_model_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "START")
-  let assert True = string.contains(result, "gpt-4")
-  let assert True = string.contains(result, "Math Tutor")
+  string.contains(result, "START") |> should.be_true
+  string.contains(result, "gpt-4") |> should.be_true
+  string.contains(result, "Math Tutor") |> should.be_true
 }
 
 pub fn format_inference_completed_shows_duration_test() {
@@ -35,9 +36,9 @@ pub fn format_inference_completed_shows_duration_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "INF")
-  let assert True = string.contains(result, "150ms")
-  let assert True = string.contains(result, "Completed")
+  string.contains(result, "INF") |> should.be_true
+  string.contains(result, "150ms") |> should.be_true
+  string.contains(result, "Completed") |> should.be_true
 }
 
 pub fn format_inference_completed_shows_token_counts_test() {
@@ -54,11 +55,11 @@ pub fn format_inference_completed_shows_token_counts_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "INF")
-  let assert True = string.contains(result, "150ms")
-  let assert True = string.contains(result, "52")
-  let assert True = string.contains(result, "15")
-  let assert True = string.contains(result, "stop")
+  string.contains(result, "INF") |> should.be_true
+  string.contains(result, "150ms") |> should.be_true
+  string.contains(result, "52") |> should.be_true
+  string.contains(result, "15") |> should.be_true
+  string.contains(result, "stop") |> should.be_true
 }
 
 pub fn format_inference_completed_without_tokens_test() {
@@ -76,9 +77,9 @@ pub fn format_inference_completed_without_tokens_test() {
   let result = terminal.format_event(event)
 
   // Should not crash and should show duration
-  let assert True = string.contains(result, "INF")
-  let assert True = string.contains(result, "200ms")
-  let assert True = string.contains(result, "Completed")
+  string.contains(result, "INF") |> should.be_true
+  string.contains(result, "200ms") |> should.be_true
+  string.contains(result, "Completed") |> should.be_true
 }
 
 pub fn format_tool_executed_shows_tool_name_test() {
@@ -91,9 +92,9 @@ pub fn format_tool_executed_shows_tool_name_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "TOOL")
-  let assert True = string.contains(result, "calculator")
-  let assert True = string.contains(result, "3ms")
+  string.contains(result, "TOOL") |> should.be_true
+  string.contains(result, "calculator") |> should.be_true
+  string.contains(result, "3ms") |> should.be_true
 }
 
 pub fn format_inference_failed_shows_error_test() {
@@ -105,10 +106,10 @@ pub fn format_inference_failed_shows_error_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "ERR")
-  let assert True = string.contains(result, "100ms")
-  let assert True = string.contains(result, "ApiError")
-  let assert True = string.contains(result, "rate limited")
+  string.contains(result, "ERR") |> should.be_true
+  string.contains(result, "100ms") |> should.be_true
+  string.contains(result, "ApiError") |> should.be_true
+  string.contains(result, "rate limited") |> should.be_true
 }
 
 pub fn format_session_ended_normal_test() {
@@ -116,8 +117,8 @@ pub fn format_session_ended_normal_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "END")
-  let assert True = string.contains(result, "normal")
+  string.contains(result, "END") |> should.be_true
+  string.contains(result, "normal") |> should.be_true
 }
 
 pub fn format_session_ended_max_iterations_test() {
@@ -125,7 +126,7 @@ pub fn format_session_ended_max_iterations_test() {
 
   let result = terminal.format_event(event)
 
-  let assert True = string.contains(result, "END")
-  let assert True = string.contains(result, "50")
-  let assert True = string.contains(result, "iterations")
+  string.contains(result, "END") |> should.be_true
+  string.contains(result, "50") |> should.be_true
+  string.contains(result, "iterations") |> should.be_true
 }

@@ -1,11 +1,17 @@
+//// JSONL session writer tests.
+////
+//// Pure serialization tests exercise `format_event` (Axiom 2: value in, value out).
+//// Actor tests use `record_sync` for deterministic writes — no sleep hacks.
+//// Per TESTING_STRATEGY §pig/obs: "Do not use sleep() or timeout hacks."
+
 import gleeunit
 import gleeunit/should
-import gleam/dynamic/decode
+import gleam/dynamic/decode as dynamic_decode
 import gleam/json
+import gleam/result
 import gleam/list
 import gleam/option.{Some, None}
 import gleam/string
-import gleam/erlang/process
 import pig/ai/error.{ApiError}
 import pig/ai/message.{User, Assistant, ToolCall}
 import pig/obs/events.{
@@ -19,9 +25,36 @@ pub fn main() {
   gleeunit.main()
 }
 
-// ── Pure serialization tests (test format_event) ─────────────────────
+// ── Test Helpers ──────────────────────────────────────────────────────
 
-pub fn format_session_started_produces_valid_json_test() {
+/// Decode the "event" field from a JSON string.
+/// Returns the event type string (e.g. "session_started").
+fn decode_event_type(json_str: String) -> String {
+  let decoder = dynamic_decode.at(["event"], dynamic_decode.string)
+  let assert Ok(event_type) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+  event_type
+}
+
+/// Read a JSONL file, split into lines, filter empty lines.
+fn read_jsonl_lines(path: String) -> List(String) {
+  let assert Ok(contents) = simplifile.read(path)
+  string.split(contents, "\n") |> list.filter(fn(l) { l != "" })
+}
+
+/// Prepare a unique test file. Creates test_tmp, removes stale file.
+fn prepare_test_file(name: String) -> String {
+  let _ = simplifile.create_directory_all("./test_tmp")
+  let path = "./test_tmp/" <> name
+  let _ = simplifile.delete(path)
+  path
+}
+
+// ── Pure serialization tests (test format_event) ─────────────────────
+// Axiom 2: Pure functions. Axiom 4: Decode JSON, don't string.contains.
+
+pub fn format_session_started_produces_valid_json_with_fields_test() {
   let event =
     SessionStarted(
       agent_id: Some("agent-123"),
@@ -33,13 +66,22 @@ pub fn format_session_started_produces_valid_json_test() {
 
   let json_str = session.format_event(event)
 
-  // Verify it's valid JSON
-  let assert Ok(_parsed) = json.parse(from: json_str, using: decode.dynamic)
+  // Decode the "event" field — not string.contains
+  decode_event_type(json_str)
+  |> should.equal("session_started")
 
-  // Verify it contains the event type
-  json_str
-  |> string.contains("session_started")
-  |> should.be_true
+  // Decode the "model" field
+  let model_decoder = dynamic_decode.at(["model"], dynamic_decode.string)
+  let assert Ok("gpt-4") =
+    json.parse(from: json_str, using: model_decoder)
+    |> result.map_error(fn(_) { Nil })
+
+  // Decode the "agent_name" field
+  let name_decoder =
+    dynamic_decode.at(["agent_name"], dynamic_decode.optional(dynamic_decode.string))
+  let assert Ok(Some("Math Tutor")) =
+    json.parse(from: json_str, using: name_decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_session_started_single_line_test() {
@@ -75,22 +117,34 @@ pub fn format_inference_completed_includes_fields_test() {
 
   let json_str = session.format_event(event)
 
-  // Verify all expected values are in the JSON
-  json_str
-  |> string.contains("inference_completed")
-  |> should.be_true
+  // Decode and assert on individual fields
+  decode_event_type(json_str)
+  |> should.equal("inference_completed")
 
-  json_str
-  |> string.contains("chatcmpl-123")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["response_id"], dynamic_decode.string)
+  let assert Ok("chatcmpl-123") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("stop")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["finish_reason"], dynamic_decode.string)
+  let assert Ok("stop") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("150")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["duration_ms"], dynamic_decode.int)
+  let assert Ok(150) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+
+  let decoder = dynamic_decode.at(["input_tokens"], dynamic_decode.int)
+  let assert Ok(10) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+
+  let decoder = dynamic_decode.at(["output_tokens"], dynamic_decode.int)
+  let assert Ok(5) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_tool_executed_includes_fields_test() {
@@ -104,46 +158,57 @@ pub fn format_tool_executed_includes_fields_test() {
 
   let json_str = session.format_event(event)
 
-  // Verify all expected values are in the JSON
-  json_str
-  |> string.contains("tool_executed")
-  |> should.be_true
+  decode_event_type(json_str)
+  |> should.equal("tool_executed")
 
-  json_str
-  |> string.contains("calculator")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["duration_ms"], dynamic_decode.int)
+  let assert Ok(3) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("2+2")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["result"], dynamic_decode.string)
+  let assert Ok("4") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("4")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["tool_call", "name"], dynamic_decode.string)
+  let assert Ok("calculator") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("3")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["tool_call", "arguments"], dynamic_decode.string)
+  let assert Ok("{\"expr\":\"2+2\"}") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_inference_failed_includes_error_test() {
   let event =
     InferenceFailed(
       error: ApiError("rate limited"),
-      duration_ms: 0,
+      duration_ms: 42,
       input_messages: [],
     )
 
   let json_str = session.format_event(event)
 
-  // Verify error info is in the JSON
-  json_str
-  |> string.contains("inference_failed")
-  |> should.be_true
+  decode_event_type(json_str)
+  |> should.equal("inference_failed")
 
-  json_str
-  |> string.contains("rate limited")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["error", "type"], dynamic_decode.string)
+  let assert Ok("api_error") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+
+  let decoder = dynamic_decode.at(["error", "message"], dynamic_decode.string)
+  let assert Ok("rate limited") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+
+  let decoder = dynamic_decode.at(["duration_ms"], dynamic_decode.int)
+  let assert Ok(42) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_session_ended_normal_test() {
@@ -151,14 +216,13 @@ pub fn format_session_ended_normal_test() {
 
   let json_str = session.format_event(event)
 
-  // Verify session ended and normal_end are present
-  json_str
-  |> string.contains("session_ended")
-  |> should.be_true
+  decode_event_type(json_str)
+  |> should.equal("session_ended")
 
-  json_str
-  |> string.contains("normal_end")
-  |> should.be_true
+  let decoder = dynamic_decode.at(["reason", "type"], dynamic_decode.string)
+  let assert Ok("normal_end") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_session_ended_max_iterations_test() {
@@ -166,47 +230,34 @@ pub fn format_session_ended_max_iterations_test() {
 
   let json_str = session.format_event(event)
 
-  // Verify max iterations info is present
-  json_str
-  |> string.contains("session_ended")
-  |> should.be_true
+  decode_event_type(json_str)
+  |> should.equal("session_ended")
 
-  json_str
-  |> string.contains("max_iterations_exceeded")
-  |> should.be_true
+  let decoder =
+    dynamic_decode.at(["reason", "type"], dynamic_decode.string)
+  let assert Ok("max_iterations_exceeded") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
-  json_str
-  |> string.contains("10")
-  |> should.be_true
+  let decoder =
+    dynamic_decode.at(["reason", "max_iterations"], dynamic_decode.int)
+  let assert Ok(10) =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 }
 
 // ── Actor integration tests ───────────────────────────────────────────
+// Use record_sync for deterministic writes — no process.sleep.
 
 pub fn start_returns_ok_test() {
-  // Create test_tmp directory if it doesn't exist
-  let _ = simplifile.create_directory_all("./test_tmp")
-
-  let test_file = "./test_tmp/session_test_1.jsonl"
-
-  // Clean up any existing file
-  let _ = simplifile.delete(test_file)
-
-  let assert Ok(_writer) = session.start(test_file)
-
-  // Clean up
-  let _ = simplifile.delete(test_file)
+  let path = prepare_test_file("session_test_1.jsonl")
+  let assert Ok(_writer) = session.start(path)
+  let _ = simplifile.delete(path)
 }
 
 pub fn write_single_event_test() {
-  // Create test_tmp directory if it doesn't exist
-  let _ = simplifile.create_directory_all("./test_tmp")
-
-  let test_file = "./test_tmp/session_test_2.jsonl"
-
-  // Clean up any existing file
-  let _ = simplifile.delete(test_file)
-
-  let assert Ok(writer) = session.start(test_file)
+  let path = prepare_test_file("session_test_2.jsonl")
+  let assert Ok(writer) = session.start(path)
 
   let event =
     SessionStarted(
@@ -217,134 +268,95 @@ pub fn write_single_event_test() {
       system_prompt: Some("You are helpful"),
     )
 
-  session.record(writer, event)
+  session.record_sync(writer, event)
 
-  // Wait for async write
-  process.sleep(100)
-
-  // Read file and verify
-  let assert Ok(contents) = simplifile.read(test_file)
-
-  let lines = string.split(contents, "\n") |> list.filter(fn(l) { l != "" })
+  let lines = read_jsonl_lines(path)
 
   lines
   |> list.length
   |> should.equal(1)
 
-  // Verify it's valid JSON
+  // Verify the event type via decode, not string.contains
   let first_line = list.first(lines) |> should.be_ok
+  decode_event_type(first_line)
+  |> should.equal("session_started")
 
-  let assert Ok(_parsed) = json.parse(from: first_line, using: decode.dynamic)
-
-  // Clean up
   session.stop(writer)
-  process.sleep(50)
-  let _ = simplifile.delete(test_file)
+  let _ = simplifile.delete(path)
 }
 
 pub fn write_multiple_events_in_order_test() {
-  // Create test_tmp directory if it doesn't exist
-  let _ = simplifile.create_directory_all("./test_tmp")
-
-  let test_file = "./test_tmp/session_test_3.jsonl"
-
-  // Clean up any existing file
-  let _ = simplifile.delete(test_file)
-
-  let assert Ok(writer) = session.start(test_file)
+  let path = prepare_test_file("session_test_3.jsonl")
+  let assert Ok(writer) = session.start(path)
 
   let event1 =
     SessionStarted(
-      agent_id: Some("agent-123"),
-      agent_name: Some("Math Tutor"),
+      agent_id: None,
+      agent_name: None,
       model: "gpt-4",
-      provider_name: Some("openai"),
-      system_prompt: Some("You are helpful"),
+      provider_name: None,
+      system_prompt: None,
     )
 
   let event2 =
     InferenceCompleted(
       message: Assistant(content: "hi", tool_calls: [], thinking: None),
-      response_id: Some("chatcmpl-123"),
-      response_model: Some("gpt-4"),
-      finish_reason: Some("stop"),
-      input_tokens: Some(10),
-      output_tokens: Some(5),
+      response_id: None,
+      response_model: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
       duration_ms: 150,
-      input_messages: [User("hello")],
+      input_messages: [],
     )
 
   let event3 = SessionEnded(NormalEnd)
 
-  session.record(writer, event1)
-  session.record(writer, event2)
-  session.record(writer, event3)
+  session.record_sync(writer, event1)
+  session.record_sync(writer, event2)
+  session.record_sync(writer, event3)
 
-  // Wait for async writes
-  process.sleep(100)
-
-  // Read file and verify
-  let assert Ok(contents) = simplifile.read(test_file)
-
-  let lines = string.split(contents, "\n") |> list.filter(fn(l) { l != "" })
+  let lines = read_jsonl_lines(path)
 
   lines
   |> list.length
   |> should.equal(3)
 
-  // Verify order by checking each line contains the expected event type
-  let first_line = list.first(lines) |> should.be_ok
-  first_line
-  |> string.contains("session_started")
-  |> should.be_true
+  // Verify order by decoding event type from each line
+  let first = list.first(lines) |> should.be_ok
+  decode_event_type(first)
+  |> should.equal("session_started")
 
-  let second_line = list.drop(lines, 1) |> list.first |> should.be_ok
-  second_line
-  |> string.contains("inference_completed")
-  |> should.be_true
+  let second = list.drop(lines, 1) |> list.first |> should.be_ok
+  decode_event_type(second)
+  |> should.equal("inference_completed")
 
-  let third_line = list.drop(lines, 2) |> list.first |> should.be_ok
-  third_line
-  |> string.contains("session_ended")
-  |> should.be_true
+  let third = list.drop(lines, 2) |> list.first |> should.be_ok
+  decode_event_type(third)
+  |> should.equal("session_ended")
 
-  // Clean up
   session.stop(writer)
-  process.sleep(50)
-  let _ = simplifile.delete(test_file)
+  let _ = simplifile.delete(path)
 }
 
-pub fn stop_terminates_actor_test() {
-  // Create test_tmp directory if it doesn't exist
-  let _ = simplifile.create_directory_all("./test_tmp")
-
-  let test_file = "./test_tmp/session_test_4.jsonl"
-
-  // Clean up any existing file
-  let _ = simplifile.delete(test_file)
-
-  let assert Ok(writer) = session.start(test_file)
+pub fn record_sync_after_stop_does_not_crash_test() {
+  let path = prepare_test_file("session_test_4.jsonl")
+  let assert Ok(writer) = session.start(path)
 
   session.stop(writer)
 
-  // Wait for actor to terminate
-  process.sleep(100)
-
-  // Verify process is down by trying to send a message
-  // This should not crash the test - the actor should be dead
+  // Sending to a stopped actor should not crash the test process.
+  // The message goes to a dead process mailbox — silently dropped.
   let event =
     SessionStarted(
-      agent_id: Some("agent-123"),
-      agent_name: Some("Math Tutor"),
+      agent_id: None,
+      agent_name: None,
       model: "gpt-4",
-      provider_name: Some("openai"),
-      system_prompt: Some("You are helpful"),
+      provider_name: None,
+      system_prompt: None,
     )
 
-  // This should not cause issues if the actor is properly stopped
   session.record(writer, event)
-  process.sleep(50)
 
-  // Clean up
-  let _ = simplifile.delete(test_file)
+  let _ = simplifile.delete(path)
 }

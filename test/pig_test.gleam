@@ -4,9 +4,11 @@
 //// (start/run/stop). Per TESTING_STRATEGY §Axiom 1: test features,
 //// not implementation.
 
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleeunit
+import gleeunit/should
 import pig
+import pig/agent/state
 import pig/ai/message
 import pig/skill
 import support/harness
@@ -160,62 +162,50 @@ pub fn test_harness_returns_config_test() {
 
 // ── Builder: Agent Identity ────────────────────────────────────────
 
-/// with_agent_name sets the agent_name in the underlying AgentConfig.
-pub fn with_agent_name_builder_test() {
-  let config = pig.test_harness() |> pig.with_agent_name("Math Tutor")
+/// Helper to check that a builder method sets an identity field correctly
+/// and the agent still runs end-to-end.
+///
+/// This follows TESTING_STRATEGY §Axiom 3 (check idiom): collapse
+/// repeated patterns into a data-driven helper.
+fn check_identity_builder(
+  set_field: fn(pig.PigConfig, String) -> pig.PigConfig,
+  get_field: fn(state.AgentConfig) -> Option(String),
+  value: String,
+) {
+  let config = pig.test_harness() |> set_field(value)
   let agent_config = pig.agent_config(config)
-  let assert Some("Math Tutor") = agent_config.agent_name
-  // Verify it still works end-to-end
+  get_field(agent_config) |> should.equal(Some(value))
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
   let assert True = msg == message.Assistant("mock response", [], None)
   pig.stop(agent)
+}
+
+/// with_agent_name sets the agent_name in the underlying AgentConfig.
+pub fn with_agent_name_builder_test() {
+  check_identity_builder(pig.with_agent_name, fn(c) { c.agent_name }, "Math Tutor")
 }
 
 /// with_provider_name sets the provider_name in the underlying AgentConfig.
 pub fn with_provider_name_builder_test() {
-  let config = pig.test_harness() |> pig.with_provider_name("openai")
-  let agent_config = pig.agent_config(config)
-  let assert Some("openai") = agent_config.provider_name
-  // Verify it still works end-to-end
-  let assert Ok(agent) = pig.start(config)
-  let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
-  pig.stop(agent)
+  check_identity_builder(pig.with_provider_name, fn(c) { c.provider_name }, "openai")
 }
 
 /// with_agent_id sets the agent_id in the underlying AgentConfig.
 pub fn with_agent_id_builder_test() {
-  let config = pig.test_harness() |> pig.with_agent_id("agent-123")
-  let agent_config = pig.agent_config(config)
-  let assert Some("agent-123") = agent_config.agent_id
-  // Verify it still works end-to-end
-  let assert Ok(agent) = pig.start(config)
-  let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
-  pig.stop(agent)
+  check_identity_builder(pig.with_agent_id, fn(c) { c.agent_id }, "agent-123")
 }
 
 /// with_agent_description sets the agent_description in the underlying AgentConfig.
 pub fn with_agent_description_builder_test() {
-  let config = pig.test_harness() |> pig.with_agent_description("A helpful math tutor")
-  let agent_config = pig.agent_config(config)
-  let assert Some("A helpful math tutor") = agent_config.agent_description
-  // Verify it still works end-to-end
-  let assert Ok(agent) = pig.start(config)
-  let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
-  pig.stop(agent)
+  check_identity_builder(
+    pig.with_agent_description,
+    fn(c) { c.agent_description },
+    "A helpful math tutor",
+  )
 }
 
 /// with_agent_version sets the agent_version in the underlying AgentConfig.
 pub fn with_agent_version_builder_test() {
-  let config = pig.test_harness() |> pig.with_agent_version("1.0.0")
-  let agent_config = pig.agent_config(config)
-  let assert Some("1.0.0") = agent_config.agent_version
-  // Verify it still works end-to-end
-  let assert Ok(agent) = pig.start(config)
-  let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
-  pig.stop(agent)
+  check_identity_builder(pig.with_agent_version, fn(c) { c.agent_version }, "1.0.0")
 }

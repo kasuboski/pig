@@ -1,7 +1,9 @@
 //// JSONL session writer — records SessionEvents to a file for replay.
 ////
 //// OTP actor that receives SessionEvents and appends them as JSONL lines.
-//// Fire-and-forget: never blocks the agent.
+//// Two modes:
+////   - `record()` — fire-and-forget, never blocks the agent.
+////   - `record_sync()` — synchronous call, blocks until written. For testing.
 
 import gleam/erlang/process.{type Subject}
 import gleam/json
@@ -33,6 +35,7 @@ pub opaque type SessionWriter {
 /// Internal actor messages.
 type WriterMessage {
   WriteEvent(SessionEvent)
+  WriteEventSync(event: SessionEvent, reply_subject: Subject(Nil))
   Stop
 }
 
@@ -64,6 +67,16 @@ pub fn stop(writer: SessionWriter) -> Nil {
 pub fn record(writer: SessionWriter, event: SessionEvent) -> Nil {
   let SessionWriter(subject) = writer
   process.send(subject, WriteEvent(event))
+}
+
+/// Record a session event synchronously. Blocks until the event is
+/// written to disk. Use this in tests for deterministic assertions.
+pub fn record_sync(writer: SessionWriter, event: SessionEvent) -> Nil {
+  let SessionWriter(subject) = writer
+  let reply_subject = process.new_subject()
+  process.send(subject, WriteEventSync(event:, reply_subject:))
+  let assert Ok(_) = process.receive(reply_subject, 5000)
+  Nil
 }
 
 /// Format a SessionEvent as a JSON string (pure function, no side effects).
@@ -200,6 +213,12 @@ fn handle_message(
       let _ = simplifile.append(state.path, json_str <> "\n")
       actor.continue(state)
     }
+    WriteEventSync(event:, reply_subject:) -> {
+      let json_str = format_event(event)
+      let _ = simplifile.append(state.path, json_str <> "\n")
+      process.send(reply_subject, Nil)
+      actor.continue(state)
+    }
     Stop -> {
       actor.stop()
     }
@@ -305,6 +324,3 @@ fn reason_to_json(reason: SessionEndReason) -> json.Json {
     }
   }
 }
-
-// ── Optional Field Helpers ─────────────────────────────────────────────
-// Helper functions are inlined in format_event for simplicity.
