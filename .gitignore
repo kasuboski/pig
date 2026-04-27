@@ -3,6 +3,9 @@
 /build
 erl_crash.dump
 
+**/node_modules/
+*.sqlite*
+
 knowledge/repos/
 
 STATUS.md
