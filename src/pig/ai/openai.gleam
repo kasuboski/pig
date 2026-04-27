@@ -193,7 +193,11 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
   use choices <- decode.field("choices", decode.list(choice_decoder()))
   case list.first(choices) {
     Ok(#(msg, finish_reason)) -> {
-      use usage <- decode.field("usage", decode.optional(usage_decoder()))
+      use usage <- decode.optional_field(
+        "usage",
+        None,
+        decode.optional(usage_decoder()),
+      )
       let metadata = InferenceMetadata(
         response_id: response_id,
         response_model: response_model,
@@ -227,14 +231,23 @@ fn usage_decoder() -> decode.Decoder(Usage) {
 
 fn choice_decoder() -> decode.Decoder(#(Message, Option(String))) {
   use msg <- decode.field("message", message_decoder())
-  use finish_reason <- decode.field("finish_reason", decode.optional(decode.string))
+  use finish_reason <- decode.optional_field(
+    "finish_reason",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(#(msg, finish_reason))
 }
 
 fn message_decoder() -> decode.Decoder(Message) {
-  use content <- decode.field("content", decode.optional(decode.string))
-  use tool_calls <- decode.field(
+  use content <- decode.optional_field(
+    "content",
+    None,
+    decode.optional(decode.string),
+  )
+  use tool_calls <- decode.optional_field(
     "tool_calls",
+    None,
     decode.optional(decode.list(tool_call_decoder())),
   )
   let content_str = option.unwrap(content, "")

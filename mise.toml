@@ -2,3 +2,8 @@
 gleam = "latest"
 erlang = "latest"
 rebar = "latest"
+
+[tasks.test-integration]
+description = "Run integration tests against an OpenAI-compatible provider"
+run = "gleam test"
+env = { PIG_RUN_INTEGRATION = "1" }

@@ -90,10 +90,12 @@ pub fn check_agent_scenario(scenario_path: String) {
 ```
 
 ### 2. Handling Slow/Impure Tests
-Integration tests (hitting the real Anthropic API or orchestrating real filesystem operations) belong in `test/integration/`. 
+Integration tests (hitting a real API or orchestrating real filesystem operations) belong in `test/integration/`.
 
-*   **Do NOT** use inline conditionals to bypass them (e.g., `if missing_api_key { return pass }`). This leads to a false sense of security.
-*   **DO** use your test runner's configuration to exclude the `integration/` directory by default, requiring an explicit opt-in (e.g., `mise run test-integration` or CI configurations) to run the slow tests.
+*   **Env var gating is allowed for integration tests.** Each integration test file may check for an environment variable (e.g., `PIG_RUN_INTEGRATION=1`) and skip all tests if it is not set. This is the approved way to keep `gleam test` green without a false sense of security — the skip is explicit and visible.
+*   **Do NOT** use env var gating in unit tests. Unit tests must always run.
+*   **DO** set the gating variable in `mise run test-integration` so the opt-in path is one command.
+*   Integration tests must NOT be a separate compile target. They live in `test/integration/` alongside other test code, compiled as part of the normal `gleam test` build.
 
 ### 3. Embrace "Value In, Value Out"
 If you find yourself writing a test that requires starting a process, sending it a message, waiting for a reply, and checking a mock... **stop**. 
