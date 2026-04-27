@@ -11,10 +11,20 @@
 import gleam/json
 import gleam/list
 import pig/agent/state as state
-import pig/ai/error.{type AiError}
+import pig/ai/error.{type AiError, ApiError, InvalidResponse, RateLimited, Timeout}
 import pig/ai/message.{type Message, type ToolCall}
 import pig/obs/events
 import pig/tool/execution
+
+/// Convert an AiError to a string for error_type telemetry.
+fn error_to_string(err: AiError) -> String {
+  case err {
+    ApiError(_) -> "ApiError"
+    RateLimited -> "RateLimited"
+    Timeout -> "Timeout"
+    InvalidResponse(_) -> "InvalidResponse"
+  }
+}
 
 /// Result of a single step in the agent loop.
 pub type StepResult {
@@ -40,13 +50,19 @@ pub fn step(st: state.AgentState) -> StepResult {
   let start_time = events.system_time()
 
   let result = case st.config.provider(msgs, defs) {
-    Ok(msg) -> {
+    Ok(inference_result) -> {
+      let msg = inference_result.message
+      let meta = inference_result.metadata
       let updated = state.add_message(st, msg)
       let duration = events.system_time() - start_time
       events.emit(events.InferenceStop(
         model:,
         message_count: msg_count,
         duration_ms: duration,
+        response_id: meta.response_id,
+        finish_reason: meta.finish_reason,
+        input_tokens: meta.input_tokens,
+        output_tokens: meta.output_tokens,
       ))
       case msg {
         message.Assistant(content: _, tool_calls: calls, thinking: _) ->
@@ -61,6 +77,7 @@ pub fn step(st: state.AgentState) -> StepResult {
       events.emit(events.InferenceException(
         model:,
         message_count: msg_count,
+        error_type: error_to_string(e),
       ))
       StepError(e)
     }

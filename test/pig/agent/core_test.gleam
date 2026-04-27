@@ -12,6 +12,7 @@ import pig/agent/core
 import pig/agent/state
 import pig/ai/error
 import pig/ai/message
+import pig/ai/provider
 import support/harness
 
 pub fn main() -> Nil {
@@ -71,7 +72,7 @@ pub fn step_system_prompt_reaches_provider_test() {
   let resp = message.Assistant("ok", [], None)
   let verifying_provider = fn(msgs, _tools) {
     case list.first(msgs) {
-      Ok(message.System("sys prompt",)) -> Ok(resp)
+      Ok(message.System("sys prompt",)) -> Ok(provider.from_message(resp))
       _ -> Error(error.ApiError("missing system prompt"))
     }
   }

@@ -2,6 +2,7 @@ import gleeunit
 import pig/obs/events
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -52,7 +53,15 @@ pub fn event_name_matches_inference_start_test() {
 
 pub fn event_name_matches_inference_stop_test() {
   events.event_name(
-    events.InferenceStop(model: "x", message_count: 0, duration_ms: 0),
+    events.InferenceStop(
+      model: "x",
+      message_count: 0,
+      duration_ms: 0,
+      response_id: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+    ),
   )
     == events.inference_stop_name()
 }
@@ -106,9 +115,17 @@ pub fn different_variants_not_equal_test() {
 pub fn emit_all_variants_test() {
   events.emit(events.InferenceStart(model: "gpt-4", message_count: 5))
   events.emit(
-    events.InferenceStop(model: "gpt-4", message_count: 5, duration_ms: 150),
+    events.InferenceStop(
+      model: "gpt-4",
+      message_count: 5,
+      duration_ms: 150,
+      response_id: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+    ),
   )
-  events.emit(events.InferenceException(model: "gpt-4", message_count: 3))
+  events.emit(events.InferenceException(model: "gpt-4", message_count: 3, error_type: "test_error"))
   events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123"))
   events.emit(
     events.ToolStop(
@@ -166,9 +183,22 @@ pub fn decode_preserves_inference_stop_test() {
     ]),
     metadata: dict.from_list([#("model", "gpt-4")]),
   )
-  let assert events.InferenceStop(model:, message_count:, duration_ms:) =
-    events.decode(raw)
-  model == "gpt-4" && message_count == 2 && duration_ms == 150
+  let assert events.InferenceStop(
+    model:,
+    message_count:,
+    duration_ms:,
+    response_id:,
+    finish_reason:,
+    input_tokens:,
+    output_tokens:,
+  ) = events.decode(raw)
+  model == "gpt-4"
+    && message_count == 2
+    && duration_ms == 150
+    && response_id == None
+    && finish_reason == None
+    && input_tokens == None
+    && output_tokens == None
 }
 
 pub fn decode_preserves_tool_start_test() {
@@ -218,8 +248,122 @@ pub fn decode_preserves_inference_exception_test() {
       #("system_time", 999),
       #("message_count", 7),
     ]),
-    metadata: dict.from_list([#("model", "llama")]),
+    metadata: dict.from_list([#("model", "llama"), #("error_type", "timeout")]),
   )
-  let assert events.InferenceException(model:, message_count:) = events.decode(raw)
-  model == "llama" && message_count == 7
+  let assert events.InferenceException(model:, message_count:, error_type:) =
+    events.decode(raw)
+  model == "llama" && message_count == 7 && error_type == "timeout"
+}
+
+// ── Task 9.0e: Enriched InferenceStop Tests ─────────────────────────────
+
+/// Emit InferenceStop with all new fields populated — should not crash.
+pub fn emit_enriched_inference_stop_does_not_crash_test() {
+  events.emit(
+    events.InferenceStop(
+      model: "gpt-4",
+      message_count: 5,
+      duration_ms: 150,
+      response_id: Some("resp-123"),
+      finish_reason: Some("stop"),
+      input_tokens: Some(100),
+      output_tokens: Some(50),
+    ),
+  )
+  True
+}
+
+/// Decode InferenceStop with all new fields in the raw data.
+pub fn decode_preserves_enriched_inference_stop_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_stop_name(),
+    measurements: dict.from_list([
+      #("system_time", 456),
+      #("message_count", 2),
+      #("duration", 150),
+      #("input_tokens", 100),
+      #("output_tokens", 50),
+    ]),
+    metadata:
+      dict.from_list([
+        #("model", "gpt-4"),
+        #("response_id", "resp-456"),
+        #("finish_reason", "stop"),
+      ]),
+  )
+  let assert events.InferenceStop(
+    model:,
+    message_count:,
+    duration_ms:,
+    response_id:,
+    finish_reason:,
+    input_tokens:,
+    output_tokens:,
+  ) = events.decode(raw)
+  model == "gpt-4"
+    && message_count == 2
+    && duration_ms == 150
+    && response_id == Some("resp-456")
+    && finish_reason == Some("stop")
+    && input_tokens == Some(100)
+    && output_tokens == Some(50)
+}
+
+/// Decode InferenceStop without optional fields — should decode to None.
+pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_stop_name(),
+    measurements: dict.from_list([
+      #("system_time", 456),
+      #("message_count", 2),
+      #("duration", 150),
+    ]),
+    metadata: dict.from_list([#("model", "gpt-4")]),
+  )
+  let assert events.InferenceStop(
+    model:,
+    message_count:,
+    duration_ms:,
+    response_id:,
+    finish_reason:,
+    input_tokens:,
+    output_tokens:,
+  ) = events.decode(raw)
+  model == "gpt-4"
+    && message_count == 2
+    && duration_ms == 150
+    && response_id == None
+    && finish_reason == None
+    && input_tokens == None
+    && output_tokens == None
+}
+
+// ── Task 9.0e: InferenceException with error_type Tests ─────────────────
+
+/// Emit InferenceException with error_type — should not crash.
+pub fn emit_inference_exception_with_error_type_test() {
+  events.emit(
+    events.InferenceException(
+      model: "gpt-4",
+      message_count: 3,
+      error_type: "timeout",
+    ),
+  )
+  True
+}
+
+/// Decode InferenceException preserves error_type from metadata.
+pub fn decode_preserves_inference_exception_error_type_test() {
+  let raw = events.RawCapturedEvent(
+    name: events.inference_exception_name(),
+    measurements: dict.from_list([
+      #("system_time", 999),
+      #("message_count", 7),
+    ]),
+    metadata:
+      dict.from_list([#("model", "llama"), #("error_type", "api_error")]),
+  )
+  let assert events.InferenceException(model:, message_count:, error_type:) =
+    events.decode(raw)
+  model == "llama" && message_count == 7 && error_type == "api_error"
 }

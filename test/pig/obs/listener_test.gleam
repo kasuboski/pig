@@ -1,6 +1,7 @@
 import gleeunit
 import pig/obs/events
 import pig/obs/listener
+import gleam/option.{None}
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -37,6 +38,10 @@ pub fn captures_multiple_events_in_order_test() {
       model: "gpt-4",
       message_count: 4,
       duration_ms: 200,
+      response_id: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
     ),
   )
   let captured = listener.get_events(handle)
@@ -54,6 +59,10 @@ pub fn captures_multiple_events_in_order_test() {
         model: "gpt-4",
         message_count: 4,
         duration_ms: 200,
+        response_id: None,
+        finish_reason: None,
+        input_tokens: None,
+        output_tokens: None,
       ),
     ]
 }
@@ -78,7 +87,15 @@ pub fn detach_stops_capture_test() {
   listener.detach(handle)
   // Emit after detach — should NOT be captured
   events.emit(
-    events.InferenceStop(model: "gpt-4", message_count: 2, duration_ms: 50),
+    events.InferenceStop(
+      model: "gpt-4",
+      message_count: 2,
+      duration_ms: 50,
+      response_id: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+    ),
   )
   count_before == 1
 }

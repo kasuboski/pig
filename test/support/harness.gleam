@@ -16,6 +16,7 @@ import pig/agent/core
 import pig/agent/state
 import pig/ai/error
 import pig/ai/message
+import pig/ai/provider
 import pig/ai/tool_definition
 import pig/obs/events
 import pig/obs/listener
@@ -136,15 +137,15 @@ pub fn fixed_provider(
   List(message.Message),
   List(tool_definition.ToolDefinition),
 ) ->
-  Result(message.Message, error.AiError) {
-  fn(_msgs, _tools) { Ok(response) }
+  Result(provider.InferenceResult, error.AiError) {
+  fn(_msgs, _tools) { Ok(provider.from_message(response)) }
 }
 
 /// Provider that always fails.
 pub fn failing_provider(
   _msgs: List(message.Message),
   _tools: List(tool_definition.ToolDefinition),
-) -> Result(message.Message, error.AiError) {
+) -> Result(provider.InferenceResult, error.AiError) {
   Error(error.ApiError("provider failed"))
 }
 
@@ -159,11 +160,11 @@ pub fn sequenced_provider_for_actor(
   List(message.Message),
   List(tool_definition.ToolDefinition),
 ) ->
-  Result(message.Message, error.AiError) {
+  Result(provider.InferenceResult, error.AiError) {
   fn(msgs, _tools) {
     let idx = count_assistant_messages(msgs)
     case nth(responses, idx) {
-      Ok(msg) -> Ok(msg)
+      Ok(msg) -> Ok(provider.from_message(msg))
       Error(_) ->
         Error(error.ApiError(
           "mock: no response at index " <> int.to_string(idx),

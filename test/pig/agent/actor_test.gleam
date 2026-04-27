@@ -13,6 +13,7 @@ import pig/agent/actor
 import pig/agent/state
 import pig/ai/error
 import pig/ai/message
+import pig/ai/provider
 import pig/tool
 import support/harness
 
@@ -82,7 +83,7 @@ pub fn runs_are_state_isolated_test() {
       })
       |> list.length()
     case user_count == 1 {
-      True -> Ok(ok_response)
+      True -> Ok(provider.from_message(ok_response))
       False ->
         Error(error.ApiError(
           "history bleed! saw " <> int.to_string(user_count)

@@ -5,10 +5,11 @@
 //// "If we entirely replace the internals, no tests should break."
 
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleeunit
 import pig/agent/state
 import pig/ai/message
+import pig/ai/provider
 import support/harness
 
 pub fn main() -> Nil {
@@ -94,4 +95,54 @@ pub fn exceeded_max_iterations_boundary_test() {
       state.exceeded_max_iterations(s2)
     }
   }
+}
+
+// ── Agent Identity Contract ───────────────────────────────────────
+
+/// Agent identity fields (agent_id, agent_name, agent_description,
+/// agent_version, provider_name) all default to None.
+pub fn agent_identity_defaults_to_none_test() {
+  let msg = message.Assistant("hi", [], None)
+  let config = state.config(fn(_msgs, _tools) {
+    Ok(provider.from_message(msg))
+  })
+  let assert None = config.agent_id
+  let assert None = config.agent_name
+  let assert None = config.agent_description
+  let assert None = config.agent_version
+  let assert None = config.provider_name
+  True
+}
+
+/// with_agent_name sets the agent_name field.
+pub fn with_agent_name_sets_name_test() {
+  let msg = message.Assistant("hi", [], None)
+  let config = state.config(fn(_msgs, _tools) {
+    Ok(provider.from_message(msg))
+  })
+  let config = state.with_agent_name(config, "Math Tutor")
+  let assert Some("Math Tutor") = config.agent_name
+  True
+}
+
+/// with_agent_id sets the agent_id field.
+pub fn with_agent_id_sets_id_test() {
+  let msg = message.Assistant("hi", [], None)
+  let config = state.config(fn(_msgs, _tools) {
+    Ok(provider.from_message(msg))
+  })
+  let config = state.with_agent_id(config, "agent-123")
+  let assert Some("agent-123") = config.agent_id
+  True
+}
+
+/// with_provider_name sets the provider_name field.
+pub fn with_provider_name_sets_provider_name_test() {
+  let msg = message.Assistant("hi", [], None)
+  let config = state.config(fn(_msgs, _tools) {
+    Ok(provider.from_message(msg))
+  })
+  let config = state.with_provider_name(config, "openai")
+  let assert Some("openai") = config.provider_name
+  True
 }

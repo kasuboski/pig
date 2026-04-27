@@ -7,6 +7,7 @@ import jscheam/schema
 import pig/ai/error.{type AiError}
 import pig/ai/http
 import pig/ai/message.{type Message}
+import pig/ai/provider.{InferenceMetadata, type InferenceResult, InferenceResult, default_metadata}
 import pig/ai/tool_definition.{type ToolDefinition}
 
 /// Configuration for an OpenAI-compatible provider.
@@ -21,7 +22,7 @@ pub type OpenAIProvider {
 
 /// The function signature for a provider call.
 pub type ProviderFn =
-  fn(List(Message), List(ToolDefinition)) -> Result(Message, AiError)
+  fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)
 
 /// The default OpenAI base URL.
 pub const default_base_url = "https://api.openai.com/v1"
@@ -43,7 +44,7 @@ pub fn provider_with_base_url(
     call: fn(
       messages: List(Message),
       tools: List(ToolDefinition),
-    ) -> Result(Message, AiError) {
+    ) -> Result(InferenceResult, AiError) {
       do_inference(config, messages, tools)
     },
   )
@@ -73,9 +74,9 @@ pub fn build_request_body(
   json.object(with_tools) |> json.to_string()
 }
 
-/// Parse an OpenAI Chat Completions JSON response into a Message.
+/// Parse an OpenAI Chat Completions JSON response into an InferenceResult.
 /// Pure function — no IO.
-pub fn parse_response(raw: String) -> Result(Message, AiError) {
+pub fn parse_response(raw: String) -> Result(InferenceResult, AiError) {
   json.parse(from: raw, using: response_decoder())
   |> result.map_error(fn(err) {
     case err {
@@ -95,7 +96,7 @@ fn do_inference(
   config: OpenAIConfig,
   messages: List(Message),
   tools: List(ToolDefinition),
-) -> Result(Message, AiError) {
+) -> Result(InferenceResult, AiError) {
   let body = build_request_body(messages, tools, config.model)
   let url = config.base_url <> "/chat/completions"
   let headers = [
@@ -183,21 +184,51 @@ fn tool_to_json(td: ToolDefinition) -> json.Json {
 
 // ─── Internal: JSON parsing ────────────────────────────────────
 
-fn response_decoder() -> decode.Decoder(Message) {
+fn response_decoder() -> decode.Decoder(InferenceResult) {
+  // Decode metadata fields
+  use response_id <- decode.field("id", decode.optional(decode.string))
+  use response_model <- decode.field("model", decode.optional(decode.string))
+  
+  // Decode choices to get message and finish_reason
   use choices <- decode.field("choices", decode.list(choice_decoder()))
   case list.first(choices) {
-    Ok(msg) -> decode.success(msg)
+    Ok(#(msg, finish_reason)) -> {
+      use usage <- decode.field("usage", decode.optional(usage_decoder()))
+      let metadata = InferenceMetadata(
+        response_id: response_id,
+        response_model: response_model,
+        finish_reason: finish_reason,
+        input_tokens: option.map(usage, fn(u) { u.prompt_tokens }),
+        output_tokens: option.map(usage, fn(u) { u.completion_tokens }),
+      )
+      decode.success(InferenceResult(message: msg, metadata:))
+    }
     Error(Nil) ->
       decode.failure(
-        message.Assistant("", [], None),
+        InferenceResult(
+          message: message.Assistant("", [], None),
+          metadata: default_metadata(),
+        ),
         "non-empty choices",
       )
   }
 }
 
-fn choice_decoder() -> decode.Decoder(Message) {
+type Usage {
+  Usage(prompt_tokens: Int, completion_tokens: Int, total_tokens: Int)
+}
+
+fn usage_decoder() -> decode.Decoder(Usage) {
+  use prompt_tokens <- decode.field("prompt_tokens", decode.int)
+  use completion_tokens <- decode.field("completion_tokens", decode.int)
+  use total_tokens <- decode.field("total_tokens", decode.int)
+  decode.success(Usage(prompt_tokens:, completion_tokens:, total_tokens:))
+}
+
+fn choice_decoder() -> decode.Decoder(#(Message, Option(String))) {
   use msg <- decode.field("message", message_decoder())
-  decode.success(msg)
+  use finish_reason <- decode.field("finish_reason", decode.optional(decode.string))
+  decode.success(#(msg, finish_reason))
 }
 
 fn message_decoder() -> decode.Decoder(Message) {

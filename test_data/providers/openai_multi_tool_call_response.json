@@ -1,6 +1,7 @@
 {
   "id": "chatcmpl-ghi789",
   "object": "chat.completion",
+  "model": "gpt-4o",
   "choices": [
     {
       "index": 0,

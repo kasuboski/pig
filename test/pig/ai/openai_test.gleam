@@ -77,53 +77,106 @@ fn decode_tool_names(body: String) -> Result(List(String), Nil) {
 
 pub fn parse_text_response_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(msg) = openai.parse_response(raw)
+  let assert Ok(result) = openai.parse_response(raw)
   let assert message.Assistant(
     content: "The answer is 4.",
     tool_calls: [],
     thinking: None,
-  ) = msg
+  ) = result.message
+  // Verify metadata
+  let assert Some("chatcmpl-abc123") = result.metadata.response_id
+  let assert Some("gpt-4o") = result.metadata.response_model
+  let assert Some("stop") = result.metadata.finish_reason
+  let assert Some(25) = result.metadata.input_tokens
+  let assert Some(6) = result.metadata.output_tokens
 }
 
 pub fn parse_tool_call_response_test() {
   let raw = read_golden("./test_data/providers/openai_tool_call_response.json")
-  let assert Ok(msg) = openai.parse_response(raw)
+  let assert Ok(result) = openai.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [tc],
     thinking: None,
-  ) = msg
-  tc.id == "call_abc123"
+  ) = result.message
+  let assert True =
+    tc.id == "call_abc123"
     && tc.name == "calculator"
     && tc.arguments_json == "{\"expression\": \"2+2\"}"
+  // Verify metadata
+  let assert Some("chatcmpl-def456") = result.metadata.response_id
+  let assert Some("gpt-4o") = result.metadata.response_model
+  let assert Some("tool_calls") = result.metadata.finish_reason
+  let assert Some(30) = result.metadata.input_tokens
+  let assert Some(15) = result.metadata.output_tokens
 }
 
 pub fn parse_multi_tool_call_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_multi_tool_call_response.json")
-  let assert Ok(msg) = openai.parse_response(raw)
+  let assert Ok(result) = openai.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [tc1, tc2, tc3],
     thinking: None,
-  ) = msg
-  tc1.id == "call_001"
+  ) = result.message
+  let assert True =
+    tc1.id == "call_001"
     && tc1.name == "get_weather"
     && tc2.id == "call_002"
     && tc2.name == "get_weather"
     && tc3.id == "call_003"
     && tc3.name == "calculator"
+  // Verify metadata
+  let assert Some("chatcmpl-ghi789") = result.metadata.response_id
+  let assert Some("gpt-4o") = result.metadata.response_model
+  let assert Some("tool_calls") = result.metadata.finish_reason
+  let assert Some(40) = result.metadata.input_tokens
+  let assert Some(30) = result.metadata.output_tokens
 }
 
 pub fn parse_null_content_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_null_content_response.json")
-  let assert Ok(msg) = openai.parse_response(raw)
+  let assert Ok(result) = openai.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [],
     thinking: None,
-  ) = msg
+  ) = result.message
+  // Verify metadata
+  let assert Some("chatcmpl-jkl012") = result.metadata.response_id
+  let assert Some("gpt-4o") = result.metadata.response_model
+  let assert Some("stop") = result.metadata.finish_reason
+  let assert Some(10) = result.metadata.input_tokens
+  let assert Some(0) = result.metadata.output_tokens
+}
+
+// === parse_response metadata tests ===
+
+pub fn parse_response_captures_response_id_test() {
+  let raw = read_golden("./test_data/providers/openai_text_response.json")
+  let assert Ok(result) = openai.parse_response(raw)
+  let assert Some("chatcmpl-abc123") = result.metadata.response_id
+}
+
+pub fn parse_response_captures_response_model_test() {
+  let raw = read_golden("./test_data/providers/openai_text_response.json")
+  let assert Ok(result) = openai.parse_response(raw)
+  let assert Some("gpt-4o") = result.metadata.response_model
+}
+
+pub fn parse_response_captures_finish_reason_test() {
+  let raw = read_golden("./test_data/providers/openai_text_response.json")
+  let assert Ok(result) = openai.parse_response(raw)
+  let assert Some("stop") = result.metadata.finish_reason
+}
+
+pub fn parse_response_captures_token_usage_test() {
+  let raw = read_golden("./test_data/providers/openai_text_response.json")
+  let assert Ok(result) = openai.parse_response(raw)
+  let assert Some(25) = result.metadata.input_tokens
+  let assert Some(6) = result.metadata.output_tokens
 }
 
 // === parse_response error cases (inline) ===

@@ -1,8 +1,81 @@
+import gleam/option.{type Option, None}
 import pig/ai/message.{type Message}
 import pig/ai/tool_definition.{type ToolDefinition}
 import pig/ai/error.{type AiError}
 
+/// Metadata returned by the provider alongside the message.
+pub type InferenceMetadata {
+  InferenceMetadata(
+    response_id: Option(String),
+    response_model: Option(String),
+    finish_reason: Option(String),
+    input_tokens: Option(Int),
+    output_tokens: Option(Int),
+  )
+}
+
+/// Result of a provider call — the message plus metadata from the API response.
+pub type InferenceResult {
+  InferenceResult(message: Message, metadata: InferenceMetadata)
+}
+
 /// A provider is a function that takes messages and tool definitions,
-/// calls an LLM, and returns either an assistant message or an error.
+/// calls an LLM, and returns either an inference result or an error.
 pub type Provider =
-  fn(List(Message), List(ToolDefinition)) -> Result(Message, AiError)
+  fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)
+
+/// Create an InferenceMetadata with all fields set to None.
+pub fn default_metadata() -> InferenceMetadata {
+  InferenceMetadata(
+    response_id: None,
+    response_model: None,
+    finish_reason: None,
+    input_tokens: None,
+    output_tokens: None,
+  )
+}
+
+/// Wrap a bare Message into an InferenceResult with default (all-None) metadata.
+pub fn from_message(msg: Message) -> InferenceResult {
+  InferenceResult(message: msg, metadata: default_metadata())
+}
+
+/// Set response_id on metadata.
+pub fn with_response_id(
+  meta: InferenceMetadata,
+  id: String,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, response_id: option.Some(id))
+}
+
+/// Set response_model on metadata.
+pub fn with_response_model(
+  meta: InferenceMetadata,
+  model: String,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, response_model: option.Some(model))
+}
+
+/// Set finish_reason on metadata.
+pub fn with_finish_reason(
+  meta: InferenceMetadata,
+  reason: String,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, finish_reason: option.Some(reason))
+}
+
+/// Set input_tokens on metadata.
+pub fn with_input_tokens(
+  meta: InferenceMetadata,
+  tokens: Int,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, input_tokens: option.Some(tokens))
+}
+
+/// Set output_tokens on metadata.
+pub fn with_output_tokens(
+  meta: InferenceMetadata,
+  tokens: Int,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, output_tokens: option.Some(tokens))
+}

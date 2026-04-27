@@ -21,6 +21,12 @@ pub type AgentConfig {
     system_prompt: Option(String),
     max_iterations: Int,
     model: String,
+    // Agent identity fields
+    agent_id: Option(String),
+    agent_name: Option(String),
+    agent_description: Option(String),
+    agent_version: Option(String),
+    provider_name: Option(String),
   )
 }
 
@@ -40,6 +46,11 @@ pub type AgentState {
 /// - `system_prompt`: None
 /// - `max_iterations`: 50
 /// - `model`: "unknown"
+/// - `agent_id`: None
+/// - `agent_name`: None
+/// - `agent_description`: None
+/// - `agent_version`: None
+/// - `provider_name`: None
 pub fn config(provider: Provider) -> AgentConfig {
   AgentConfig(
     provider:,
@@ -47,6 +58,11 @@ pub fn config(provider: Provider) -> AgentConfig {
     system_prompt: option.None,
     max_iterations: 50,
     model: "unknown",
+    agent_id: option.None,
+    agent_name: option.None,
+    agent_description: option.None,
+    agent_version: option.None,
+    provider_name: option.None,
   )
 }
 
@@ -74,6 +90,34 @@ pub fn with_max_iterations(
 /// Set the model name for telemetry and logging.
 pub fn with_model(config: AgentConfig, model: String) -> AgentConfig {
   AgentConfig(..config, model:)
+}
+
+/// Set the agent ID.
+pub fn with_agent_id(config: AgentConfig, id: String) -> AgentConfig {
+  AgentConfig(..config, agent_id: option.Some(id))
+}
+
+/// Set the agent name.
+pub fn with_agent_name(config: AgentConfig, name: String) -> AgentConfig {
+  AgentConfig(..config, agent_name: option.Some(name))
+}
+
+/// Set the agent description.
+pub fn with_agent_description(
+  config: AgentConfig,
+  desc: String,
+) -> AgentConfig {
+  AgentConfig(..config, agent_description: option.Some(desc))
+}
+
+/// Set the agent version.
+pub fn with_agent_version(config: AgentConfig, version: String) -> AgentConfig {
+  AgentConfig(..config, agent_version: option.Some(version))
+}
+
+/// Set the provider name.
+pub fn with_provider_name(config: AgentConfig, name: String) -> AgentConfig {
+  AgentConfig(..config, provider_name: option.Some(name))
 }
 
 /// Create initial agent state from config.

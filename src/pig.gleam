@@ -15,7 +15,7 @@ import pig/agent/actor as agent_actor
 import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
-import pig/ai/provider.{type Provider}
+import pig/ai/provider.{type Provider, from_message}
 import pig/skill
 import pig/skill/librarian
 import pig/tool
@@ -90,6 +90,54 @@ pub fn with_model(config: PigConfig, model: String) -> PigConfig {
   )
 }
 
+/// Set the agent name.
+pub fn with_agent_name(config: PigConfig, name: String) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_agent_name(config.agent_config, name),
+  )
+}
+
+/// Set the agent ID.
+pub fn with_agent_id(config: PigConfig, id: String) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_agent_id(config.agent_config, id),
+  )
+}
+
+/// Set the agent description.
+pub fn with_agent_description(
+  config: PigConfig,
+  description: String,
+) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_agent_description(config.agent_config, description),
+  )
+}
+
+/// Set the agent version.
+pub fn with_agent_version(config: PigConfig, version: String) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_agent_version(config.agent_config, version),
+  )
+}
+
+/// Set the provider name.
+pub fn with_provider_name(config: PigConfig, name: String) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_provider_name(config.agent_config, name),
+  )
+}
+
+/// Get the underlying AgentConfig. Useful for testing and inspection.
+pub fn agent_config(config: PigConfig) -> state.AgentConfig {
+  config.agent_config
+}
+
 /// Start an agent actor from the config.
 ///
 /// Builds the final `AgentConfig`: registers the librarian tool if
@@ -129,7 +177,7 @@ pub fn stop(agent: Agent) -> Nil {
 /// Useful for testing code that uses pig without hitting a real API.
 pub fn test_harness() -> PigConfig {
   let response = message.Assistant("mock response", [], option.None)
-  new(fn(_msgs, _tools) { Ok(response) })
+  new(fn(_msgs, _tools) { Ok(from_message(response)) })
 }
 
 /// Build the final AgentConfig from a PigConfig.

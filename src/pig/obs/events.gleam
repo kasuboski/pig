@@ -7,7 +7,10 @@
 //// and converts string-keyed dicts to atom-keyed maps.
 
 import gleam/dict.{type Dict}
+import gleam/option.{type Option, None, Some}
 import gleam/string
+import pig/ai/error.{type AiError}
+import pig/ai/message.{type Message, type ToolCall}
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
 
@@ -32,8 +35,16 @@ pub fn system_time() -> Int {
 
 pub type Event {
   InferenceStart(model: String, message_count: Int)
-  InferenceStop(model: String, message_count: Int, duration_ms: Int)
-  InferenceException(model: String, message_count: Int)
+  InferenceStop(
+    model: String,
+    message_count: Int,
+    duration_ms: Int,
+    response_id: Option(String),
+    finish_reason: Option(String),
+    input_tokens: Option(Int),
+    output_tokens: Option(Int),
+  )
+  InferenceException(model: String, message_count: Int, error_type: String)
   ToolStart(tool_name: String, tool_call_id: String)
   ToolStop(tool_name: String, tool_call_id: String, duration_ms: Int)
   ToolException(tool_name: String, tool_call_id: String)
@@ -110,23 +121,44 @@ pub fn emit(event: Event) -> Nil {
       let metadata = dict.from_list([#("model", model)])
       ffi_execute(inference_start_name(), measurements, metadata)
     }
-    InferenceStop(model:, message_count:, duration_ms:) -> {
-      let measurements =
+    InferenceStop(
+      model:,
+      message_count:,
+      duration_ms:,
+      response_id:,
+      finish_reason:,
+      input_tokens:,
+      output_tokens:,
+    ) -> {
+      // Build measurements with optional token counts
+      let base_measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
           #("duration", duration_ms),
           #("message_count", message_count),
         ])
-      let metadata = dict.from_list([#("model", model)])
+      let measurements =
+        base_measurements
+        |> maybe_insert_int("input_tokens", input_tokens)
+        |> maybe_insert_int("output_tokens", output_tokens)
+
+      // Build metadata with optional string fields
+      let base_metadata = dict.from_list([#("model", model)])
+      let metadata =
+        base_metadata
+        |> maybe_insert_string("response_id", response_id)
+        |> maybe_insert_string("finish_reason", finish_reason)
+
       ffi_execute(inference_stop_name(), measurements, metadata)
     }
-    InferenceException(model:, message_count:) -> {
+    InferenceException(model:, message_count:, error_type:) -> {
       let measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
           #("message_count", message_count),
         ])
-      let metadata = dict.from_list([#("model", model)])
+      let metadata =
+        dict.from_list([#("model", model), #("error_type", error_type)])
       ffi_execute(inference_exception_name(), measurements, metadata)
     }
     ToolStart(tool_name:, tool_call_id:) -> {
@@ -198,6 +230,48 @@ pub fn emit_exception(
   ffi_execute(name, measurements, meta)
 }
 
+// ── Optional Field Helpers ───────────────────────────────────────────────
+// Helper functions to conditionally insert optional values into dicts.
+
+fn maybe_insert_int(
+  dict: Dict(String, Int),
+  key: String,
+  value: Option(Int),
+) -> Dict(String, Int) {
+  case value {
+    Some(v) -> dict.insert(dict, key, v)
+    None -> dict
+  }
+}
+
+fn maybe_insert_string(
+  dict: Dict(String, String),
+  key: String,
+  value: Option(String),
+) -> Dict(String, String) {
+  case value {
+    Some(v) -> dict.insert(dict, key, v)
+    None -> dict
+  }
+}
+
+fn maybe_get_string(
+  dict: Dict(String, String),
+  key: String,
+) -> Option(String) {
+  case dict.get(dict, key) {
+    Ok(v) -> Some(v)
+    Error(Nil) -> None
+  }
+}
+
+fn maybe_get_int(dict: Dict(String, Int), key: String) -> Option(Int) {
+  case dict.get(dict, key) {
+    Ok(v) -> Some(v)
+    Error(Nil) -> None
+  }
+}
+
 // ── Decoding ─────────────────────────────────────────────────────────
 // Reconstruct typed Events from raw captured data (used by the test listener).
 
@@ -223,12 +297,25 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       let assert Ok(model) = dict.get(raw.metadata, "model")
       let assert Ok(count) = dict.get(raw.measurements, "message_count")
       let assert Ok(dur) = dict.get(raw.measurements, "duration")
-      InferenceStop(model:, message_count: count, duration_ms: dur)
+      let response_id = maybe_get_string(raw.metadata, "response_id")
+      let finish_reason = maybe_get_string(raw.metadata, "finish_reason")
+      let input_tokens = maybe_get_int(raw.measurements, "input_tokens")
+      let output_tokens = maybe_get_int(raw.measurements, "output_tokens")
+      InferenceStop(
+        model:,
+        message_count: count,
+        duration_ms: dur,
+        response_id:,
+        finish_reason:,
+        input_tokens:,
+        output_tokens:,
+      )
     }
     ["pig", "inference", "exception"] -> {
       let assert Ok(model) = dict.get(raw.metadata, "model")
       let assert Ok(count) = dict.get(raw.measurements, "message_count")
-      InferenceException(model:, message_count: count)
+      let assert Ok(error_type) = dict.get(raw.metadata, "error_type")
+      InferenceException(model:, message_count: count, error_type:)
     }
     ["pig", "tool", "start"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
@@ -251,4 +338,48 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       panic as msg
     }
   }
+}
+
+// ── SessionEvent (rich events for pig consumers) ────────────────────
+// Carries full message content for session replay and OTel.
+
+/// Reasons why a session ended.
+pub type SessionEndReason {
+  NormalEnd
+  ErrorEnd(AiError)
+  MaxIterationsExceeded(Int)
+  Interrupted
+}
+
+/// Rich session events for pig consumers (session writer, terminal printer, OTel).
+/// Carries full message content, tool args/results, token counts, and timing.
+pub type SessionEvent {
+  SessionStarted(
+    agent_id: Option(String),
+    agent_name: Option(String),
+    model: String,
+    provider_name: Option(String),
+    system_prompt: Option(String),
+  )
+  InferenceCompleted(
+    message: Message,
+    response_id: Option(String),
+    response_model: Option(String),
+    finish_reason: Option(String),
+    input_tokens: Option(Int),
+    output_tokens: Option(Int),
+    duration_ms: Int,
+    input_messages: List(Message),
+  )
+  ToolExecuted(
+    tool_call: ToolCall,
+    result: String,
+    duration_ms: Int,
+  )
+  InferenceFailed(
+    error: AiError,
+    duration_ms: Int,
+    input_messages: List(Message),
+  )
+  SessionEnded(reason: SessionEndReason)
 }
