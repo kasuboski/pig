@@ -5,6 +5,7 @@
 //// not implementation.
 
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import gleeunit
 import gleeunit/should
 import pig
@@ -208,4 +209,50 @@ pub fn with_agent_description_builder_test() {
 /// with_agent_version sets the agent_version in the underlying AgentConfig.
 pub fn with_agent_version_builder_test() {
   check_identity_builder(pig.with_agent_version, fn(c) { c.agent_version }, "1.0.0")
+}
+
+// ── System prompt auto-composition ────────────────────────────────
+
+/// Centralized check for system prompt composition.
+/// Builds the agent config from a PigConfig and asserts on the resulting
+/// system prompt. If the API boundary changes, update HERE.
+fn check_system_prompt(
+  config: pig.PigConfig,
+  assert_fn: fn(String) -> Nil,
+) -> Nil {
+  let cfg = pig.build_agent_config(config)
+  let assert Some(prompt) = cfg.system_prompt
+  assert_fn(prompt)
+}
+
+/// Tools with no system prompt: build_agent_config creates one from tools.
+pub fn tools_auto_compose_system_prompt_test() {
+  check_system_prompt(
+    pig.test_harness() |> pig.with_tool(harness.echo_tool()),
+    fn(prompt) {
+      should.be_true(string.contains(prompt, "Available tools:"))
+      should.be_true(string.contains(prompt, "echo: Echoes back"))
+    },
+  )
+}
+
+/// Tools append to existing system prompt.
+pub fn tools_append_to_existing_system_prompt_test() {
+  check_system_prompt(
+    pig.test_harness()
+      |> pig.with_system_prompt("You are helpful.")
+      |> pig.with_tool(harness.echo_tool()),
+    fn(prompt) {
+      should.be_true(string.contains(prompt, "You are helpful."))
+      should.be_true(string.contains(prompt, "Available tools:"))
+      should.be_true(string.contains(prompt, "echo: Echoes back"))
+    },
+  )
+}
+
+/// No tools and no system prompt: system_prompt stays None.
+pub fn no_tools_no_prompt_means_no_system_prompt_test() {
+  let config = pig.test_harness()
+  let cfg = pig.build_agent_config(config)
+  should.equal(cfg.system_prompt, None)
 }

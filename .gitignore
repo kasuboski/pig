@@ -5,6 +5,7 @@ erl_crash.dump
 
 **/node_modules/
 *.sqlite*
+*.db*
 
 knowledge/repos/
 
