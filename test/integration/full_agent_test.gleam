@@ -14,6 +14,8 @@ import gleam/list
 import gleam/string
 import gleeunit
 import gleeunit/should
+import integration/config
+import integration/gate
 import jscheam/schema
 import pig
 import pig/ai/message
@@ -23,8 +25,6 @@ import pig/ai/tool_definition
 import pig/obs/events
 import pig/obs/listener
 import pig/tool
-import integration/config
-import integration/gate
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -46,8 +46,7 @@ fn add_tool() -> tool.Tool {
   tool.Tool(
     definition: tool_definition.ToolDefinition(
       name: "add",
-      description:
-        "Add two numbers. Pass {\"a\": <number>, \"b\": <number>}.",
+      description: "Add two numbers. Pass {\"a\": <number>, \"b\": <number>}.",
       parameters: schema.object([
         schema.prop("a", schema.integer())
           |> schema.description("First number"),
@@ -55,17 +54,14 @@ fn add_tool() -> tool.Tool {
           |> schema.description("Second number"),
       ]),
     ),
-    handler: fn(args: dynamic.Dynamic) ->
-      Result(json.Json, tool.ToolError) {
+    handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       let a_result =
         decode.run(args, decode.field("a", decode.int, decode.success))
       let b_result =
         decode.run(args, decode.field("b", decode.int, decode.success))
       case a_result, b_result {
-        Ok(a), Ok(b) ->
-          Ok(json.object([#("result", json.int(a + b))]))
-        _, _ ->
-          Error(tool.ToolError(message: "invalid arguments"))
+        Ok(a), Ok(b) -> Ok(json.object([#("result", json.int(a + b))]))
+        _, _ -> Error(tool.ToolError(message: "invalid arguments"))
       }
     },
   )
@@ -94,11 +90,7 @@ pub fn full_agent_with_tool_test() {
         message.Assistant(content:, tool_calls: [], thinking: _) -> {
           string.contains(content, "10") |> should.equal(True)
         }
-        message.Assistant(
-          content: _,
-          tool_calls: calls,
-          thinking: _,
-        ) -> {
+        message.Assistant(content: _, tool_calls: calls, thinking: _) -> {
           let _ = calls
           panic as "agent returned unfinished tool calls"
         }
@@ -121,8 +113,7 @@ pub fn agent_with_system_prompt_test() {
           "You are a counter. When asked to count, you reply with exactly the numbers separated by commas and nothing else.",
         )
       let assert Ok(agent) = pig.start(cfg)
-      let result =
-        pig.run_with_timeout(agent, "Count from 1 to 5", 60_000)
+      let result = pig.run_with_timeout(agent, "Count from 1 to 5", 60_000)
       pig.stop(agent)
       let assert Ok(message.Assistant(content:, ..)) = result
       string.contains(content, "1") |> should.equal(True)
@@ -212,12 +203,7 @@ pub fn agent_tool_loop_with_telemetry_test() {
           "You MUST use the add tool for any math question. Never answer directly.",
         )
       let assert Ok(agent) = pig.start(cfg)
-      let result =
-        pig.run_with_timeout(
-          agent,
-          "What is 7 plus 3?",
-          60_000,
-        )
+      let result = pig.run_with_timeout(agent, "What is 7 plus 3?", 60_000)
       pig.stop(agent)
 
       let evts = listener.get_events(handle)
@@ -229,34 +215,24 @@ pub fn agent_tool_loop_with_telemetry_test() {
       // Verify telemetry events were emitted
       let event_names =
         evts
-        |> list.map(fn(e) {
-          events.name_to_string(events.event_name(e))
-        })
+        |> list.map(fn(e) { events.name_to_string(events.event_name(e)) })
 
       // Must have at least one inference start/stop pair
-      should.equal(
-        list.contains(event_names, "pig.inference.start"),
-        True,
-      )
-      should.equal(
-        list.contains(event_names, "pig.inference.stop"),
-        True,
-      )
+      should.be_true(list.contains(event_names, "pig.inference.start"))
+      should.be_true(list.contains(event_names, "pig.inference.stop"))
 
       // If the model called the tool, we should see tool events
-      let has_tool_start =
-        list.contains(event_names, "pig.tool.start")
-      let has_tool_stop =
-        list.contains(event_names, "pig.tool.stop")
+      let has_tool_start = list.contains(event_names, "pig.tool.start")
+      let has_tool_stop = list.contains(event_names, "pig.tool.stop")
 
       // Either the model called the tool (has_tool_start && has_tool_stop)
       // or answered directly — both are valid.
       // But if tool events exist, they must come in pairs.
       case has_tool_start {
         True -> {
-          should.equal(has_tool_stop, True)
+          should.be_true(has_tool_stop)
           // Answer should contain 10
-          string.contains(content, "10") |> should.equal(True)
+          string.contains(content, "10") |> should.be_true()
         }
         False -> {
           // Model answered directly — still valid, just check it answered
