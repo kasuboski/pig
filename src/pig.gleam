@@ -60,6 +60,11 @@ pub fn with_tool(config: PigConfig, t: tool.Tool) -> PigConfig {
   )
 }
 
+/// Register multiple tools in the config.
+pub fn with_tools(config: PigConfig, tools: List(tool.Tool)) -> PigConfig {
+  list.fold(tools, config, with_tool)
+}
+
 /// Add a skill and register the librarian tool.
 ///
 /// Skills are accumulated. On `start`, a single librarian tool is
