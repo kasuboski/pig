@@ -52,3 +52,18 @@ pub fn list_definitions(registry: ToolRegistry) -> List(ToolDefinition) {
   |> dict.values()
   |> list.map(fn(t: Tool) -> ToolDefinition { t.definition })
 }
+
+/// A tool's name and description for composing into a system prompt.
+pub type ToolPrompt {
+  ToolPrompt(name: String, description: String)
+}
+
+/// Extract name and description from each tool in the registry.
+/// Used to auto-compose an "Available tools" section in the system prompt.
+pub fn list_tool_prompts(registry: ToolRegistry) -> List(ToolPrompt) {
+  registry.entries
+  |> dict.values()
+  |> list.map(fn(t: Tool) -> ToolPrompt {
+    ToolPrompt(name: t.definition.name, description: t.definition.description)
+  })
+}

@@ -188,8 +188,8 @@ pub fn test_harness() -> PigConfig {
 /// Build the final AgentConfig from a PigConfig.
 ///
 /// Registers librarian tool if skills are present and composes
-/// system prompt from skill descriptions. Used by `start` and
-/// `pig/supervisor.start_supervised`.
+/// system prompt from skill descriptions and tool info. Used by
+/// `start` and `pig/supervisor.start_supervised`.
 pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
   // Register librarian tool if skills present
   let config_with_librarian = case config.skills {
@@ -202,18 +202,49 @@ pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
       )
     }
   }
-  // Compose system prompt from skill descriptions
-  case config.skills {
-    [] -> config_with_librarian
+
+  // Collect fragments to append to the system prompt
+  let fragments = []
+
+  // Compose skill descriptions
+  let fragments = case config.skills {
+    [] -> fragments
     skills -> {
       let skill_fragment =
         skills
         |> list.map(skill.skill_to_system_fragment)
         |> string.join("\n")
+      [skill_fragment, ..fragments]
+    }
+  }
+
+  // Compose tool info from registry (includes librarian if added)
+  let tool_prompts =
+    tool.list_tool_prompts(config_with_librarian.tools)
+  let fragments = case tool_prompts {
+    [] -> fragments
+    prompts -> {
+      let tool_lines =
+        prompts
+        |> list.map(fn(tp: tool.ToolPrompt) -> String {
+          "- " <> tp.name <> ": " <> tp.description
+        })
+        |> string.join("\n")
+      let tool_fragment = "Available tools:\n" <> tool_lines
+      [tool_fragment, ..fragments]
+    }
+  }
+
+  // Combine all fragments with the existing system prompt
+  case fragments {
+    [] -> config_with_librarian
+    _ -> {
       let combined =
         case config_with_librarian.system_prompt {
-          option.Some(existing) -> existing <> "\n\n" <> skill_fragment
-          option.None -> skill_fragment
+          option.Some(existing) ->
+            existing <> "\n\n" <> string.join(list.reverse(fragments), "\n\n")
+          option.None ->
+            string.join(list.reverse(fragments), "\n\n")
         }
       state.with_system_prompt(config_with_librarian, combined)
     }
