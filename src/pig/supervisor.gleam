@@ -4,7 +4,7 @@
 //// managed by a OneForOne supervisor. Advanced users can still
 //// use `pig.start(config)` for standalone agents.
 ////
-//// Per PLAN §8.2.
+
 
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/otp/actor as otp_actor

@@ -1,6 +1,6 @@
 //// Supervised agent tests.
 ////
-//// Per PLAN Task 8.2: verify start_supervised, run, stop, and
+//// Verify start_supervised, run, stop, and
 //// process lifecycle through the OTP static_supervisor.
 //// Per TESTING_STRATEGY §Axiom 1: test features, not implementation.
 

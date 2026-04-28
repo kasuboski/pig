@@ -1,8 +1,8 @@
 //// Agent actor contract tests.
 ////
 //// OTP actor wrapping the pure core. Per TESTING_STRATEGY §Axiom 1:
-//// "Tests must verify features, not internal code." Per PLAN Task 6.1:
-//// thin OTP wrapper — logic lives in core.gleam.
+//// "Tests must verify features, not internal code."
+//// Thin OTP wrapper — logic lives in core.gleam.
 
 import gleam/erlang/process
 import gleam/int

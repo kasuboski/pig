@@ -4,7 +4,7 @@
 //// Then: `run(agent, prompt)` or `run_with_timeout(agent, prompt, ms)`
 ////
 //// Thin public surface. All logic in agent/core, agent/actor.
-//// Per PLAN §8.1.
+
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
