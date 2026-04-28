@@ -2,6 +2,55 @@
 
 A Gleam library for building and orchestrating agents on the BEAM. `pig` is inspired by the architecture of [pi](https://pi.dev).
 
+### Usage
+
+```gleam
+import pig
+import pig/ai/message
+import pig/ai/openai
+
+pub fn main() {
+  // Configure an agent with a provider, system prompt, and tools
+  let cfg =
+    pig.new(openai.provider("your-api-key", "gpt-4o"))
+    |> pig.with_system_prompt("You are a helpful assistant.")
+    |> pig.with_tool(my_tool)
+
+  // Start the agent, run a prompt, stop the agent
+  let assert Ok(agent) = pig.start(cfg)
+  let assert Ok(message.Assistant(content:, ..)) =
+    pig.run(agent, "What is 7 plus 3?")
+  pig.stop(agent)
+}
+```
+
+The agent loop handles tool calls automatically — define a tool and it will be executed when the model requests it:
+
+```gleam
+import gleam/dynamic/decode
+import gleam/json
+import pig/ai/tool_definition
+import pig/tool
+
+let my_tool = tool.Tool(
+  definition: tool_definition.ToolDefinition(
+    name: "add",
+    description: "Add two numbers.",
+    parameters: schema.object([
+      schema.prop("a", schema.integer()),
+      schema.prop("b", schema.integer()),
+    ]),
+  ),
+  handler: fn(args) {
+    let assert Ok(a) =
+      decode.run(args, decode.field("a", decode.int, decode.success))
+    let assert Ok(b) =
+      decode.run(args, decode.field("b", decode.int, decode.success))
+    Ok(json.int(a + b))
+  },
+)
+```
+
 ### Features
 
 *   **Provider Normalization:** Provides a unified interface for interacting with different model APIs, such as Anthropic and OpenAI. It translates messages and tool calls into a consistent format.
