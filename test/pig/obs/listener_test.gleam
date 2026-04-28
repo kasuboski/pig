@@ -24,13 +24,14 @@ pub fn captures_multiple_events_in_order_test() {
   let handle = listener.attach()
   events.emit(events.InferenceStart(model: "gpt-4", message_count: 3))
   events.emit(
-    events.ToolStart(tool_name: "read_file", tool_call_id: "call_1"),
+    events.ToolStart(tool_name: "read_file", tool_call_id: "call_1", arguments_json: "{}"),
   )
   events.emit(
     events.ToolStop(
       tool_name: "read_file",
       tool_call_id: "call_1",
       duration_ms: 10,
+      result: "{\"files\":[]}",
     ),
   )
   events.emit(
@@ -49,11 +50,12 @@ pub fn captures_multiple_events_in_order_test() {
   captured
     == [
       events.InferenceStart(model: "gpt-4", message_count: 3),
-      events.ToolStart(tool_name: "read_file", tool_call_id: "call_1"),
+      events.ToolStart(tool_name: "read_file", tool_call_id: "call_1", arguments_json: "{}"),
       events.ToolStop(
         tool_name: "read_file",
         tool_call_id: "call_1",
         duration_ms: 10,
+        result: "{\"files\":[]}",
       ),
       events.InferenceStop(
         model: "gpt-4",
@@ -109,17 +111,17 @@ pub fn attach_to_specific_events_test() {
       events.tool_stop_name(),
     ])
   events.emit(events.InferenceStart(model: "gpt-4", message_count: 1))
-  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1"))
+  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1", arguments_json: "{}"))
   events.emit(
-    events.ToolStop(tool_name: "bash", tool_call_id: "c1", duration_ms: 5),
+    events.ToolStop(tool_name: "bash", tool_call_id: "c1", duration_ms: 5, result: "\"ok\""),
   )
   let captured = listener.get_events(handle)
   listener.detach(handle)
   // Only tool events captured, inference event ignored
   captured
     == [
-      events.ToolStart(tool_name: "bash", tool_call_id: "c1"),
-      events.ToolStop(tool_name: "bash", tool_call_id: "c1", duration_ms: 5),
+      events.ToolStart(tool_name: "bash", tool_call_id: "c1", arguments_json: "{}"),
+      events.ToolStop(tool_name: "bash", tool_call_id: "c1", duration_ms: 5, result: "\"ok\""),
     ]
 }
 
@@ -129,13 +131,13 @@ pub fn multiple_listeners_independent_test() {
   let h1 = listener.attach_to([events.inference_start_name()])
   let h2 = listener.attach_to([events.tool_start_name()])
   events.emit(events.InferenceStart(model: "gpt-4", message_count: 1))
-  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1"))
+  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1", arguments_json: "{}"))
   let e1 = listener.get_events(h1)
   let e2 = listener.get_events(h2)
   listener.detach(h1)
   listener.detach(h2)
   e1 == [events.InferenceStart(model: "gpt-4", message_count: 1)]
-    && e2 == [events.ToolStart(tool_name: "bash", tool_call_id: "c1")]
+    && e2 == [events.ToolStart(tool_name: "bash", tool_call_id: "c1", arguments_json: "{}")]
 }
 
 // ── Raw Event Names Still Available ──────────────────────────────────

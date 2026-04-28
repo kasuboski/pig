@@ -67,14 +67,20 @@ fn spawn_and_collect(
           events.emit(events.ToolStart(
             tool_name: call.name,
             tool_call_id: call.id,
+            arguments_json: call.arguments_json,
           ))
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
+          let result_str = case result {
+            Ok(json_result) -> json.to_string(json_result)
+            Error(tool_err) -> "Tool error: " <> tool_err.message
+          }
           events.emit(events.ToolStop(
             tool_name: call.name,
             tool_call_id: call.id,
             duration_ms: duration,
+            result: result_str,
           ))
           process.send(reply_subject, result)
         })

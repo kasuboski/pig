@@ -67,7 +67,7 @@ pub fn event_name_matches_inference_stop_test() {
 }
 
 pub fn event_name_matches_tool_start_test() {
-  events.event_name(events.ToolStart(tool_name: "x", tool_call_id: "y"))
+  events.event_name(events.ToolStart(tool_name: "x", tool_call_id: "y", arguments_json: "{}"))
     == events.tool_start_name()
 }
 
@@ -105,7 +105,7 @@ pub fn different_fields_not_equal_test() {
 
 pub fn different_variants_not_equal_test() {
   let e1 = events.InferenceStart(model: "a", message_count: 1)
-  let e2 = events.ToolStart(tool_name: "a", tool_call_id: "1")
+  let e2 = events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
   e1 != e2
 }
 
@@ -126,15 +126,16 @@ pub fn emit_all_variants_test() {
     ),
   )
   events.emit(events.InferenceException(model: "gpt-4", message_count: 3, error_type: "test_error"))
-  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123"))
+  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123", arguments_json: "{}"))
   events.emit(
     events.ToolStop(
       tool_name: "read_file",
       tool_call_id: "call_123",
       duration_ms: 42,
+      result: "{\"files\":[]}",
     ),
   )
-  events.emit(events.ToolException(tool_name: "bash", tool_call_id: "call_456"))
+  events.emit(events.ToolException(tool_name: "bash", tool_call_id: "call_456", arguments_json: "{}"))
   True
 }
 
@@ -208,10 +209,11 @@ pub fn decode_preserves_tool_start_test() {
     metadata: dict.from_list([
       #("tool_name", "bash"),
       #("tool_call_id", "c1"),
+      #("arguments_json", "{\"foo\":\"bar\"}"),
     ]),
   )
-  let assert events.ToolStart(tool_name:, tool_call_id:) = events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1"
+  let assert events.ToolStart(tool_name:, tool_call_id:, arguments_json:) = events.decode(raw)
+  tool_name == "bash" && tool_call_id == "c1" && arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_stop_test() {
@@ -221,11 +223,12 @@ pub fn decode_preserves_tool_stop_test() {
     metadata: dict.from_list([
       #("tool_name", "bash"),
       #("tool_call_id", "c1"),
+      #("result", "{\"foo\":\"bar\"}"),
     ]),
   )
-  let assert events.ToolStop(tool_name:, tool_call_id:, duration_ms:) =
+  let assert events.ToolStop(tool_name:, tool_call_id:, duration_ms:, result:) =
     events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1" && duration_ms == 42
+  tool_name == "bash" && tool_call_id == "c1" && duration_ms == 42 && result == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_exception_test() {
@@ -235,10 +238,11 @@ pub fn decode_preserves_tool_exception_test() {
     metadata: dict.from_list([
       #("tool_name", "bash"),
       #("tool_call_id", "c1"),
+      #("arguments_json", "{\"foo\":\"bar\"}"),
     ]),
   )
-  let assert events.ToolException(tool_name:, tool_call_id:) = events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1"
+  let assert events.ToolException(tool_name:, tool_call_id:, arguments_json:) = events.decode(raw)
+  tool_name == "bash" && tool_call_id == "c1" && arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_inference_exception_test() {

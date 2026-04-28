@@ -45,9 +45,9 @@ pub type Event {
     output_tokens: Option(Int),
   )
   InferenceException(model: String, message_count: Int, error_type: String)
-  ToolStart(tool_name: String, tool_call_id: String)
-  ToolStop(tool_name: String, tool_call_id: String, duration_ms: Int)
-  ToolException(tool_name: String, tool_call_id: String)
+  ToolStart(tool_name: String, tool_call_id: String, arguments_json: String)
+  ToolStop(tool_name: String, tool_call_id: String, duration_ms: Int, result: String)
+  ToolException(tool_name: String, tool_call_id: String, arguments_json: String)
 }
 
 // ── Event Name Constants ─────────────────────────────────────────────
@@ -161,16 +161,17 @@ pub fn emit(event: Event) -> Nil {
         dict.from_list([#("model", model), #("error_type", error_type)])
       ffi_execute(inference_exception_name(), measurements, metadata)
     }
-    ToolStart(tool_name:, tool_call_id:) -> {
+    ToolStart(tool_name:, tool_call_id:, arguments_json:) -> {
       let measurements = dict.from_list([#("system_time", ffi_system_time())])
       let metadata =
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
+          #("arguments_json", arguments_json),
         ])
       ffi_execute(tool_start_name(), measurements, metadata)
     }
-    ToolStop(tool_name:, tool_call_id:, duration_ms:) -> {
+    ToolStop(tool_name:, tool_call_id:, duration_ms:, result:) -> {
       let measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
@@ -180,15 +181,17 @@ pub fn emit(event: Event) -> Nil {
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
+          #("result", result),
         ])
       ffi_execute(tool_stop_name(), measurements, metadata)
     }
-    ToolException(tool_name:, tool_call_id:) -> {
+    ToolException(tool_name:, tool_call_id:, arguments_json:) -> {
       let measurements = dict.from_list([#("system_time", ffi_system_time())])
       let metadata =
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
+          #("arguments_json", arguments_json),
         ])
       ffi_execute(tool_exception_name(), measurements, metadata)
     }
@@ -320,18 +323,21 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
     ["pig", "tool", "start"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
-      ToolStart(tool_name: name, tool_call_id: id)
+      let assert Ok(args) = dict.get(raw.metadata, "arguments_json")
+      ToolStart(tool_name: name, tool_call_id: id, arguments_json: args)
     }
     ["pig", "tool", "stop"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
       let assert Ok(dur) = dict.get(raw.measurements, "duration")
-      ToolStop(tool_name: name, tool_call_id: id, duration_ms: dur)
+      let assert Ok(res) = dict.get(raw.metadata, "result")
+      ToolStop(tool_name: name, tool_call_id: id, duration_ms: dur, result: res)
     }
     ["pig", "tool", "exception"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
-      ToolException(tool_name: name, tool_call_id: id)
+      let assert Ok(args) = dict.get(raw.metadata, "arguments_json")
+      ToolException(tool_name: name, tool_call_id: id, arguments_json: args)
     }
     _ -> {
       let msg = "unknown telemetry event: " <> name_to_string(raw.name)

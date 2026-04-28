@@ -104,7 +104,7 @@ pub fn tool_start_carries_name_and_id_test() {
     [harness.echo_tool()],
     "test-model",
   )
-  let assert Ok(events.ToolStart(tool_name:, tool_call_id:)) =
+  let assert Ok(events.ToolStart(tool_name:, tool_call_id:, arguments_json:)) =
     evts
     |> list.find(fn(e) {
       case e {
@@ -112,7 +112,7 @@ pub fn tool_start_carries_name_and_id_test() {
         _ -> False
       }
     })
-  tool_name == "echo" && tool_call_id == "call-42"
+  tool_name == "echo" && tool_call_id == "call-42" && arguments_json == "{\"msg\":\"hi\"}"
 }
 
 /// Multiple tool calls emit the right number of start/stop pairs.

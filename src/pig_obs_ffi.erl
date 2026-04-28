@@ -21,9 +21,9 @@ execute(NameStrs, Measurements, Metadata) ->
     telemetry:execute(NameAtoms, atomize_keys(Measurements), atomize_keys(Metadata)),
     nil.
 
-%% Erlang monotonic time for measurements.
+%% Erlang monotonic time for measurements, in milliseconds.
 system_time() ->
-    erlang:system_time().
+    erlang:system_time(millisecond).
 
 %% Attach a listener that captures full event data into an ETS table.
 %% Stores {Timestamp, NameStrs, Measurements, Metadata} per event.
