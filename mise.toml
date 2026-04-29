@@ -3,6 +3,13 @@ gleam = "latest"
 erlang = "latest"
 rebar = "latest"
 
+[tasks.build]
+description = "Build the library and all examples"
+run = [
+  "gleam build --warnings-as-errors",
+  "for dir in examples/*/; do echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors); done",
+]
+
 [tasks.test-integration]
 description = "Run integration tests against an OpenAI-compatible provider"
 run = "gleam test"
