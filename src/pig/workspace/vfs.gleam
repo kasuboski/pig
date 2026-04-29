@@ -514,7 +514,7 @@ pub fn grep(
     paths, _ -> paths
   }
 
-  Ok(extract_matching_lines(conn, pattern, targets, max_results, [], 0))
+  extract_matching_lines(conn, pattern, targets, max_results, [], 0)
 }
 
 /// Read each matching file and extract the lines that contain the pattern.
@@ -525,17 +525,19 @@ fn extract_matching_lines(
   max_results: Int,
   acc: List(GrepMatch),
   acc_len: Int,
-) -> List(GrepMatch) {
+) -> Result(List(GrepMatch), Error) {
   case paths {
-    [] -> acc
+    [] -> Ok(acc)
     [path, ..rest] -> {
       case max_results > 0 && acc_len >= max_results {
-        True -> acc
+        True -> Ok(acc)
         False -> {
-          let new_matches = case read_file(conn, path) {
-            Ok(content) -> find_matching_lines(content, path, pattern)
-            Error(_) -> []
-          }
+          use new_matches <- result.try(case read_file(conn, path) {
+            Ok(content) -> Ok(find_matching_lines(content, path, pattern))
+            Error(NotFound(_)) -> Ok([])
+            Error(InvalidPath(_)) -> Ok([])
+            Error(e) -> Error(e)
+          })
           let limited = case max_results > 0 {
             True -> list.take(new_matches, max_results - acc_len)
             False -> new_matches
