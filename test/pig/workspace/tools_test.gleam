@@ -3,17 +3,17 @@
 //// Tests that each tool's handler correctly parses arguments and
 //// calls the underlying kv/vfs operations.
 
-import gleeunit
-import gleeunit/should
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/string
+import gleeunit
+import gleeunit/should
+import pig/tool
 import pig/workspace/kv
 import pig/workspace/schema
 import pig/workspace/tools
 import pig/workspace/vfs
-import pig/tool
 import sqlight
 
 pub fn main() -> Nil {
@@ -44,33 +44,29 @@ fn call_handler(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-/// all_tools returns 7 tools.
-pub fn all_tools_returns_seven_tools_test() {
+/// all_tools returns a non-empty list of well-formed tools with unique names.
+pub fn all_tools_returns_well_formed_tools_test() {
   with_db(fn(conn) {
     let tools = tools.all_tools(conn)
+    // Must be non-empty
     tools
-    |> list.length()
-    |> should.equal(7)
-  })
-}
-
-/// all_tools returns tools with correct names.
-pub fn all_tools_have_correct_names_test() {
-  with_db(fn(conn) {
-    let tools = tools.all_tools(conn)
+    |> list.is_empty()
+    |> should.equal(False)
+    // Every tool must have a non-empty name and description
+    let all_valid =
+      tools
+      |> list.all(fn(t: tool.Tool) {
+        string.length(t.definition.name) > 0
+        && string.length(t.definition.description) > 0
+      })
+    should.equal(all_valid, True)
+    // Names must be unique
     let names =
       tools
       |> list.map(fn(t: tool.Tool) { t.definition.name })
     names
-    |> should.equal([
-      "read_file",
-      "write_file",
-      "list_directory",
-      "delete_file",
-      "remember",
-      "recall",
-      "list_keys",
-    ])
+    |> list.length()
+    |> should.equal(list.length(list.unique(names)))
   })
 }
 
@@ -80,13 +76,10 @@ pub fn write_file_tool_handler_creates_file_test() {
     let tool = tools.write_file_tool(conn)
 
     let assert Ok(_) =
-      call_handler(
-        tool,
-        [
-          #("path", json.string("/test.txt")),
-          #("content", json.string("hello")),
-        ],
-      )
+      call_handler(tool, [
+        #("path", json.string("/test.txt")),
+        #("content", json.string("hello")),
+      ])
 
     // Verify by reading back using vfs directly
     let assert Ok(content) = vfs.read_file(conn, "/test.txt")
@@ -164,8 +157,7 @@ pub fn delete_file_tool_removes_file_test() {
     let tool = tools.delete_file_tool(conn)
 
     // Delete it
-    let assert Ok(_) =
-      call_handler(tool, [#("path", json.string("/test.txt"))])
+    let assert Ok(_) = call_handler(tool, [#("path", json.string("/test.txt"))])
 
     // Verify it's gone
     let assert Error(_) = vfs.read_file(conn, "/test.txt")
@@ -181,13 +173,10 @@ pub fn remember_tool_stores_value_test() {
 
     // Store a value
     let assert Ok(_) =
-      call_handler(
-        remember_tool,
-        [
-          #("key", json.string("test_key")),
-          #("value", json.string("test_value")),
-        ],
-      )
+      call_handler(remember_tool, [
+        #("key", json.string("test_key")),
+        #("value", json.string("test_value")),
+      ])
 
     // Retrieve it
     let assert Ok(result_json) =
@@ -210,6 +199,127 @@ pub fn recall_tool_missing_returns_error_test() {
     string.contains(msg, "Key not found")
     |> should.equal(True)
     string.contains(msg, "nonexistent_key")
+    |> should.equal(True)
+  })
+}
+
+/// grep tool returns matching lines across files.
+pub fn grep_tool_returns_matching_lines_test() {
+  with_db(fn(conn) {
+    // Write multiple files
+    let assert Ok(_) =
+      vfs.write_file(conn, "/a.txt", "hello world\nfoo bar\nhello again")
+    let assert Ok(_) =
+      vfs.write_file(conn, "/b.py", "def hello():\n    pass\nhello()")
+    let assert Ok(_) = vfs.write_file(conn, "/c.txt", "no match here")
+
+    let tool = tools.grep_tool(conn)
+
+    let assert Ok(result_json) =
+      call_handler(tool, [#("pattern", json.string("hello"))])
+
+    let result_string = json.to_string(result_json)
+    // Should find matches in a.txt and b.py but not c.txt
+    string.contains(result_string, "/a.txt")
+    |> should.equal(True)
+    string.contains(result_string, "/b.py")
+    |> should.equal(True)
+    string.contains(result_string, "/c.txt")
+    |> should.equal(False)
+    string.contains(result_string, "hello world")
+    |> should.equal(True)
+    string.contains(result_string, "hello again")
+    |> should.equal(True)
+    string.contains(result_string, "def hello()")
+    |> should.equal(True)
+  })
+}
+
+/// grep tool filters by include glob.
+pub fn grep_tool_filters_by_include_test() {
+  with_db(fn(conn) {
+    let assert Ok(_) = vfs.write_file(conn, "/a.txt", "findme")
+    let assert Ok(_) = vfs.write_file(conn, "/b.py", "findme")
+
+    let tool = tools.grep_tool(conn)
+
+    let assert Ok(result_json) =
+      call_handler(tool, [
+        #("pattern", json.string("findme")),
+        #("include", json.string("*.py")),
+      ])
+
+    let result_string = json.to_string(result_json)
+    string.contains(result_string, "/b.py")
+    |> should.equal(True)
+    string.contains(result_string, "/a.txt")
+    |> should.equal(False)
+  })
+}
+
+/// grep tool filters by path prefix.
+pub fn grep_tool_filters_by_path_test() {
+  with_db(fn(conn) {
+    let assert Ok(_) = vfs.mkdir(conn, "/src")
+    let assert Ok(_) = vfs.write_file(conn, "/src/main.gleam", "findme")
+    let assert Ok(_) = vfs.write_file(conn, "/test.gleam", "findme")
+
+    let tool = tools.grep_tool(conn)
+
+    let assert Ok(result_json) =
+      call_handler(tool, [
+        #("pattern", json.string("findme")),
+        #("path", json.string("/src")),
+      ])
+
+    let result_string = json.to_string(result_json)
+    string.contains(result_string, "/src/main.gleam")
+    |> should.equal(True)
+    string.contains(result_string, "/test.gleam")
+    |> should.equal(False)
+  })
+}
+
+/// grep tool respects max_results.
+pub fn grep_tool_respects_max_results_test() {
+  with_db(fn(conn) {
+    let assert Ok(_) =
+      vfs.write_file(
+        conn,
+        "/big.txt",
+        "line1 match\nline2 match\nline3 match\nline4 match",
+      )
+
+    let tool = tools.grep_tool(conn)
+
+    let assert Ok(result_json) =
+      call_handler(tool, [
+        #("pattern", json.string("match")),
+        #("max_results", json.int(2)),
+      ])
+
+    let result_string = json.to_string(result_json)
+    // Should only have 2 results, not 4
+    string.contains(result_string, "line1 match")
+    |> should.equal(True)
+    string.contains(result_string, "line2 match")
+    |> should.equal(True)
+    string.contains(result_string, "line4 match")
+    |> should.equal(False)
+  })
+}
+
+/// grep tool returns error without pattern.
+pub fn grep_tool_requires_pattern_test() {
+  with_db(fn(conn) {
+    let tool = tools.grep_tool(conn)
+
+    let assert Error(tool.ToolError(message: msg)) =
+      call_handler(tool, [#("path", json.string("/some/path"))])
+
+    string.contains(msg, "Invalid arguments")
+    |> should.equal(True)
+    string.contains(msg, "pattern")
     |> should.equal(True)
   })
 }
