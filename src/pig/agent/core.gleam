@@ -52,8 +52,10 @@ fn get_dispatcher(st: state.AgentState) -> option.Option(process.Subject(dispatc
 
 /// Emit InferenceStarted event.
 fn emit_inference_start(st: state.AgentState, model: String, count: Int) -> Nil {
-  let assert option.Some(disp) = get_dispatcher(st)
-  emit.to_dispatcher(disp, events.InferenceStarted(model:, message_count: count))
+  case get_dispatcher(st) {
+    option.Some(disp) -> emit.to_dispatcher(disp, events.InferenceStarted(model:, message_count: count))
+    option.None -> Nil
+  }
 }
 
 /// Emit InferenceCompleted event.
@@ -69,20 +71,23 @@ fn emit_inference_complete(
   message: Message,
   input_messages: List(Message),
 ) -> Nil {
-  let assert option.Some(disp) = get_dispatcher(st)
-  emit.to_dispatcher(
-    disp,
-    events.InferenceCompleted(
-      message:,
-      response_id:,
-      response_model: option.Some(model),
-      finish_reason:,
-      input_tokens:,
-      output_tokens:,
-      duration_ms:,
-      input_messages:,
-    ),
-  )
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.InferenceCompleted(
+          message:,
+          response_id:,
+          response_model: option.Some(model),
+          finish_reason:,
+          input_tokens:,
+          output_tokens:,
+          duration_ms:,
+          input_messages:,
+        ),
+      )
+    option.None -> Nil
+  }
 }
 
 /// Emit InferenceFailed event.
@@ -94,29 +99,35 @@ fn emit_inference_failed(
   duration_ms: Int,
   input_messages: List(Message),
 ) -> Nil {
-  let assert option.Some(disp) = get_dispatcher(st)
-  let error =
-    case error_type {
-      "ApiError" -> error.ApiError("")
-      "RateLimited" -> error.RateLimited
-      "Timeout" -> error.Timeout
-      "InvalidResponse" -> error.InvalidResponse("")
-      _ -> error.ApiError(error_type)
+  case get_dispatcher(st) {
+    option.Some(disp) -> {
+      let error =
+        case error_type {
+          "ApiError" -> error.ApiError("")
+          "RateLimited" -> error.RateLimited
+          "Timeout" -> error.Timeout
+          "InvalidResponse" -> error.InvalidResponse("")
+          _ -> error.ApiError(error_type)
+        }
+      emit.to_dispatcher(
+        disp,
+        events.InferenceFailed(
+          error:,
+          duration_ms:,
+          input_messages:,
+        ),
+      )
     }
-  emit.to_dispatcher(
-    disp,
-    events.InferenceFailed(
-      error:,
-      duration_ms:,
-      input_messages:,
-    ),
-  )
+    option.None -> Nil
+  }
 }
 
 /// Emit ToolStarted event.
 fn emit_tool_start(st: state.AgentState, call: ToolCall) -> Nil {
-  let assert option.Some(disp) = get_dispatcher(st)
-  emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
+  case get_dispatcher(st) {
+    option.Some(disp) -> emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
+    option.None -> Nil
+  }
 }
 
 /// Emit ToolExecuted event.
@@ -126,15 +137,18 @@ fn emit_tool_executed(
   duration_ms: Int,
   result_str: String,
 ) -> Nil {
-  let assert option.Some(disp) = get_dispatcher(st)
-  emit.to_dispatcher(
-    disp,
-    events.ToolExecuted(
-      tool_call: call,
-      result: result_str,
-      duration_ms:,
-    ),
-  )
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.ToolExecuted(
+          tool_call: call,
+          result: result_str,
+          duration_ms:,
+        ),
+      )
+    option.None -> Nil
+  }
 }
 
 /// Result of a single step in the agent loop.

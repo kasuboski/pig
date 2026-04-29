@@ -240,7 +240,6 @@ pub fn stop_kills_tree_test() {
   let assert Ok(sup) =
     supervisor.start_supervised(config, consumer_specs)
   let assert Ok(_msg) = supervisor.run(sup, "test")
-  process.sleep(100)
 
   // Stop the supervisor
   let monitor = process.monitor(sup.sup_pid)

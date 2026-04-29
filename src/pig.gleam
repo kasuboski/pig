@@ -181,23 +181,48 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
   let final_config = build_agent_config(config)
 
   // Start dispatcher
-  let assert Ok(dispatcher_subject) = dispatcher.start()
-  let final_config = state.AgentConfig(
-    ..final_config,
-    dispatcher: option.Some(dispatcher_subject),
-  )
+  case dispatcher.start() {
+    Ok(dispatcher_subject) -> {
+      let final_config = state.AgentConfig(
+        ..final_config,
+        dispatcher: option.Some(dispatcher_subject),
+      )
 
-  // Start and register each consumer (unsupervised)
-  list.each(config.consumer_specs, fn(entry) {
-    let assert Ok(consumer_subject) = entry.start_fn()
-    process.send(
-      dispatcher_subject,
-      dispatcher.RegisterConsumer(consumer_subject),
-    )
-  })
+      // Try to start all consumers
+      let consumer_results = list.map(config.consumer_specs, fn(entry) {
+        entry.start_fn()
+      })
 
-  case agent_actor.start(final_config) {
-    Ok(subject) -> Ok(Agent(subject))
+      // Check if any consumer failed to start
+      let failed = list.find(consumer_results, fn(r) {
+        case r {
+          Error(_) -> True
+          Ok(_) -> False
+        }
+      })
+
+      case failed {
+        Ok(Error(e)) -> {
+          // A consumer failed — return error
+          Error(e)
+        }
+        _ -> {
+          // All consumers started OK — register them
+          let consumer_subjects = list.filter_map(consumer_results, fn(r) { r })
+          list.each(consumer_subjects, fn(consumer_subject) {
+            process.send(
+              dispatcher_subject,
+              dispatcher.RegisterConsumer(consumer_subject),
+            )
+          })
+
+          case agent_actor.start(final_config) {
+            Ok(subject) -> Ok(Agent(subject))
+            Error(e) -> Error(e)
+          }
+        }
+      }
+    }
     Error(e) -> Error(e)
   }
 }

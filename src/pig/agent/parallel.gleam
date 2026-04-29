@@ -69,7 +69,10 @@ fn spawn_and_collect(
       let reply_subject = process.new_subject()
       let _pid =
         process.spawn(fn() {
-          emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
+          case disp {
+            option.Some(d) -> emit.to_dispatcher(d, events.ToolStarted(tool_call: call))
+            option.None -> Nil
+          }
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
@@ -77,14 +80,18 @@ fn spawn_and_collect(
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
-          emit.to_dispatcher(
-            disp,
-            events.ToolExecuted(
-              tool_call: call,
-              result: result_str,
-              duration_ms: duration,
-            ),
-          )
+          case disp {
+            option.Some(d) ->
+              emit.to_dispatcher(
+                d,
+                events.ToolExecuted(
+                  tool_call: call,
+                  result: result_str,
+                  duration_ms: duration,
+                ),
+              )
+            option.None -> Nil
+          }
           process.send(reply_subject, result)
         })
       reply_subject
@@ -99,14 +106,14 @@ fn spawn_and_collect(
 
 /// Get the dispatcher subject from the agent state.
 /// If dispatcher is None but dispatcher_name is Some, resolve the name to a subject.
-fn get_dispatcher(
-  st: state.AgentState,
-) -> process.Subject(dispatcher.DispatcherMessage) {
+fn get_dispatcher(st: state.AgentState) -> option.Option(process.Subject(dispatcher.DispatcherMessage)) {
   case st.config.dispatcher {
-    option.Some(disp) -> disp
+    option.Some(disp) -> option.Some(disp)
     option.None -> {
-      let assert option.Some(name) = st.config.dispatcher_name
-      process.named_subject(name)
+      case st.config.dispatcher_name {
+        option.Some(name) -> option.Some(process.named_subject(name))
+        option.None -> option.None
+      }
     }
   }
 }
