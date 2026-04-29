@@ -22,8 +22,15 @@ pub type Error {
   InvalidPath(path: String)
 }
 
-const dir_mode = 16877
-const file_mode = 33188
+/// A single match from a grep search.
+pub type GrepMatch {
+  GrepMatch(path: String, line_number: Int, line: String)
+}
+
+const dir_mode = 16_877
+
+const file_mode = 33_188
+
 const chunk_size = 4096
 
 // ── Path helpers ─────────────────────────────────────────────────
@@ -43,10 +50,7 @@ fn validate_path(path: String) -> Result(Nil, Error) {
 }
 
 /// Resolve full path → inode. Root (/) = ino 1.
-fn resolve_path(
-  conn: sqlight.Connection,
-  path: String,
-) -> Result(Int, Error) {
+fn resolve_path(conn: sqlight.Connection, path: String) -> Result(Int, Error) {
   use Nil <- result.try(validate_path(path))
   case split_path(path) {
     [] -> Ok(1)
@@ -90,8 +94,7 @@ fn resolve_parent(
     [] -> Error(InvalidPath(path: path))
     _ -> {
       let assert Ok(filename) = list.last(components)
-      let parent_components =
-        list.take(components, list.length(components) - 1)
+      let parent_components = list.take(components, list.length(components) - 1)
       case parent_components {
         [] -> Ok(#(1, filename))
         _ -> {
@@ -107,10 +110,7 @@ fn resolve_parent(
 // ── Inode helpers ────────────────────────────────────────────────
 
 /// Insert inode, return its ino via RETURNING.
-fn insert_inode(
-  conn: sqlight.Connection,
-  mode: Int,
-) -> Result(Int, Error) {
+fn insert_inode(conn: sqlight.Connection, mode: Int) -> Result(Int, Error) {
   sqlight.query(
     "INSERT INTO vfs_inode (mode, size, mtime) VALUES (?, 0, unixepoch()) RETURNING ino",
     on: conn,
@@ -122,11 +122,13 @@ fn insert_inode(
     case rows {
       [ino] -> Ok(ino)
       _ ->
-        Error(SqlError(sqlight.SqlightError(
-          code: sqlight.Internal,
-          message: "unexpected RETURNING result",
-          offset: -1,
-        )))
+        Error(
+          SqlError(sqlight.SqlightError(
+            code: sqlight.Internal,
+            message: "unexpected RETURNING result",
+            offset: -1,
+          )),
+        )
     }
   })
 }
@@ -245,19 +247,18 @@ fn insert_one_chunk(
 // ── Public API ───────────────────────────────────────────────────
 
 /// Create a directory at the given path.
-pub fn mkdir(
-  conn: sqlight.Connection,
-  path: String,
-) -> Result(Nil, Error) {
+pub fn mkdir(conn: sqlight.Connection, path: String) -> Result(Nil, Error) {
   use #(parent_ino, dir_name) <- result.try(resolve_parent(conn, path))
 
   case lookup_dentry(conn, parent_ino, dir_name) {
     Ok(_) -> Error(AlreadyExists(path: path))
     Error(NotFound(_)) -> {
-      use Nil <- result.try(transaction(conn, fn() {
-        use new_ino <- result.try(insert_inode(conn, dir_mode))
-        insert_dentry(conn, dir_name, parent_ino, new_ino)
-      }))
+      use Nil <- result.try(
+        transaction(conn, fn() {
+          use new_ino <- result.try(insert_inode(conn, dir_mode))
+          insert_dentry(conn, dir_name, parent_ino, new_ino)
+        }),
+      )
       Ok(Nil)
     }
     Error(e) -> Error(e)
@@ -272,10 +273,10 @@ pub fn write_file(
 ) -> Result(Nil, Error) {
   use #(parent_ino, filename) <- result.try(resolve_parent(conn, path))
 
-  use Nil <- result.try(transaction(conn, fn() {
-    // Get or create the inode
-    use ino <- result.try(
-      case lookup_dentry(conn, parent_ino, filename) {
+  use Nil <- result.try(
+    transaction(conn, fn() {
+      // Get or create the inode
+      use ino <- result.try(case lookup_dentry(conn, parent_ino, filename) {
         // Existing file — clear old chunks
         Ok(existing_ino) -> {
           use Nil <- result.try(
@@ -290,29 +291,34 @@ pub fn write_file(
         // New file
         Error(NotFound(_)) -> {
           use new_ino <- result.try(insert_inode(conn, file_mode))
-          use Nil <- result.try(insert_dentry(conn, filename, parent_ino, new_ino))
+          use Nil <- result.try(insert_dentry(
+            conn,
+            filename,
+            parent_ino,
+            new_ino,
+          ))
           Ok(new_ino)
         }
         Error(e) -> Error(e)
-      },
-    )
+      })
 
-    // Update size and mtime
-    let bytes = <<content:utf8>>
-    let byte_size = bit_array.byte_size(bytes)
-    use Nil <- result.try(
-      sqlight.exec(
-        "UPDATE vfs_inode SET size = "
-          <> int.to_string(byte_size)
-          <> ", mtime = unixepoch() WHERE ino = "
-          <> int.to_string(ino),
-        on: conn,
+      // Update size and mtime
+      let bytes = <<content:utf8>>
+      let byte_size = bit_array.byte_size(bytes)
+      use Nil <- result.try(
+        sqlight.exec(
+          "UPDATE vfs_inode SET size = "
+            <> int.to_string(byte_size)
+            <> ", mtime = unixepoch() WHERE ino = "
+            <> int.to_string(ino),
+          on: conn,
+        )
+        |> result.map_error(SqlError),
       )
-      |> result.map_error(SqlError),
-    )
 
-    insert_chunks(conn, ino, bytes, 0)
-  }))
+      insert_chunks(conn, ino, bytes, 0)
+    }),
+  )
 
   Ok(Nil)
 }
@@ -357,11 +363,13 @@ pub fn read_file(
         case bit_array.to_string(combined) {
           Ok(content) -> Ok(content)
           Error(_) ->
-            Error(SqlError(sqlight.SqlightError(
-              code: sqlight.Internal,
-              message: "failed to convert blob to string",
-              offset: -1,
-            )))
+            Error(
+              SqlError(sqlight.SqlightError(
+                code: sqlight.Internal,
+                message: "failed to convert blob to string",
+                offset: -1,
+              )),
+            )
         }
       }
     }
@@ -419,6 +427,161 @@ pub fn list_directory(
     expecting: decode.at([0], decode.string),
   )
   |> result.map_error(SqlError)
+}
+
+/// Search file contents for a substring pattern.
+///
+/// Returns matching lines with their file path and line number.
+///
+/// The database does the heavy lifting: a single SQL query uses a
+/// recursive CTE to walk the directory tree, reassembles file content
+/// from chunks via `group_concat`, and filters with `LIKE`. Only files
+/// that contain a match are read back into Gleam for line-level
+/// extraction.
+///
+/// Parameters:
+/// - pattern: substring to search for
+/// - path: directory to search under (empty or "/" for root, can be a file)
+/// - include: GLOB pattern to filter file paths (e.g., "*.py")
+/// - max_results: maximum number of matching lines (0 = unlimited)
+pub fn grep(
+  conn: sqlight.Connection,
+  pattern: String,
+  path: String,
+  include: String,
+  max_results: Int,
+) -> Result(List(GrepMatch), Error) {
+  let path_filter = case path {
+    "" | "/" -> "%"
+    p -> {
+      let normalized = case string.starts_with(p, "/") {
+        True -> p
+        False -> "/" <> p
+      }
+      let escaped = escape_like(normalized)
+      case string.ends_with(normalized, "/") {
+        True -> escaped <> "%"
+        False -> escaped <> "/%"
+      }
+    }
+  }
+  let include_filter = case include {
+    "" -> "*"
+    glob -> glob
+  }
+  // Wrap the escaped pattern in % wildcards for LIKE substring search.
+  let like_pattern = "%" <> escape_like(pattern) <> "%"
+
+  // Single query: recursive CTE walks the tree, correlated subquery
+  // reassembles chunked content, LIKE filters by content and path.
+  use matching_paths <- result.try(
+    sqlight.query(
+      "
+      WITH RECURSIVE paths(path, ino) AS (
+        SELECT '/' || name, ino FROM vfs_dentry WHERE parent_ino = 1
+        UNION ALL
+        SELECT p.path || '/' || d.name, d.ino
+        FROM paths p JOIN vfs_dentry d ON d.parent_ino = p.ino
+      )
+      SELECT p.path
+      FROM paths p
+      JOIN vfs_inode i ON p.ino = i.ino
+      WHERE i.mode = ?
+        AND p.path LIKE ? ESCAPE '\\'
+        AND p.path GLOB ?
+        AND (
+          SELECT group_concat(CAST(data AS TEXT), '')
+          FROM (SELECT data FROM vfs_data WHERE ino = p.ino ORDER BY chunk_index)
+        ) LIKE ? ESCAPE '\\'
+      ORDER BY p.path",
+      on: conn,
+      with: [
+        sqlight.int(file_mode),
+        sqlight.text(path_filter),
+        sqlight.text(include_filter),
+        sqlight.text(like_pattern),
+      ],
+      expecting: decode.at([0], decode.string),
+    )
+    |> result.map_error(SqlError),
+  )
+
+  // If a specific path was given but no files matched under it,
+  // the path might be a file itself — try it directly.
+  let targets = case matching_paths, path {
+    [], "" -> []
+    [], _ -> [path]
+    paths, _ -> paths
+  }
+
+  extract_matching_lines(conn, pattern, targets, max_results, [], 0)
+}
+
+/// Read each matching file and extract the lines that contain the pattern.
+fn extract_matching_lines(
+  conn: sqlight.Connection,
+  pattern: String,
+  paths: List(String),
+  max_results: Int,
+  acc: List(GrepMatch),
+  acc_len: Int,
+) -> Result(List(GrepMatch), Error) {
+  case paths {
+    [] -> Ok(acc)
+    [path, ..rest] -> {
+      case max_results > 0 && acc_len >= max_results {
+        True -> Ok(acc)
+        False -> {
+          use new_matches <- result.try(case read_file(conn, path) {
+            Ok(content) -> Ok(find_matching_lines(content, path, pattern))
+            Error(NotFound(_)) -> Ok([])
+            Error(InvalidPath(_)) -> Ok([])
+            Error(e) -> Error(e)
+          })
+          let limited = case max_results > 0 {
+            True -> list.take(new_matches, max_results - acc_len)
+            False -> new_matches
+          }
+          let added = list.length(limited)
+          extract_matching_lines(
+            conn,
+            pattern,
+            rest,
+            max_results,
+            list.append(acc, limited),
+            acc_len + added,
+          )
+        }
+      }
+    }
+  }
+}
+
+fn find_matching_lines(
+  content: String,
+  file_path: String,
+  pattern: String,
+) -> List(GrepMatch) {
+  let pattern_lower = string.lowercase(pattern)
+  content
+  |> string.split("\n")
+  |> list.index_map(fn(line, index) { #(line, index) })
+  |> list.filter(fn(tuple) {
+    let #(line, _) = tuple
+    string.contains(string.lowercase(line), pattern_lower)
+  })
+  |> list.map(fn(tuple) {
+    let #(line, index) = tuple
+    GrepMatch(path: file_path, line_number: index, line:)
+  })
+}
+
+/// Escape SQL LIKE wildcard characters (%, _, \) for literal matching.
+fn escape_like(s: String) -> String {
+  s
+  |> string.replace("\\", "\\\\")
+  |> string.replace("%", "\\%")
+  |> string.replace("_", "\\_")
 }
 
 /// Delete a file or empty directory.

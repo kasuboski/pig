@@ -1,10 +1,10 @@
+import gleam/list
+import gleam/string
 import gleeunit
 import gleeunit/should
-import sqlight
 import pig/workspace/schema
 import pig/workspace/vfs
-import gleam/string
-import gleam/list
+import sqlight
 
 pub fn main() {
   gleeunit.main()
@@ -31,7 +31,8 @@ pub fn mkdir_creates_directory_test() {
 pub fn mkdir_already_exists_test() {
   with_db(fn(conn) {
     let assert Ok(Nil) = vfs.mkdir(conn, "/data")
-    let assert Error(vfs.AlreadyExists(path: "/data")) = vfs.mkdir(conn, "/data")
+    let assert Error(vfs.AlreadyExists(path: "/data")) =
+      vfs.mkdir(conn, "/data")
   })
 }
 
@@ -100,7 +101,8 @@ pub fn delete_nonempty_directory_returns_error_test() {
   with_db(fn(conn) {
     let assert Ok(Nil) = vfs.mkdir(conn, "/data")
     let assert Ok(Nil) = vfs.write_file(conn, "/data/file.txt", "content")
-    let assert Error(vfs.NotEmpty(path: "/data")) = vfs.delete_file(conn, "/data")
+    let assert Error(vfs.NotEmpty(path: "/data")) =
+      vfs.delete_file(conn, "/data")
   })
 }
 
@@ -143,5 +145,87 @@ pub fn mkdir_nested_test() {
     let assert Ok(content) = vfs.read_file(conn, "/a/b/file.txt")
     content
     |> should.equal("nested")
+  })
+}
+
+// ── grep tests ───────────────────────────────────────────────────────
+
+pub fn grep_returns_matching_lines_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) =
+      vfs.write_file(conn, "/hello.txt", "hello world\nfoo bar\nhello again")
+    let assert Ok(matches) = vfs.grep(conn, "hello", "", "", 0)
+    matches
+    |> should.equal([
+      vfs.GrepMatch(path: "/hello.txt", line_number: 0, line: "hello world"),
+      vfs.GrepMatch(path: "/hello.txt", line_number: 2, line: "hello again"),
+    ])
+  })
+}
+
+pub fn grep_across_multiple_files_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) = vfs.write_file(conn, "/a.txt", "findme here")
+    let assert Ok(Nil) = vfs.write_file(conn, "/b.txt", "nope\nfindme too")
+    let assert Ok(matches) = vfs.grep(conn, "findme", "", "", 0)
+    matches
+    |> should.equal([
+      vfs.GrepMatch(path: "/a.txt", line_number: 0, line: "findme here"),
+      vfs.GrepMatch(path: "/b.txt", line_number: 1, line: "findme too"),
+    ])
+  })
+}
+
+pub fn grep_with_include_filter_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) = vfs.write_file(conn, "/a.txt", "findme")
+    let assert Ok(Nil) = vfs.write_file(conn, "/b.py", "findme")
+    let assert Ok(matches) = vfs.grep(conn, "findme", "", "*.py", 0)
+    matches
+    |> should.equal([
+      vfs.GrepMatch(path: "/b.py", line_number: 0, line: "findme"),
+    ])
+  })
+}
+
+pub fn grep_with_path_filter_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) = vfs.mkdir(conn, "/src")
+    let assert Ok(Nil) = vfs.write_file(conn, "/src/app.gleam", "findme")
+    let assert Ok(Nil) = vfs.write_file(conn, "/test.gleam", "findme")
+    let assert Ok(matches) = vfs.grep(conn, "findme", "/src", "", 0)
+    matches
+    |> should.equal([
+      vfs.GrepMatch(path: "/src/app.gleam", line_number: 0, line: "findme"),
+    ])
+  })
+}
+
+pub fn grep_with_max_results_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) =
+      vfs.write_file(conn, "/big.txt", "match1\nmatch2\nmatch3\nmatch4")
+    let assert Ok(matches) = vfs.grep(conn, "match", "", "", 2)
+    matches
+    |> list.length()
+    |> should.equal(2)
+  })
+}
+
+pub fn grep_no_matches_returns_empty_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) = vfs.write_file(conn, "/a.txt", "hello world")
+    let assert Ok(matches) = vfs.grep(conn, "nonexistent", "", "", 0)
+    matches
+    |> should.equal([])
+  })
+}
+
+pub fn grep_empty_dir_returns_empty_test() {
+  with_db(fn(conn) {
+    let assert Ok(Nil) = vfs.mkdir(conn, "/empty")
+    let assert Ok(matches) = vfs.grep(conn, "anything", "/empty", "", 0)
+    matches
+    |> should.equal([])
   })
 }
