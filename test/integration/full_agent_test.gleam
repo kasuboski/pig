@@ -25,6 +25,7 @@ import pig/obs/events
 import temporary
 import pig/obs/listener
 import pig/tool
+import simplifile
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -188,6 +189,13 @@ pub fn agent_with_session_writer_test() {
 
           let assert Ok(message.Assistant(content:, ..)) = result
           should.be_true(string.length(content) > 0)
+
+          // Verify session file was created and populated
+          let assert Ok(file_content) = simplifile.read(session_path)
+          let lines = string.split(file_content, "\n")
+          let non_empty = list.filter(lines, fn(l) { l != "" })
+          should.be_true(non_empty != [])
+
           Nil
         })
       Nil

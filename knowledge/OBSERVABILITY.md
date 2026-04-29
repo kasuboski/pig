@@ -20,7 +20,7 @@ pig uses a **dispatcher-actor pattern** for all observability. The agent core em
 
 The system has four layers: the agent core that produces events, a thin `emit` module that wraps the send, the dispatcher actor that distributes them, and the consumers that process them.
 
-```
+```text
 Agent Core (core.gleam, parallel.gleam)
   │
   ├── emit.to_dispatcher(dispatcher_subject, SessionEvent)
@@ -67,7 +67,7 @@ The variants are:
 | `ExtensionActed` | Extension performed an action | (reserved for extension system) |
 | `SessionEnded` | Session concluded, with reason | (reserved, not yet emitted from core) |
 
-All events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider.
+All inference and tool events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider. Session lifecycle events (SessionStarted, SessionEnded) and extension events (ExtensionActed) do not carry duration or tokens.
 
 ### Why "started" variants?
 
@@ -154,9 +154,9 @@ The dispatcher is intentionally simple. It does not buffer events, does not retr
 
 `start_supervised(config, consumer_specs)` builds a nested OTP static supervision tree:
 
-```
+```text
 AppSupervisor (OneForOne)
-  ├── EventSupervisor (OneForOne)
+  ├── EventSupervisor (OneForAll)
   │     ├── event_dispatcher (named)
   │     ├── session_writer (named)
   │     └── terminal_printer (named)
@@ -196,7 +196,7 @@ A flat `RestForOne` with dispatcher + consumers + agent as siblings means a cons
 
 ### Restart re-registration gap
 
-With `OneForOne` inside the event subtree, a restarted consumer gets a new `Subject`. The dispatcher still holds the old (dead) subject. Sends to dead subjects are no-ops on the BEAM, so the consumer simply doesn't receive events until re-registered. This is acceptable for v1 — observability is best-effort. Future improvements could have the consumer self-register on restart using the stable dispatcher name.
+With `OneForAll` inside the event subtree, if the dispatcher crashes, all consumers restart too. This ensures the dispatcher's fresh consumer list stays consistent. Consumer re-registration happens via the post-start loop in `start_supervised()`. The top-level `OneForOne` keeps the agent subtree completely isolated from the event subtree.
 
 ---
 

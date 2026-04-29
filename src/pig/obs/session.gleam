@@ -306,8 +306,14 @@ fn handle_message(
 /// Used by the supervised consumer actor that receives events from the dispatcher.
 fn handle_consumer_message(state: State, event: SessionEvent) -> actor.Next(State, SessionEvent) {
   let json_str = format_event(event)
-  let _ = simplifile.append(state.path, json_str <> "\n")
-  actor.continue(state)
+  case simplifile.append(state.path, json_str <> "\n") {
+    Ok(_) -> actor.continue(state)
+    Error(_) -> {
+      // Stop on write failure so the supervisor can restart the consumer.
+      // Silently continuing would lose events without any signal.
+      actor.stop()
+    }
+  }
 }
 
 // ── JSON Serialization Helpers ────────────────────────────────────────

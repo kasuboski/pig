@@ -111,8 +111,8 @@ pub fn start_without_consumers_works_test() {
   pig.stop(agent)
 }
 
-// Test 6: start() creates a dispatcher and wires it into agent config
-pub fn start_creates_dispatcher_test() {
+// Test 6: start() with no dispatcher configured works correctly
+pub fn start_without_dispatcher_configured_works_test() {
   let config = pig.test_harness()
 
   // Get the agent config to verify dispatcher is None initially (before start)

@@ -62,6 +62,9 @@ pub fn dispatcher_configured_sends_inference_events_test() {
     })
 
   let assert True = has_started && has_completed
+
+  // Cleanup
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 /// When dispatcher is configured, ToolStarted/Executed events are sent to it.
@@ -112,6 +115,9 @@ pub fn dispatcher_configured_sends_tool_events_test() {
     })
 
   let assert True = has_started && has_executed
+
+  // Cleanup
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 /// When dispatcher is configured, InferenceFailed events are sent on error.
@@ -153,6 +159,9 @@ pub fn dispatcher_configured_sends_inference_failed_test() {
     })
 
   let assert True = has_started && has_failed
+
+  // Cleanup
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 

@@ -32,6 +32,7 @@ pub fn start_actor_succeeds_test() {
     state.config(provider)
     |> state.with_dispatcher(dispatcher_subject)
   let assert Ok(_subject) = actor.start(config)
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 // ── Run ──────────────────────────────────────────────────────────
@@ -46,6 +47,7 @@ pub fn run_returns_provider_response_test() {
     |> state.with_dispatcher(dispatcher_subject)
   let assert Ok(subject) = actor.start(config)
   let result = actor.run(subject, "hi", 5000)
+  process.send(dispatcher_subject, dispatcher.Stop)
   let assert Ok(msg) = result
   msg == response
 }
@@ -70,6 +72,7 @@ pub fn run_tool_call_scenario_test() {
     )
   let assert Ok(subject) = actor.start(config)
   let assert Ok(msg) = actor.run(subject, "use echo", 5000)
+  process.send(dispatcher_subject, dispatcher.Stop)
   msg == final
 }
 
@@ -111,6 +114,7 @@ pub fn runs_are_state_isolated_test() {
   // Second run also succeeds — no history from first run
   let assert Ok(m2) = actor.run(subject, "prompt two", 5000)
   let assert True = m2 == ok_response
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 // ── Stop ─────────────────────────────────────────────────────────
@@ -131,6 +135,7 @@ pub fn stop_terminates_actor_test() {
     |> process.select_specific_monitor(monitor, fn(down) { down })
   let assert Ok(process.ProcessDown(..)) =
     process.selector_receive(selector, 1000)
+  process.send(dispatcher_subject, dispatcher.Stop)
 }
 
 // ── Resilience ───────────────────────────────────────────────────
@@ -151,6 +156,7 @@ pub fn tool_error_returns_error_not_crash_test() {
     )
   let assert Ok(subject) = actor.start(config)
   let assert Ok(msg) = actor.run(subject, "try boom", 5000)
+  process.send(dispatcher_subject, dispatcher.Stop)
   msg == final
 }
 
@@ -164,4 +170,5 @@ pub fn provider_error_returns_error_not_crash_test() {
   let assert Error(_) = actor.run(subject, "hello", 5000)
   // Actor still alive — second call also returns error
   let assert Error(_) = actor.run(subject, "hello again", 5000)
+  process.send(dispatcher_subject, dispatcher.Stop)
 }

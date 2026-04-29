@@ -13,22 +13,12 @@ import gleam/json
 import gleam/list
 import gleam/option
 import pig/agent/state as state
-import pig/ai/error.{type AiError, ApiError, InvalidResponse, RateLimited, Timeout}
+import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
 import pig/tool/execution
-
-/// Convert an AiError to a string for error_type telemetry.
-fn error_to_string(err: AiError) -> String {
-  case err {
-    ApiError(_) -> "ApiError"
-    RateLimited -> "RateLimited"
-    Timeout -> "Timeout"
-    InvalidResponse(_) -> "InvalidResponse"
-  }
-}
 
 // ── Emission Helpers ───────────────────────────────────────────────
 
@@ -65,12 +55,19 @@ fn emit_inference_complete(
   _msg_count: Int,
   duration_ms: Int,
   response_id: option.Option(String),
+  provider_response_model: option.Option(String),
   finish_reason: option.Option(String),
   input_tokens: option.Option(Int),
   output_tokens: option.Option(Int),
   message: Message,
   input_messages: List(Message),
 ) -> Nil {
+  // Prefer the model returned by the provider in the API response;
+  // fall back to the config model when the provider doesn't supply one.
+  let response_model = case provider_response_model {
+    option.Some(_) as m -> m
+    option.None -> option.Some(model)
+  }
   case get_dispatcher(st) {
     option.Some(disp) ->
       emit.to_dispatcher(
@@ -78,7 +75,7 @@ fn emit_inference_complete(
         events.InferenceCompleted(
           message:,
           response_id:,
-          response_model: option.Some(model),
+          response_model:,
           finish_reason:,
           input_tokens:,
           output_tokens:,
@@ -95,20 +92,12 @@ fn emit_inference_failed(
   st: state.AgentState,
   _model: String,
   _msg_count: Int,
-  error_type: String,
+  error: AiError,
   duration_ms: Int,
   input_messages: List(Message),
 ) -> Nil {
   case get_dispatcher(st) {
-    option.Some(disp) -> {
-      let error =
-        case error_type {
-          "ApiError" -> error.ApiError("")
-          "RateLimited" -> error.RateLimited
-          "Timeout" -> error.Timeout
-          "InvalidResponse" -> error.InvalidResponse("")
-          _ -> error.ApiError(error_type)
-        }
+    option.Some(disp) ->
       emit.to_dispatcher(
         disp,
         events.InferenceFailed(
@@ -117,7 +106,6 @@ fn emit_inference_failed(
           input_messages:,
         ),
       )
-    }
     option.None -> Nil
   }
 }
@@ -186,6 +174,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         msg_count,
         duration,
         meta.response_id,
+        meta.response_model,
         meta.finish_reason,
         meta.input_tokens,
         meta.output_tokens,
@@ -207,7 +196,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         st,
         model,
         msg_count,
-        error_to_string(e),
+        e,
         duration,
         msgs,
       )

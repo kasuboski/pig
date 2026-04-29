@@ -52,8 +52,11 @@ pub fn start_supervised(
   )
 
   // Build event subtree: dispatcher + consumers
+  // OneForAll ensures that if the dispatcher restarts, consumers restart too
+  // and re-register via their init logic. With OneForOne, a dispatcher restart
+  // would leave consumers alive but unregistered (silent event loss).
   let event_tree =
-    static_supervisor.new(static_supervisor.OneForOne)
+    static_supervisor.new(static_supervisor.OneForAll)
     |> static_supervisor.add(dispatcher.supervised(dispatcher_name))
     |> list.fold(consumer_specs, _, fn(builder, entry) {
       static_supervisor.add(builder, entry.spec)

@@ -43,6 +43,37 @@ fn with_temp_file(
   result
 }
 
+/// Poll a file until it has non-empty content or retries are exhausted.
+/// Replaces fragile sleep-based waits with a deterministic retry loop.
+fn poll_until_content(
+  path: String,
+  remaining: Int,
+) -> Result(String, Nil) {
+  case remaining {
+    0 -> Error(Nil)
+    _ -> {
+      case simplifile.read(path) {
+        Ok(content) -> {
+          let lines =
+            string.split(content, "\n")
+            |> list.filter(fn(l) { l != "" })
+          case lines != [] {
+            True -> Ok(content)
+            False -> {
+              let _ = process.receive(process.new_subject(), 10)
+              poll_until_content(path, remaining - 1)
+            }
+          }
+        }
+        Error(_) -> {
+          let _ = process.receive(process.new_subject(), 10)
+          poll_until_content(path, remaining - 1)
+        }
+      }
+    }
+  }
+}
+
 /// Helper to extract content from a Message.
 fn get_content(msg: message.Message) -> String {
   case msg {
@@ -118,11 +149,9 @@ pub fn session_writer_receives_events_via_dispatcher_test() {
   // Stop the agent
   pig.stop(agent)
 
-  // Give the consumer time to finish writing
-  let _ = process.receive(process.new_subject(), 100)
-
-  // Read the temp file and verify it has content
-  let assert Ok(content) = simplifile.read(tmp_file)
+  // Poll for file content (deterministic: event flow completes quickly)
+  let content = poll_until_content(tmp_file, 10)
+  let assert Ok(content) = content
 
   // Should have at least some JSONL lines
   let lines = string.split(content, "\n")
@@ -161,11 +190,9 @@ pub fn multiple_consumers_receive_events_test() {
   // Stop the agent
   pig.stop(agent)
 
-  // Give the consumer time to finish writing
-  let _ = process.receive(process.new_subject(), 100)
-
-  // Verify session writer received events
-  let assert Ok(content) = simplifile.read(tmp_file)
+  // Poll for file content (deterministic: event flow completes quickly)
+  let content = poll_until_content(tmp_file, 10)
+  let assert Ok(content) = content
   let lines = string.split(content, "\n")
   let non_empty_lines = list.filter(lines, fn(l) { l != "" })
 
