@@ -12,575 +12,201 @@ pig uses a **dispatcher-actor pattern** for all observability. The agent core em
 - **Lightweight projection for BEAM ecosystem** — flat metrics via `:telemetry` for LiveDashboard, AppSignal, etc.
 - **Dynamic consumer registration** — consumers can attach and detach at runtime.
 - **Independent consumer lifecycles** — a crashed consumer doesn't affect the dispatcher or other consumers.
+- **Observability is optional and safe** — when no dispatcher is configured, all emission is a silent no-op. The agent never crashes due to missing telemetry.
 
 ---
 
 ## 2. Architecture
 
+The system has four layers: the agent core that produces events, a thin `emit` module that wraps the send, the dispatcher actor that distributes them, and the consumers that process them.
+
 ```
-pig/agent/core.gleam
+Agent Core (core.gleam, parallel.gleam)
   │
-  └── process.send(dispatcher, SessionEvent)       // ONE send per event
-
-pig/obs/dispatcher.gleam (EventDispatcher actor)
+  ├── emit.to_dispatcher(dispatcher_subject, SessionEvent)
+  │     └── wraps process.send to dispatcher actor
   │
-  ├── emit_telemetry(event)                        // ALWAYS: lightweight projection
-  │     └── telemetry.execute(["pig", ...], ...)   //   to BEAM ecosystem
+  Dispatcher Actor (dispatcher.gleam)
   │
-  └── fan-out to registered consumers:             // fire-and-forget sends
-        ├── session writer     → JSONL file
-        ├── terminal printer   → stdout
-        └── future OTel        → OpenTelemetry spans
+  ├── emit_telemetry(event)            // ALWAYS: lightweight metrics projection
+  │     └── :telemetry.execute(...)    //   to BEAM ecosystem
+  │
+  └── fan-out to registered consumers  // fire-and-forget process.send
+        ├── session writer   → JSONL file
+        ├── terminal printer → stdout
+        └── future OTel      → OpenTelemetry spans
 ```
 
-### What core.gleam looks like
+### Dispatcher resolution
 
-```gleam
-// Before: core calls telemetry directly
-events.emit(events.InferenceStart(model:, message_count: msg_count))
-// ... do work ...
-events.emit(events.InferenceStop(model:, message_count:, duration_ms:, ...))
+`AgentConfig` carries the dispatcher reference as either a direct `Subject` or a `Name`. The agent core resolves a name to a subject once per call via `process.named_subject`. This supports both start modes: the standalone path wires a `Subject` directly, while the supervised path wires a `Name` (because the dispatcher subject doesn't exist until the supervisor starts it).
 
-// After: core sends SessionEvent to dispatcher via same events module
-// (events.emit becomes a thin wrapper around process.send)
-events.emit(st.config.dispatcher, events.InferenceStarted(model:, message_count: msg_count))
-// ... do work ...
-events.emit(st.config.dispatcher, events.InferenceCompleted(message:, duration_ms:, ...))
-```
+When neither field is set — no dispatcher configured at all — every `emit_*` helper returns `Nil` without sending. This makes telemetry truly optional: an agent without observability configured runs identically to one with it, just silently.
 
-Core never calls `telemetry.execute`. Core never imports the dispatcher module. Core never iterates consumers. The `events` module stays the API surface — `events.emit` wraps `process.send` to the dispatcher. Core only needs to pass state (which carries the dispatcher subject). See §2a for the wrapper design.
+### The emit module
 
-### §2a — `events.emit` wrapper
-
-The current `events.emit(event: Event)` calls `:telemetry.execute` directly. The new version takes only what it needs — the dispatcher subject and the event:
-
-```gleam
-// In pig/obs/events.gleam
-
-/// Send a SessionEvent to the dispatcher.
-/// Takes the dispatcher subject directly — only what it needs.
-pub fn emit(
-  dispatcher: Subject(dispatcher.Message),
-  event: SessionEvent,
-) -> Nil {
-  process.send(dispatcher, dispatcher.Event(event))
-}
-
-/// Get the current monotonic time for duration measurement.
-pub fn system_time() -> Int {
-  ffi_system_time()
-}
-```
-
-This keeps the same level of indirection core has today. The change at each call site is mechanical — add `st.config.dispatcher,` as the first argument and swap `Event` constructors for `SessionEvent` constructors. Core still only imports `pig/obs/events`.
-
-**Why `Subject` and not `AgentState`:** `emit` sends a message. It needs a destination and a payload. Taking the full state would hide what it actually does and create unnecessary coupling to `AgentConfig`'s shape. Both `core.gleam` and `parallel.gleam` have `st` in scope and access the dispatcher via `st.config.dispatcher` — no ergonomics lost.
-
-### What the dispatcher does
-
-```gleam
-fn handle_message(state, msg) {
-  case msg {
-    Event(event) -> {
-      emit_telemetry(event)                      // always
-      list.each(state.consumers, fn(consumer) {  // fan-out
-        process.send(consumer, event)
-      })
-      actor.continue(state)
-    }
-    RegisterConsumer(subject) -> {
-      actor.continue(State(consumers: [subject, ..state.consumers]))
-    }
-  }
-}
-```
+`pig/obs/emit.gleam` exists to break the circular import between `events.gleam` and `dispatcher.gleam`. It provides `to_dispatcher(subject, event)` — a thin wrapper around `process.send`. The agent core imports this module rather than reaching into the dispatcher directly.
 
 ---
 
 ## 3. SessionEvent Type
 
-The single source of truth. Typed variants for every lifecycle event. Carries full structured data.
+`SessionEvent` is the single event type that flows through the system. It is defined in `pig/obs/events.gleam` and carries full structured data for every agent lifecycle event.
 
-```gleam
-pub type SessionEvent {
-  // Session lifecycle
-  SessionStarted(
-    agent_id: Option(String),
-    agent_name: Option(String),
-    model: String,
-    provider_name: Option(String),
-    system_prompt: Option(String),
-  )
+The variants are:
 
-  // Inference — "started" variant added for telemetry pairing
-  InferenceStarted(
-    model: String,
-    message_count: Int,
-  )
-  InferenceCompleted(
-    message: Message,
-    response_id: Option(String),
-    response_model: Option(String),
-    finish_reason: Option(String),
-    input_tokens: Option(Int),
-    output_tokens: Option(Int),
-    duration_ms: Int,
-    input_messages: List(Message),
-  )
+| Event | Purpose | Produced by |
+|-------|---------|-------------|
+| `SessionStarted` | Session begun with identity and model info | (reserved, not yet emitted from core) |
+| `InferenceStarted` | Provider call beginning, with model and message count | `core.step()` before provider call |
+| `InferenceCompleted` | Provider call succeeded, with full message, tokens, timing | `core.step()` after successful response |
+| `InferenceFailed` | Provider call failed, with error details and timing | `core.step()` after error |
+| `ToolStarted` | Tool execution beginning | `core.execute_tools_and_advance()` / `parallel.spawn_and_collect()` |
+| `ToolExecuted` | Tool execution finished, with result and timing | same as above |
+| `ToolBlocked` | Tool blocked by an extension | (reserved for extension system) |
+| `ExtensionActed` | Extension performed an action | (reserved for extension system) |
+| `SessionEnded` | Session concluded, with reason | (reserved, not yet emitted from core) |
 
-  // Tool execution — "started" variant added for telemetry pairing
-  ToolStarted(
-    tool_call: ToolCall,
-  )
-  ToolExecuted(
-    tool_call: ToolCall,
-    result: String,
-    duration_ms: Int,
-  )
-
-  // Tool blocked by extension (new)
-  ToolBlocked(
-    tool_call: ToolCall,
-    extension_name: String,
-    reason: String,
-  )
-
-  // Extension action (new — for full audit trail)
-  ExtensionActed(
-    extension_name: String,
-    hook: ExtensionHook,
-    action: ExtensionActionDetail,
-  )
-
-  // Errors and completion
-  InferenceFailed(
-    error: AiError,
-    duration_ms: Int,
-    input_messages: List(Message),
-  )
-  SessionEnded(reason: SessionEndReason)
-}
-```
-
-**Changes from current code:**
-- `InferenceStarted` — new (enables telemetry `[:pig, :inference, :start]`)
-- `ToolStarted` — new (enables telemetry `[:pig, :tool, :start]`)
-- `ToolBlocked` — new (tool blocked by extension, not executed)
-- `ExtensionActed` — new (extension audit trail)
+All events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider.
 
 ### Why "started" variants?
 
 BEAM telemetry conventions use start/stop pairs for duration tracking. Tools like `Telemetry.Metrics` and `opentelemetry_telemetry` expect `[:pig, :inference, :start]` before `[:pig, :inference, :stop]`. Without the "started" events, the dispatcher can't emit the start-half of these pairs. Session consumers also benefit — the session writer can log "calling provider..." before the result arrives.
 
+### Companion: the legacy Event type
+
+`events.gleam` also contains a separate `Event` type with flat fields (e.g. `InferenceStop(model:, message_count:, duration_ms:, ...)`). This is the older telemetry-only type. It remains for backward compatibility and for the test listener's decode logic. The dispatcher does **not** use this type — it works exclusively with `SessionEvent`.
+
 ---
 
 ## 4. Telemetry Projection
 
-The dispatcher's `emit_telemetry` function pattern-matches on `SessionEvent` and projects lightweight fields to `:telemetry`. This is a pure function inside the dispatcher.
+The dispatcher emits BEAM `:telemetry` events as a built-in side effect of processing every `SessionEvent`. This is not optional — it happens by construction in the dispatcher's message handler, before any consumer fan-out.
 
-```gleam
-fn emit_telemetry(event: SessionEvent) -> Nil {
-  case event {
-    InferenceStarted(model:, message_count:) ->
-      ffi_execute(
-        ["pig", "inference", "start"],
-        dict.from_list([#("system_time", ffi_system_time()), #("message_count", message_count)]),
-        dict.from_list([#("model", model)]),
-      )
+The projection maps each `SessionEvent` to a flat telemetry event with string-keyed measurements and metadata:
 
-    InferenceCompleted(duration_ms:, input_tokens:, output_tokens:, ...) ->
-      ffi_execute(
-        ["pig", "inference", "stop"],
-        dict.from_list([#("system_time", ffi_system_time()), #("duration", duration_ms), ...]),
-        dict.from_list([#("model", ...)]),
-      )
+| SessionEvent | Telemetry name | What's projected |
+|-------------|---------------|-----------------|
+| `InferenceStarted` | `[:pig, :inference, :start]` | model, message_count |
+| `InferenceCompleted` | `[:pig, :inference, :stop]` | model, duration, tokens (if present), finish_reason (if present) |
+| `InferenceFailed` | `[:pig, :inference, :exception]` | model, error_type, duration, message_count |
+| `ToolStarted` | `[:pig, :tool, :start]` | tool_name, tool_call_id, arguments_json |
+| `ToolExecuted` | `[:pig, :tool, :stop]` | tool_name, tool_call_id, duration, result |
+| `ToolBlocked` | `[:pig, :tool, :blocked]` | tool_name, tool_call_id, extension_name, reason |
+| `SessionStarted` | *(not projected)* | — |
+| `ExtensionActed` | *(not projected)* | — |
+| `SessionEnded` | *(not projected)* | — |
 
-    ToolStarted(tool_call:) ->
-      ffi_execute(
-        ["pig", "tool", "start"],
-        dict.from_list([#("system_time", ffi_system_time())]),
-        dict.from_list([#("tool_name", tool_call.name), #("tool_call_id", tool_call.id)]),
-      )
+**Heavy fields stay out of telemetry.** Full message content, tool results, and input message lists are pig-consumer territory. Telemetry gets lightweight identifiers and metrics only. This keeps `:telemetry` events cheap enough to fire on every agent step without impacting throughput.
 
-    ToolExecuted(duration_ms:, ...) ->
-      ffi_execute(
-        ["pig", "tool", "stop"],
-        dict.from_list([#("system_time", ffi_system_time()), #("duration", duration_ms)]),
-        dict.from_list([#("tool_name", ...), #("tool_call_id", ...)]),
-      )
-
-    ToolBlocked(tool_call:, extension_name:) ->
-      ffi_execute(
-        ["pig", "tool", "blocked"],
-        dict.from_list([#("system_time", ffi_system_time())]),
-        dict.from_list([#("tool_name", tool_call.name), #("extension_name", extension_name)]),
-      )
-
-    // Events not projected to telemetry: SessionStarted, ExtensionActed,
-    // InferenceFailed, SessionEnded — these are pig-specific.
-    // Could be projected later if BEAM consumers want them.
-    _ -> Nil
-  }
-}
-```
-
-### What telemetry does NOT carry
-
-| Field | In SessionEvent | In telemetry | Why |
-|-------|----------------|-------------|-----|
-| `result` (tool output) | ✅ Full string | ❌ | Too heavy, belongs in session/OTel |
-| `arguments_json` | ✅ Full JSON | ❌ | Too heavy, potentially sensitive |
-| `input_messages` | ✅ Full list | ❌ | Structured data doesn't fit flat dict |
-| `message` (assistant) | ✅ Full record | ❌ | Structured, needs typed consumer |
-| `duration_ms` | ✅ | ✅ | Standard metric |
-| `model` | ✅ | ✅ | Standard metric |
-| `tool_name`, `tool_call_id` | ✅ | ✅ | Lightweight identifiers |
-| `input_tokens`, `output_tokens` | ✅ | ✅ | Standard metrics |
-
-### Telemetry event names (preserved from current code)
-
-| Event | Name |
-|-------|------|
-| InferenceStarted | `[:pig, :inference, :start]` |
-| InferenceCompleted | `[:pig, :inference, :stop]` |
-| InferenceFailed | `[:pig, :inference, :exception]` |
-| ToolStarted | `[:pig, :tool, :start]` |
-| ToolExecuted | `[:pig, :tool, :stop]` |
-| ToolBlocked | `[:pig, :tool, :blocked]` (new) |
+The actual FFI call goes through `pig_obs_ffi.execute/3` (Erlang), which converts string-keyed dicts to atom-keyed maps and calls `:telemetry.execute/3`.
 
 ---
 
-## 5. Consumer Registration
+## 5. Consumers
 
-### Builder API
+### Built-in consumers
 
-```gleam
-let config =
-  pig.new(provider)
-  |> pig.with_model("gpt-4o")
-  |> pig.with_session_writer("./sessions/run.jsonl")  // accumulates ChildSpec
-  |> pig.with_terminal_output()                        // accumulates ChildSpec
-```
+**Session writer** (`pig/obs/session.gleam`): appends each `SessionEvent` as a JSONL line to a file. Used for session replay and audit trails. The `format_event` function is a pure function that serializes any `SessionEvent` to JSON — testable without side effects.
 
-### How registration works
+**Terminal printer** (`pig/obs/terminal.gleam`): prints a human-readable one-line summary of each event to stdout. Also has a pure `format_event` function for testing.
 
-Each `with_*` builder function accumulates a `ChildSpecification(Nil)` (a start recipe) on the config. **No actors are spawned at config time.** The builder is pure data.
+### Consumer registration
 
-Every consumer module exposes a `supervised()` function — the same pattern used by `agent/actor.gleam`:
+Consumers register with the dispatcher by sending a `RegisterConsumer(Subject(SessionEvent))` message. The dispatcher adds the subject to its internal list and fans out all subsequent events to every registered consumer.
 
-```gleam
-// In pig/obs/session.gleam
-pub fn supervised(
-  path: String,
-  name: Name(SessionEvent),
-) -> supervision.ChildSpecification(Nil) {
-  supervision.worker(fn() {
-    let builder =
-      actor.new(State(path:))
-      |> actor.on_message(handle_message)
-      |> actor.named(name)
-    case actor.start(builder) {
-      Ok(started) -> Ok(Started(data: Nil, pid: started.pid))
-      Error(e) -> Error(e)
-    }
-  })
-}
-```
+Registration happens in two ways:
 
-And the builder accumulates specs:
+1. **Automatic** — when using `start_supervised()` or `start()`, consumer specs accumulated on the config are started and registered as part of the startup sequence.
+2. **Dynamic** — any process can send `RegisterConsumer` to the dispatcher at runtime. This is useful for mid-session debugging. Dynamically attached consumers are not supervised.
 
-```gleam
-// PigConfig stores start recipes, not running processes
-pub opaque type PigConfig {
-  PigConfig(
-    agent_config: state.AgentConfig,
-    skills: List(skill.Skill),
-    persistence_path: Option(String),
-    consumer_specs: List(ConsumerSpec),
-  )
-}
+### Dead consumer handling
 
-type ConsumerSpec {
-  ConsumerSpec(
-    spec: supervision.ChildSpecification(Nil),
-    name: Name(SessionEvent),
-  )
-}
+When a consumer's actor crashes, its `Subject` becomes invalid. `process.send` to a dead subject is a no-op on the BEAM — the message lands in a dead mailbox and gets garbage collected. The dispatcher doesn't crash and doesn't need to explicitly detect dead consumers. If pruning becomes necessary later, a periodic sweep using `process.is_alive` can be added.
 
-pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
-  let name = process.new_name("pig_session_writer")
-  let spec = session.supervised(path, name)
-  PigConfig(..config, consumer_specs: [
-    ConsumerSpec(spec:, name:), ..config.consumer_specs
-  ])
-}
-```
+### Consumer specs
 
-At `start()` time, the specs are folded into the static supervisor (see §7). After the supervisor starts, consumer subjects are recovered via `named_subject()` and registered with the dispatcher.
+`pig/obs/consumer_spec.gleam` defines `ConsumerSpec` — a deferred recipe for starting a consumer. It bundles three things:
 
-### Dynamic registration
+- `spec`: a `ChildSpecification(Nil)` for starting in a supervision tree
+- `name`: a `Name(SessionEvent)` for recovering the subject after supervisor start
+- `start_fn`: a `fn() -> Result(Subject(SessionEvent), StartError)` for the unsupervised start path
 
-Because the dispatcher accepts `RegisterConsumer` as a message, consumers can also attach at runtime (outside the supervision tree):
-
-```gleam
-// Mid-session: attach a debugger
-let debugger = my_debugger.start()
-process.send(dispatcher, RegisterConsumer(debugger))
-```
-
-Dynamically attached consumers are not supervised — they follow the "best-effort observability" model.
+Builder functions like `pig.with_session_writer(path)` accumulate `ConsumerSpec` values on the config. No actors are spawned at config-construction time — the builder is pure data.
 
 ---
 
-## 6. Dispatcher Actor Design
+## 6. Dispatcher Actor
 
-### Module: `pig/obs/dispatcher.gleam`
+The dispatcher (`pig/obs/dispatcher.gleam`) is a standard Gleam OTP actor. Its internal state is a list of consumer subjects. It handles three messages:
 
-```gleam
-type State {
-  State(consumers: List(Subject(SessionEvent)))
-}
+- **`Event(SessionEvent)`** — emits telemetry, then fans out to all consumers. Always continues.
+- **`RegisterConsumer(Subject)`** — adds the subject to the consumer list.
+- **`Stop`** — stops the actor.
 
-type Message {
-  Event(SessionEvent)
-  RegisterConsumer(Subject(SessionEvent))
-}
-```
-
-### Error handling for dead consumers
-
-When a consumer's actor crashes, its `Subject` becomes invalid. `process.send` to a dead subject is a no-op on the BEAM — the message lands in a dead mailbox and gets garbage collected. The dispatcher doesn't crash. No explicit dead-consumer detection needed.
-
-If we want to prune dead consumers from the list later, we can add a periodic sweep that tries `process.is_alive` on each subject. Not needed for v1.
+The dispatcher is intentionally simple. It does not buffer events, does not retry failed sends, and does not track consumer health. This keeps it fast and crash-resistant — the agent never blocks on observability.
 
 ---
 
-## 7. Supervision Tree
+## 7. Two Start Modes
 
-### Current tree (before dispatcher)
+### Supervised (`pig/supervisor.gleam`)
 
-```
-Supervisor (OneForOne)
-  └── pig_agent (actor)          ← agent/actor.gleam, holds AgentConfig
-        └── runs core.gleam which calls events.emit() directly
-```
-
-The agent actor is the only supervised child. Session writer and terminal printer are not supervised — they don't exist yet in the running system.
-
-### New tree (dispatcher + supervised consumers in event subtree)
+`start_supervised(config, consumer_specs)` builds a nested OTP static supervision tree:
 
 ```
-AppSupervisor (OneForOne)                      ← pig/supervisor.gleam
-  ├── EventSupervisor (OneForOne)               ← child static_supervisor
-  │     ├── event_dispatcher                     ← pig/obs/dispatcher.gleam
-  │     ├── session_writer                       ← pig/obs/session.gleam
-  │     └── terminal_printer                     ← pig/obs/terminal.gleam
-  └── pig_agent                                  ← pig/agent/actor.gleam
+AppSupervisor (OneForOne)
+  ├── EventSupervisor (OneForOne)
+  │     ├── event_dispatcher (named)
+  │     ├── session_writer (named)
+  │     └── terminal_printer (named)
+  └── pig_agent (named)
 ```
 
-This is the standard OTP pattern: a top-level supervisor with child supervisors underneath. Each subtree is its own crash domain. The top-level `OneForOne` keeps the event tree and agent tree completely isolated — a crash in the event tree never touches the agent.
+The dispatcher name is wired into `AgentConfig.dispatcher_name` before the tree starts. After `static_supervisor.start` returns, consumer subjects are recovered by name and registered with the dispatcher via `RegisterConsumer` messages. The agent is guaranteed to be idle at this point — it only processes events inside `Run` messages, which are sent later via `supervisor.run()`.
 
-### Why a nested supervisor (not flat)
+**Error handling:** supervisor start failures are returned as `Error(StartError)`.
 
-A flat `RestForOne` with dispatcher + consumers + agent as siblings means a consumer crash could cascade to the agent. That's wrong — observability should never destabilize the agent. The nested structure means:
+### Standalone (`pig.gleam`)
 
-- The event subtree manages its own restart domain. The dispatcher and consumers restart independently under `OneForOne`.
-- The agent subtree is a separate child of the top-level supervisor. Agent crashes never affect the event tree.
-- Startup order is guaranteed: `EventSupervisor` starts first (registered first), then `pig_agent`. The agent's `AgentConfig` carries the dispatcher subject, so it can send events from the start.
-- Coordinated lifecycle: the top-level supervisor starts and stops everything together.
+`pig.start(config)` starts the dispatcher and consumers individually, without a supervisor. The dispatcher subject is wired directly into `AgentConfig.dispatcher` as a `Subject`. Each consumer's `start_fn` is called, and on success, the returned subject is registered with the dispatcher.
 
-### Restart re-registration
-
-With `OneForOne` inside the event subtree, a restarted consumer gets a new `Subject`. The dispatcher still holds the old (dead) subject. Options:
-
-1. **v1: accept the gap.** Dead-subject sends are no-ops on the BEAM. The consumer restarts but doesn't receive events until re-registered. Best-effort observability.
-2. **Future: consumer self-registers.** The ChildSpec's `start` function calls `process.named_subject(dispatcher_name)` and sends `RegisterConsumer`. Requires the dispatcher name to be a stable constant.
-3. **Future: dispatcher prunes dead subjects.** Periodic sweep with `process.is_alive()`.
-
-### How specs are composed
-
-Each `with_*` builder accumulates a `ChildSpecification(Nil)` on the config. At start time, the specs are folded into the event subtree's supervisor builder. After the supervisor starts, consumer subjects are recovered and registered with the dispatcher.
-
-```gleam
-// In pig/supervisor.gleam
-
-/// A deferred consumer: a ChildSpec + the name to recover its Subject after start.
-pub type ConsumerSpec {
-  ConsumerSpec(
-    spec: supervision.ChildSpecification(Nil),
-    name: Name(SessionEvent),
-  )
-}
-
-pub fn start_supervised(
-  agent_config: state.AgentConfig,
-  consumer_specs: List(ConsumerSpec),
-) -> Result(SupervisedAgent, otp_actor.StartError) {
-  let dispatcher_name = process.new_name("pig_event_dispatcher")
-  let agent_name = process.new_name("pig_agent")
-
-  // Wire dispatcher name into agent config
-  let agent_config = state.AgentConfig(
-    ..agent_config,
-    dispatcher_name: dispatcher_name,
-  )
-
-  // Build event subtree: dispatcher → consumers
-  let event_tree =
-    static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(dispatcher.supervised(dispatcher_name))
-    |> list.fold(consumer_specs, _, fn(builder, entry) {
-      static_supervisor.add(builder, entry.spec)
-    })
-
-  // Build top-level: event subtree → agent
-  let app_tree =
-    static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(event_tree |> static_supervisor.supervised)
-    |> static_supervisor.add(actor.supervised(agent_config, agent_name))
-
-  case static_supervisor.start(app_tree) {
-    Ok(started) -> {
-      let dispatcher_subject = process.named_subject(dispatcher_name)
-      let agent_subject = process.named_subject(agent_name)
-
-      // Register all consumers with the dispatcher
-      list.each(consumer_specs, fn(entry) {
-        let consumer_subject = process.named_subject(entry.name)
-        process.send(
-          dispatcher_subject,
-          dispatcher.RegisterConsumer(consumer_subject),
-        )
-      })
-
-      Ok(SupervisedAgent(subject: agent_subject, sup_pid: started.pid))
-    }
-    Error(e) -> Error(e)
-  }
-}
-```
-
-### Changes to `pig.gleam` (standalone / unsupervised start)
-
-For users who don't call `start_supervised`, the standalone `start()` starts the dispatcher and agent without a supervisor. Consumer specs are started individually:
-
-```gleam
-pub fn start(config: PigConfig) -> Result(Agent, StartError) {
-  let final_config = build_agent_config(config)
-  // Start dispatcher
-  let assert Ok(dispatcher_subject) = dispatcher.start()
-  let final_config = state.AgentConfig(
-    ..final_config,
-    dispatcher: dispatcher_subject,
-  )
-  // Start and register each consumer (unsupervised)
-  list.each(config.consumer_specs, fn(entry) {
-    let assert Ok(_) = entry.spec.start()
-    let consumer_subject = process.named_subject(entry.name)
-    process.send(
-      dispatcher_subject,
-      dispatcher.RegisterConsumer(consumer_subject),
-    )
-  })
-  case agent_actor.start(final_config) {
-    Ok(subject) -> Ok(Agent(subject))
-    Error(e) -> Error(e)
-  }
-}
-```
+**Error handling:** if the dispatcher fails to start, or if any consumer fails to start, the function returns `Error(StartError)` rather than crashing. Previously started consumers are left running (no rollback) — this is acceptable for the standalone path since there's no supervision tree to clean up.
 
 ---
 
-## 8. Sequencing: Config-Time vs. Start-Time
+## 8. Design Decisions
 
-### The problem
+### Why dispatcher-name vs dispatcher-subject
 
-Builder functions like `with_session_writer` need to register consumers with the dispatcher. But the dispatcher doesn't exist at config-construction time — it's created in `start()`.
+`AgentConfig` has two optional fields: `dispatcher: Option(Subject(...))` and `dispatcher_name: Option(Name(...))`. This is deliberate:
 
-```
-pig.new(provider)                              // no dispatcher yet
-  |> pig.with_session_writer("./out.jsonl")    // wants to register consumer... with whom?
-  |> pig.start()                               // dispatcher created here
-```
+- The **standalone path** (`pig.start`) creates the dispatcher first, then passes the live `Subject` into the config.
+- The **supervised path** (`supervisor.start_supervised`) can't create the dispatcher first — it's started by the supervisor. Instead it passes a `Name`, and the agent core resolves it to a `Subject` via `process.named_subject` on each emission.
 
-### Solution: ChildSpec accumulation
+Both paths resolve to the same behavior: `get_dispatcher(st)` in `core.gleam` checks `dispatcher` first, falls back to resolving `dispatcher_name`, and returns `None` if neither is set (making emission a no-op).
 
-Instead of spawning actors in the builder, accumulate `ChildSpecification(Nil)` values — pure data recipes for starting supervised processes. This is the same pattern `agent/actor.gleam` already uses.
+### Why fire-and-forget, not request-response
 
-**Builder functions create specs, not processes:**
+All event sends from core to dispatcher, and from dispatcher to consumers, use `process.send` (asynchronous). The agent never waits for observability to complete. This guarantees that adding consumers or telemetry never slows down the agent loop.
 
-```gleam
-pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
-  let name = process.new_name("pig_session_writer")
-  let spec = session.supervised(path, name)  // pure data, no spawn
-  PigConfig(..config, consumer_specs: [
-    ConsumerSpec(spec:, name:), ..config.consumer_specs
-  ])
-}
-```
+### Why nested supervision, not flat
 
-**`start()` / `start_supervised()` fold specs into the supervisor:**
+A flat `RestForOne` with dispatcher + consumers + agent as siblings means a consumer crash could cascade to the agent. The nested structure isolates crash domains: the event subtree restarts independently, the agent subtree is separate, and the top-level `OneForOne` keeps them completely isolated.
 
-- `start_supervised()` folds all specs into the static supervisor builder via `list.fold`. The supervisor starts dispatcher → consumers → agent in order. After startup, consumer subjects are recovered by name and registered with the dispatcher.
-- `start()` calls each spec's `start` function individually, then registers.
+### Restart re-registration gap
 
-**Why this works:**
-
-- `ChildSpecification` is just a closure `fn() -> Result(Started(data), StartError)`. It captures its arguments (e.g., file path) but doesn't run until the supervisor calls it.
-- No actors sit idle between config construction and start.
-- The builder is pure — no side effects, no process spawning, safe to inspect and test.
-- The pattern is identical to how `agent/actor.supervised()` already works.
+With `OneForOne` inside the event subtree, a restarted consumer gets a new `Subject`. The dispatcher still holds the old (dead) subject. Sends to dead subjects are no-ops on the BEAM, so the consumer simply doesn't receive events until re-registered. This is acceptable for v1 — observability is best-effort. Future improvements could have the consumer self-register on restart using the stable dispatcher name.
 
 ---
 
-## 9. Changes to Existing Code
-
-### Files to modify
-
-| File | Change |
-|------|--------|
-| `src/pig/obs/events.gleam` | Add `InferenceStarted`, `ToolStarted`, `ToolBlocked`, `ExtensionActed` to `SessionEvent`. Keep `Event` type for telemetry projection types used internally by the dispatcher. Change `emit` to take `Subject(dispatcher.Message)` + `SessionEvent` and wrap `process.send` (see §2a). |
-| `src/pig/agent/state.gleam` | Add `dispatcher_name: Name(dispatcher.DispatcherMessage)` to `AgentConfig`. |
-| `src/pig/agent/core.gleam` | Swap `events.emit(Event)` → `events.emit(st.config.dispatcher, SessionEvent)` at each call site. Same import, same module, mechanical change. |
-| `src/pig/agent/parallel.gleam` | Same — swap `events.emit(Event)` → `events.emit(st.config.dispatcher, SessionEvent)`. |
-| `src/pig.gleam` | Add `consumer_specs: List(ConsumerSpec)` to `PigConfig`. Add `with_session_writer`, `with_terminal_output`. Update `start()` to create dispatcher and start/register consumers from specs. |
-| `src/pig/supervisor.gleam` | Add `ConsumerSpec` type. Accept consumer specs in `start_supervised()`. Build nested tree: event subtree (OneForOne) under top-level AppSupervisor (OneForOne). Post-start registration loop. |
-| `src/pig/obs/session.gleam` | Add `supervised(path, name) -> ChildSpecification(Nil)` function. Refactor message type to accept `SessionEvent` directly (dispatcher sends `SessionEvent`, not `WriterMessage`). Handle new variants in `format_event`. |
-| `src/pig/obs/terminal.gleam` | Add `supervised(name) -> ChildSpecification(Nil)` function. Already accepts `SessionEvent` directly. Handle new variants in `format_event`. |
-
-### Files to create
-
-| File | Purpose |
-|------|---------|
-| `src/pig/obs/dispatcher.gleam` | Dispatcher actor: built-in telemetry emission + consumer fan-out. |
-| `test/pig/obs/dispatcher_test.gleam` | Tests for dispatcher: telemetry projection, consumer fan-out, dynamic registration. |
-
-### Telemetry FFI stays
-
-The `pig_obs_ffi` Erlang module and the `emit`/`system_time` FFI functions in `events.gleam` remain. The dispatcher calls them internally for its `emit_telemetry` function. The public `events.emit()` function is no longer called from core.gleam, but stays for backward compat and testing.
-
----
-
-## 10. Implementation Order
-
-1. **Add new `SessionEvent` variants** — `InferenceStarted`, `ToolStarted`, `ToolBlocked`, `ExtensionActed` to `obs/events.gleam`.
-2. **Create `pig/obs/dispatcher.gleam`** — the actor with built-in telemetry + fan-out. Include `supervised(name) -> ChildSpecification(Nil)`. Write tests.
-3. **Add `supervised()` to consumer modules** — `session.supervised(path, name)` and `terminal.supervised(name)`. Refactor session writer to accept `SessionEvent` directly.
-4. **Add `dispatcher_name` field to `AgentConfig`** — `state.gleam`.
-5. **Wire core.gleam and parallel.gleam** — swap `events.emit(Event)` → `events.emit(st.config.dispatcher, SessionEvent)` at each call site. Mechanical: add `st.config.dispatcher,` first arg, swap constructors.
-6. **Update `pig.gleam`** — add `ConsumerSpec` type, `consumer_specs` field, `with_session_writer`, `with_terminal_output`. Update `start()` to start dispatcher, start/register consumers from specs.
-7. **Update `pig/supervisor.gleam`** — accept `List(ConsumerSpec)`, build nested tree: event subtree (OneForOne) as child of top-level AppSupervisor (OneForOne), post-start registration loop.
-8. **Integration tests** — verify telemetry still fires, supervised consumers receive events, dynamic registration works.
-9. **Remove heavy fields from telemetry projection** — stop projecting `result`, `arguments_json` from the dispatcher's `emit_telemetry`.
-
----
-
-## 11. What This Enables
+## 9. What This Enables
 
 ### Immediate
 - **Session replay** — full structured JSONL with before/after events
 - **Terminal output** — real-time formatted display of agent activity
 - **Test assertions** — tests can register a capture consumer and assert on event sequences
+- **BEAM ecosystem integration** — `:telemetry` events work with LiveDashboard, AppSignal, etc.
 
 ### Near-term (extensions)
 - **Tool blocking** — `ToolBlocked` event emitted when extension blocks a tool
