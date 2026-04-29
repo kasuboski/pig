@@ -18,8 +18,7 @@ import pig/ai/error
 import pig/ai/message
 import pig/ai/provider
 import pig/ai/tool_definition
-import pig/obs/events
-import pig/obs/listener
+import pig/obs/dispatcher
 import pig/tool
 
 // ── Public: check helpers (behavioral assertions) ────────────────
@@ -35,9 +34,11 @@ pub fn check_scenario(
 ) -> Result(message.Message, error.AiError) {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = sequenced_provider_for_actor(provider_responses)
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   let st =
     state.config(provider)
     |> state.with_tools(registry)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.new()
     |> state.add_message(message.User(user_message))
   core.run_to_completion(st)
@@ -61,8 +62,10 @@ pub fn state_for_step(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = sequenced_provider_for_actor(provider_responses)
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   state.config(provider)
     |> state.with_tools(registry)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.new()
 }
 
@@ -74,9 +77,11 @@ pub fn state_with_max_iterations(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = sequenced_provider_for_actor(provider_responses)
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   state.config(provider)
     |> state.with_tools(registry)
     |> state.with_max_iterations(max)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.new()
 }
 
@@ -88,9 +93,11 @@ pub fn state_with_system_prompt(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = sequenced_provider_for_actor(provider_responses)
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   state.config(provider)
     |> state.with_tools(registry)
     |> state.with_system_prompt(prompt)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.new()
 }
 
@@ -188,37 +195,3 @@ fn count_assistant_messages(msgs: List(message.Message)) -> Int {
   |> list.length()
 }
 
-// ── Telemetry Capture ────────────────────────────────────────────
-
-/// Run a scenario with telemetry capture. Returns (result, events).
-pub fn capture_scenario(
-  user_message: String,
-  responses: List(message.Message),
-  tools: List(tool.Tool),
-  model: String,
-) -> #(
-  Result(message.Message, error.AiError),
-  List(events.Event),
-) {
-  let handle = listener.attach()
-  let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = sequenced_provider_for_actor(responses)
-  let st =
-    state.config(provider)
-    |> state.with_tools(registry)
-    |> state.with_model(model)
-    |> state.new()
-    |> state.add_message(message.User(user_message))
-  let result = core.run_to_completion(st)
-  let evts = listener.get_events(handle)
-  listener.detach(handle)
-  #(result, evts)
-}
-
-/// Extract event type names from a list of events.
-pub fn event_type_names(evts: List(events.Event)) -> List(String) {
-  evts
-  |> list.map(fn(e) {
-    events.name_to_string(events.event_name(e))
-  })
-}

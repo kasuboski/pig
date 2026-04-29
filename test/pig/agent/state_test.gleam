@@ -98,7 +98,7 @@ pub fn exceeded_max_iterations_boundary_test() {
   }
 }
 
-// ── Phase 5: dispatcher_name Field Tests ───────────────────────────────
+// ── Dispatcher Config ──────────────────────────────────────────────
 
 /// Default config has no dispatcher_name.
 pub fn default_config_has_no_dispatcher_name_test() {

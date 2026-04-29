@@ -377,7 +377,7 @@ pub fn decode_preserves_inference_exception_error_type_test() {
   model == "llama" && message_count == 7 && error_type == "api_error"
 }
 
-// ── Phase 4: emit_to Tests ───────────────────────────────────────────────
+// ── emit_to Tests ──────────────────────────────────────────────────
 
 /// to_dispatcher sends a SessionEvent to the dispatcher.
 /// Uses the process.receive pattern — no sleep needed.

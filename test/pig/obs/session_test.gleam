@@ -494,7 +494,7 @@ pub fn format_extension_acted_produces_valid_json_test() {
     |> result.map_error(fn(_) { Nil })
 }
 
-// ── Phase 3: Supervised Consumer Tests ─────────────────────────────────
+// ── Supervised Consumer Tests ──────────────────────────────────────
 
 /// supervised() returns a valid ChildSpecification without crashing.
 /// The spec type ensures compile-time type safety; this is a smoke test.
@@ -504,14 +504,14 @@ pub fn session_supervised_creates_spec_test() {
   let _spec = session.supervised(path, name)
   // If we got here, the spec was created successfully.
   // The ChildSpec type ensures type safety at compile time.
-  // Real integration testing happens in Phase 9.
+  // Integration testing is covered separately.
   True
 }
 
 /// Start a consumer actor and verify it integrates with the dispatcher.
 /// Uses the process.receive pattern — no sleep needed.
 /// Note: We don't verify file writes here due to timing issues with fire-and-forget actors.
-/// File writing is tested separately with record_sync. Integration testing is in Phase 9.
+/// File writing is tested separately with record_sync.
 pub fn session_consumer_receives_events_via_dispatcher_test() {
   use path <- with_temp_file("dispatcher_consumer")
   let assert Ok(disp) = dispatcher.start()

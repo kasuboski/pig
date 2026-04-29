@@ -50,20 +50,17 @@ fn get_dispatcher(st: state.AgentState) -> option.Option(process.Subject(dispatc
 
 // ── Emission Helpers ───────────────────────────────────────────────
 
-/// Emit InferenceStarted event - uses dispatcher if configured, falls back to old telemetry.
+/// Emit InferenceStarted event.
 fn emit_inference_start(st: state.AgentState, model: String, count: Int) -> Nil {
-  case get_dispatcher(st) {
-    option.Some(disp) ->
-      emit.to_dispatcher(disp, events.InferenceStarted(model:, message_count: count))
-    option.None -> events.emit(events.InferenceStart(model:, message_count: count))
-  }
+  let assert option.Some(disp) = get_dispatcher(st)
+  emit.to_dispatcher(disp, events.InferenceStarted(model:, message_count: count))
 }
 
-/// Emit InferenceCompleted event - uses dispatcher if configured, falls back to old telemetry.
+/// Emit InferenceCompleted event.
 fn emit_inference_complete(
   st: state.AgentState,
   model: String,
-  msg_count: Int,
+  _msg_count: Int,
   duration_ms: Int,
   response_id: option.Option(String),
   finish_reason: option.Option(String),
@@ -72,109 +69,72 @@ fn emit_inference_complete(
   message: Message,
   input_messages: List(Message),
 ) -> Nil {
-  case get_dispatcher(st) {
-    option.Some(disp) ->
-      emit.to_dispatcher(
-        disp,
-        events.InferenceCompleted(
-          message:,
-          response_id:,
-          response_model: option.Some(model),
-          finish_reason:,
-          input_tokens:,
-          output_tokens:,
-          duration_ms:,
-          input_messages:,
-        ),
-      )
-    option.None ->
-      events.emit(events.InferenceStop(
-        model:,
-        message_count: msg_count,
-        duration_ms:,
-        response_id:,
-        finish_reason:,
-        input_tokens:,
-        output_tokens:,
-      ))
-  }
+  let assert option.Some(disp) = get_dispatcher(st)
+  emit.to_dispatcher(
+    disp,
+    events.InferenceCompleted(
+      message:,
+      response_id:,
+      response_model: option.Some(model),
+      finish_reason:,
+      input_tokens:,
+      output_tokens:,
+      duration_ms:,
+      input_messages:,
+    ),
+  )
 }
 
-/// Emit InferenceFailed event - uses dispatcher if configured, falls back to old telemetry.
+/// Emit InferenceFailed event.
 fn emit_inference_failed(
   st: state.AgentState,
-  model: String,
-  msg_count: Int,
+  _model: String,
+  _msg_count: Int,
   error_type: String,
   duration_ms: Int,
   input_messages: List(Message),
 ) -> Nil {
-  case get_dispatcher(st) {
-    option.Some(disp) -> {
-      let error =
-        case error_type {
-          "ApiError" -> error.ApiError("")
-          "RateLimited" -> error.RateLimited
-          "Timeout" -> error.Timeout
-          "InvalidResponse" -> error.InvalidResponse("")
-          _ -> error.ApiError(error_type)
-        }
-      emit.to_dispatcher(
-        disp,
-        events.InferenceFailed(
-          error:,
-          duration_ms:,
-          input_messages:,
-        ),
-      )
+  let assert option.Some(disp) = get_dispatcher(st)
+  let error =
+    case error_type {
+      "ApiError" -> error.ApiError("")
+      "RateLimited" -> error.RateLimited
+      "Timeout" -> error.Timeout
+      "InvalidResponse" -> error.InvalidResponse("")
+      _ -> error.ApiError(error_type)
     }
-    option.None ->
-      events.emit(events.InferenceException(
-        model:,
-        message_count: msg_count,
-        error_type:,
-      ))
-  }
+  emit.to_dispatcher(
+    disp,
+    events.InferenceFailed(
+      error:,
+      duration_ms:,
+      input_messages:,
+    ),
+  )
 }
 
-/// Emit ToolStarted event - uses dispatcher if configured, falls back to old telemetry.
+/// Emit ToolStarted event.
 fn emit_tool_start(st: state.AgentState, call: ToolCall) -> Nil {
-  case get_dispatcher(st) {
-    option.Some(disp) -> emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
-    option.None ->
-      events.emit(events.ToolStart(
-        tool_name: call.name,
-        tool_call_id: call.id,
-        arguments_json: call.arguments_json,
-      ))
-  }
+  let assert option.Some(disp) = get_dispatcher(st)
+  emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
 }
 
-/// Emit ToolExecuted event - uses dispatcher if configured, falls back to old telemetry.
+/// Emit ToolExecuted event.
 fn emit_tool_executed(
   st: state.AgentState,
   call: ToolCall,
   duration_ms: Int,
   result_str: String,
 ) -> Nil {
-  case get_dispatcher(st) {
-    option.Some(disp) ->
-      emit.to_dispatcher(
-        disp,
-        events.ToolExecuted(
-          tool_call: call,
-          result: result_str,
-          duration_ms:,
-        ),
-      )
-    option.None ->
-      events.emit(events.ToolStop(
-        tool_name: call.name,
-        tool_call_id: call.id,
-        duration_ms:,
-        result: result_str,
-      ))
-  }
+  let assert option.Some(disp) = get_dispatcher(st)
+  emit.to_dispatcher(
+    disp,
+    events.ToolExecuted(
+      tool_call: call,
+      result: result_str,
+      duration_ms:,
+    ),
+  )
 }
 
 /// Result of a single step in the agent loop.
@@ -189,8 +149,8 @@ pub type StepResult {
 
 /// Execute one step: call the provider and branch on the response.
 ///
-/// Emits `InferenceStart` before the call and `InferenceStop` or
-/// `InferenceException` after, with duration measurement.
+/// Emits `InferenceStarted` before the call and `InferenceCompleted` or
+/// `InferenceFailed` after, with duration measurement.
 pub fn step(st: state.AgentState) -> StepResult {
   let defs = state.tool_definitions(st)
   let msgs = state.messages_for_provider(st)
@@ -245,7 +205,7 @@ pub fn step(st: state.AgentState) -> StepResult {
 
 /// Execute tool calls against the registry and append results to history.
 ///
-/// Emits `ToolStart` and `ToolStop` for each tool call.
+/// Emits `ToolStarted` and `ToolExecuted` for each tool call.
 /// Errors are caught and turned into Tool messages — the LLM adapts.
 pub fn execute_tools_and_advance(
   st: state.AgentState,

@@ -137,7 +137,7 @@ pub fn supervised_tool_call_works_test() {
   supervisor.stop(sup)
 }
 
-// ── Phase 8: Nested supervision tree tests ───────────────────────
+// ── Nested Supervision Tree ────────────────────────────────────────
 
 /// start_supervised with no consumers creates working agent.
 pub fn start_supervised_no_consumers_test() {

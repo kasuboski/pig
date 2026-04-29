@@ -196,7 +196,7 @@ pub fn format_extension_acted_shows_info_test() {
   string.contains(result, "modify_args") |> should.be_true
 }
 
-// ── Phase 3: Supervised Consumer Tests ─────────────────────────────────
+// ── Supervised Consumer Tests ──────────────────────────────────────
 
 /// supervised() returns a valid ChildSpecification without crashing.
 /// The spec type ensures compile-time type safety; this is a smoke test.
@@ -205,7 +205,7 @@ pub fn terminal_supervised_creates_spec_test() {
   let _spec = terminal.supervised(name)
   // If we got here, the spec was created successfully.
   // The ChildSpec type ensures type safety at compile time.
-  // Real integration testing happens in Phase 9.
+  // Integration testing is covered separately.
   True
 }
 

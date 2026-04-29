@@ -104,7 +104,7 @@ pub fn with_skill_works_test() {
 // ── Builder: with_persistence ────────────────────────────────────
 
 /// with_persistence sets the session path without breaking flow.
-/// Actual persistence tested in Phase 9.
+/// Actual persistence tested separately.
 pub fn with_persistence_works_test() {
   let response = message.Assistant("ok", [], None)
   let tmp =
