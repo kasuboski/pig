@@ -5,6 +5,17 @@
 ////
 //// Each tool closes over a `sqlight.Connection` and provides a handler
 //// that parses JSON arguments and calls the appropriate workspace function.
+////
+//// ## Tools
+////
+//// - `read_file` — Read file contents with line numbers
+//// - `write_file` — Create or replace a file
+//// - `list_directory` — List entries in a directory
+//// - `delete_file` — Delete a file or empty directory
+//// - `grep` — Search file contents for a pattern
+//// - `remember` — Store a key-value pair
+//// - `recall` — Retrieve a stored value
+//// - `list_keys` — List keys matching a prefix
 
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -16,8 +27,8 @@ import gleam/string
 import jscheam/schema
 import pig/ai/tool_definition
 import pig/tool
-import pig/workspace/kv as kv
-import pig/workspace/vfs as vfs
+import pig/workspace/kv
+import pig/workspace/vfs
 import sqlight
 
 // ── Error conversion ────────────────────────────────────────────────
@@ -25,14 +36,12 @@ import sqlight
 /// Convert VFS errors to ToolError.
 fn vfs_error_to_tool_error(err: vfs.Error) -> tool.ToolError {
   case err {
-    vfs.NotFound(path) ->
-      tool.ToolError(message: "File not found: " <> path)
+    vfs.NotFound(path) -> tool.ToolError(message: "File not found: " <> path)
     vfs.NotEmpty(path) ->
       tool.ToolError(message: "Directory not empty: " <> path)
     vfs.AlreadyExists(path) ->
       tool.ToolError(message: "Already exists: " <> path)
-    vfs.InvalidPath(path) ->
-      tool.ToolError(message: "Invalid path: " <> path)
+    vfs.InvalidPath(path) -> tool.ToolError(message: "Invalid path: " <> path)
     vfs.SqlError(_) -> tool.ToolError(message: "Database error")
   }
 }
@@ -65,24 +74,25 @@ fn get_optional_int(args: dynamic.Dynamic, field: String, default: Int) -> Int {
 /// Returns file content with line numbers in "N\\tline" format.
 pub fn read_file_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "read_file",
-        description:
-          "Read file contents with line numbers. Use offset and limit to read specific ranges.",
-        parameters:
-          schema.object([
-            schema.prop("path", schema.string()),
-            schema.optional(schema.prop("offset", schema.integer())),
-            schema.optional(schema.prop("limit", schema.integer())),
-          ]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "read_file",
+      description: "Read file contents with line numbers. Use offset and limit to read specific ranges.",
+      parameters: schema.object([
+        schema.prop("path", schema.string()),
+        schema.optional(schema.prop("offset", schema.integer())),
+        schema.optional(schema.prop("limit", schema.integer())),
+      ]),
+    ),
     handler: fn(args) {
-      case decode.run(args, decode.field("path", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("path", decode.string, decode.success))
+      {
         Ok(path) -> {
-          let has_offset = decode.run(args, decode.at(["offset"], decode.int))
+          let has_offset =
+            decode.run(args, decode.at(["offset"], decode.int))
             |> result.is_ok
-          let has_limit = decode.run(args, decode.at(["limit"], decode.int))
+          let has_limit =
+            decode.run(args, decode.at(["limit"], decode.int))
             |> result.is_ok
 
           case has_offset || has_limit {
@@ -120,8 +130,7 @@ pub fn read_file_tool(conn: sqlight.Connection) -> tool.Tool {
         }
         Error(_) ->
           Error(tool.ToolError(
-            message:
-              "Invalid arguments: expected {\"path\": \"<path>\", \"offset\": <int>, \"limit\": <int>}",
+            message: "Invalid arguments: expected {\"path\": \"<path>\", \"offset\": <int>, \"limit\": <int>}",
           ))
       }
     },
@@ -132,9 +141,7 @@ pub fn read_file_tool(conn: sqlight.Connection) -> tool.Tool {
 fn format_with_line_numbers(content: String) -> String {
   content
   |> string.split("\n")
-  |> list.index_map(fn(line, index) {
-    int.to_string(index) <> "\t" <> line
-  })
+  |> list.index_map(fn(line, index) { int.to_string(index) <> "\t" <> line })
   |> string.join("\n")
 }
 
@@ -147,29 +154,23 @@ fn format_with_line_numbers(content: String) -> String {
 /// Creates or overwrites a file.
 pub fn write_file_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "write_file",
-        description: "Create or replace a file with the given content.",
-        parameters:
-          schema.object([
-            schema.prop("path", schema.string()),
-            schema.prop("content", schema.string()),
-          ]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "write_file",
+      description: "Create or replace a file with the given content.",
+      parameters: schema.object([
+        schema.prop("path", schema.string()),
+        schema.prop("content", schema.string()),
+      ]),
+    ),
     handler: fn(args) {
       case
         decode.run(
           args,
-          decode.field(
-            "path",
-            decode.string,
-            fn(path) {
-              decode.field("content", decode.string, fn(content) {
-                decode.success(#(path, content))
-              })
-            },
-          ),
+          decode.field("path", decode.string, fn(path) {
+            decode.field("content", decode.string, fn(content) {
+              decode.success(#(path, content))
+            })
+          }),
         )
       {
         Ok(#(path, content)) ->
@@ -193,21 +194,19 @@ pub fn write_file_tool(conn: sqlight.Connection) -> tool.Tool {
 /// Returns a JSON array of entry names.
 pub fn list_directory_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "list_directory",
-        description: "List all entries in a directory.",
-        parameters:
-          schema.object([schema.prop("path", schema.string())]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "list_directory",
+      description: "List all entries in a directory.",
+      parameters: schema.object([schema.prop("path", schema.string())]),
+    ),
     handler: fn(args) {
-      case decode.run(args, decode.field("path", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("path", decode.string, decode.success))
+      {
         Ok(path) ->
           vfs.list_directory(conn, path)
           |> result.map_error(vfs_error_to_tool_error)
-          |> result.map(fn(entries) {
-            json.array(entries, json.string)
-          })
+          |> result.map(fn(entries) { json.array(entries, json.string) })
         Error(_) ->
           Error(tool.ToolError(
             message: "Invalid arguments: expected {\"path\": \"<path>\"}",
@@ -225,15 +224,15 @@ pub fn list_directory_tool(conn: sqlight.Connection) -> tool.Tool {
 /// Deletes a file or empty directory.
 pub fn delete_file_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "delete_file",
-        description: "Delete a file or empty directory.",
-        parameters:
-          schema.object([schema.prop("path", schema.string())]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "delete_file",
+      description: "Delete a file or empty directory.",
+      parameters: schema.object([schema.prop("path", schema.string())]),
+    ),
     handler: fn(args) {
-      case decode.run(args, decode.field("path", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("path", decode.string, decode.success))
+      {
         Ok(path) ->
           vfs.delete_file(conn, path)
           |> result.map_error(vfs_error_to_tool_error)
@@ -256,30 +255,23 @@ pub fn delete_file_tool(conn: sqlight.Connection) -> tool.Tool {
 /// Stores a key-value pair that persists across conversations.
 pub fn remember_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "remember",
-        description:
-          "Store a value that persists across conversations. Updates if key already exists.",
-        parameters:
-          schema.object([
-            schema.prop("key", schema.string()),
-            schema.prop("value", schema.string()),
-          ]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "remember",
+      description: "Store a value that persists across conversations. Updates if key already exists.",
+      parameters: schema.object([
+        schema.prop("key", schema.string()),
+        schema.prop("value", schema.string()),
+      ]),
+    ),
     handler: fn(args) {
       case
         decode.run(
           args,
-          decode.field(
-            "key",
-            decode.string,
-            fn(key) {
-              decode.field("value", decode.string, fn(value) {
-                decode.success(#(key, value))
-              })
-            },
-          ),
+          decode.field("key", decode.string, fn(key) {
+            decode.field("value", decode.string, fn(value) {
+              decode.success(#(key, value))
+            })
+          }),
         )
       {
         Ok(#(key, value)) ->
@@ -303,15 +295,15 @@ pub fn remember_tool(conn: sqlight.Connection) -> tool.Tool {
 /// Returns the stored value as a JSON string.
 pub fn recall_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "recall",
-        description: "Retrieve a previously stored value by key.",
-        parameters:
-          schema.object([schema.prop("key", schema.string())]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "recall",
+      description: "Retrieve a previously stored value by key.",
+      parameters: schema.object([schema.prop("key", schema.string())]),
+    ),
     handler: fn(args) {
-      case decode.run(args, decode.field("key", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("key", decode.string, decode.success))
+      {
         Ok(key) ->
           kv.recall(conn, key)
           |> result.map_error(kv_error_to_tool_error)
@@ -333,13 +325,11 @@ pub fn recall_tool(conn: sqlight.Connection) -> tool.Tool {
 /// Returns a JSON array of matching keys.
 pub fn list_keys_tool(conn: sqlight.Connection) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "list_keys",
-        description: "List all stored keys matching a prefix.",
-        parameters:
-          schema.object([schema.prop("prefix", schema.string())]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "list_keys",
+      description: "List all stored keys matching a prefix.",
+      parameters: schema.object([schema.prop("prefix", schema.string())]),
+    ),
     handler: fn(args) {
       case
         decode.run(args, decode.field("prefix", decode.string, decode.success))
@@ -347,9 +337,7 @@ pub fn list_keys_tool(conn: sqlight.Connection) -> tool.Tool {
         Ok(prefix) ->
           kv.list_keys(conn, prefix)
           |> result.map_error(kv_error_to_tool_error)
-          |> result.map(fn(keys) {
-            json.array(keys, json.string)
-          })
+          |> result.map(fn(keys) { json.array(keys, json.string) })
         Error(_) ->
           Error(tool.ToolError(
             message: "Invalid arguments: expected {\"prefix\": \"<prefix>\"}",
@@ -359,22 +347,74 @@ pub fn list_keys_tool(conn: sqlight.Connection) -> tool.Tool {
   )
 }
 
-/// Return all workspace tools in a list.
+/// Create a grep tool.
 ///
-/// The tools are:
-/// - read_file: Read file contents with line numbers
-/// - write_file: Create or replace a file
-/// - list_directory: List entries in a directory
-/// - delete_file: Delete a file or empty directory
-/// - remember: Store a key-value pair
-/// - recall: Retrieve a stored value
-/// - list_keys: List keys matching a prefix
+/// Search file contents for a substring pattern. Returns matching lines
+/// with file path and line number.
+///
+/// Parameters:
+/// - pattern: String (required) - substring to search for
+/// - path: String (optional) - directory or file to search under (default: root)
+/// - include: String (optional) - GLOB filter on file path (e.g. "*.py")
+/// - max_results: Int (optional) - limit number of results (default: 50)
+pub fn grep_tool(conn: sqlight.Connection) -> tool.Tool {
+  tool.Tool(
+    definition: tool_definition.ToolDefinition(
+      name: "grep",
+      description: "Search file contents for a pattern. Returns matching lines with file path and line number.",
+      parameters: schema.object([
+        schema.prop("pattern", schema.string()),
+        schema.optional(schema.prop("path", schema.string())),
+        schema.optional(schema.prop("include", schema.string())),
+        schema.optional(schema.prop("max_results", schema.integer())),
+      ]),
+    ),
+    handler: fn(args) {
+      case
+        decode.run(args, decode.field("pattern", decode.string, decode.success))
+      {
+        Ok(pattern) -> {
+          let path = case decode.run(args, decode.at(["path"], decode.string)) {
+            Ok(p) -> p
+            Error(_) -> ""
+          }
+          let include = case
+            decode.run(args, decode.at(["include"], decode.string))
+          {
+            Ok(i) -> i
+            Error(_) -> ""
+          }
+          let max_results = get_optional_int(args, "max_results", 50)
+
+          vfs.grep(conn, pattern, path, include, max_results)
+          |> result.map_error(vfs_error_to_tool_error)
+          |> result.map(fn(matches) {
+            json.array(matches, fn(m) {
+              json.object([
+                #("path", json.string(m.path)),
+                #("line_number", json.int(m.line_number)),
+                #("line", json.string(m.line)),
+              ])
+            })
+          })
+        }
+        Error(_) ->
+          Error(tool.ToolError(
+            message: "Invalid arguments: expected {\"pattern\": \"<pattern>\", \"path\": \"<path>\", \"include\": \"<glob>\", \"max_results\": <int>}",
+          ))
+      }
+    },
+  )
+}
+
+/// Return all workspace tools in a list.
 pub fn all_tools(conn: sqlight.Connection) -> List(tool.Tool) {
   [
     read_file_tool(conn),
     write_file_tool(conn),
     list_directory_tool(conn),
     delete_file_tool(conn),
+    grep_tool(conn),
     remember_tool(conn),
     recall_tool(conn),
     list_keys_tool(conn),

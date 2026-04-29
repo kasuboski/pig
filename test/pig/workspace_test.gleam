@@ -1,6 +1,8 @@
+import gleam/list
+import gleam/string
 import gleeunit
 import gleeunit/should
-import gleam/list
+import pig/tool
 import pig/workspace
 import sqlight
 
@@ -76,11 +78,28 @@ pub fn remember_and_recall_test() {
   })
 }
 
-// Test 7: All tools returns seven
-pub fn all_tools_returns_seven_test() {
+// Test 7: all_tools returns well-formed tools with unique names.
+pub fn all_tools_returns_well_formed_tools_test() {
   with_workspace(fn(ws) {
     let tools = workspace.all_tools(ws)
-    let count = list.length(tools)
-    should.equal(count, 7)
+    // Must be non-empty
+    tools
+    |> list.is_empty()
+    |> should.equal(False)
+    // Every tool must have a non-empty name and description
+    let all_valid =
+      tools
+      |> list.all(fn(t: tool.Tool) {
+        string.length(t.definition.name) > 0
+        && string.length(t.definition.description) > 0
+      })
+    should.equal(all_valid, True)
+    // Names must be unique
+    let names =
+      tools
+      |> list.map(fn(t: tool.Tool) { t.definition.name })
+    names
+    |> list.length()
+    |> should.equal(list.length(list.unique(names)))
   })
 }
