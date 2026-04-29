@@ -5,14 +5,15 @@
 ////   - `record()` — fire-and-forget, never blocks the agent.
 ////   - `record_sync()` — synchronous call, blocks until written. For testing.
 
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Subject, type Name}
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor.{type StartError}
+import gleam/otp/supervision
 import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
 import pig/ai/message.{type Message, type ToolCall, User, System, Assistant, Tool, Thinking}
-import pig/obs/events.{type SessionEndReason, type SessionEvent, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceCompleted, ToolExecuted, InferenceFailed, SessionEnded}
+import pig/obs/events.{type SessionEndReason, type SessionEvent, type ExtensionHook, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceStarted, InferenceCompleted, ToolStarted, ToolExecuted, ToolBlocked, ExtensionActed, InferenceFailed, SessionEnded, BeforeToolCall, AfterToolCall, BeforeInference, AfterInference, OnError}
 import simplifile
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
@@ -79,6 +80,38 @@ pub fn record_sync(writer: SessionWriter, event: SessionEvent) -> Nil {
   Nil
 }
 
+/// Start a session consumer actor that accepts SessionEvent directly.
+/// Used by the dispatcher to fan out events. Returns the Subject for registration.
+/// This is the consumer version of the actor — it receives SessionEvent directly,
+/// not WriterMessage wrappers. Fire-and-forget: does not block.
+pub fn start_consumer(path: String) -> Result(Subject(SessionEvent), StartError) {
+  let builder =
+    actor.new(State(path: path))
+    |> actor.on_message(handle_consumer_message)
+  case actor.start(builder) {
+    Ok(started) -> Ok(started.data)
+    Error(e) -> Error(e)
+  }
+}
+
+/// Create a supervised session consumer actor for use in a supervision tree.
+/// The supervised actor's message type is SessionEvent directly (not WriterMessage).
+pub fn supervised(
+  path: String,
+  name: Name(SessionEvent),
+) -> supervision.ChildSpecification(Nil) {
+  supervision.worker(fn() {
+    let builder =
+      actor.new(State(path: path))
+      |> actor.on_message(handle_consumer_message)
+      |> actor.named(name)
+    case actor.start(builder) {
+      Ok(started) -> Ok(actor.Started(data: Nil, pid: started.pid))
+      Error(e) -> Error(e)
+    }
+  })
+}
+
 /// Format a SessionEvent as a JSON string (pure function, no side effects).
 pub fn format_event(event: SessionEvent) -> String {
   let ts = iso_timestamp()
@@ -119,6 +152,16 @@ pub fn format_event(event: SessionEvent) -> String {
         }
 
       json.object(with_system) |> json.to_string()
+    }
+
+    InferenceStarted(model:, message_count:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("inference_started")),
+        #("model", json.string(model)),
+        #("message_count", json.int(message_count)),
+      ])
+      |> json.to_string()
     }
 
     InferenceCompleted(
@@ -168,6 +211,15 @@ pub fn format_event(event: SessionEvent) -> String {
       json.object(with_output_tokens) |> json.to_string()
     }
 
+    ToolStarted(tool_call:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("tool_started")),
+        #("tool_call", tool_call_to_json(tool_call)),
+      ])
+      |> json.to_string()
+    }
+
     ToolExecuted(tool_call:, result:, duration_ms:) -> {
       json.object([
         #("ts", json.string(ts)),
@@ -175,6 +227,31 @@ pub fn format_event(event: SessionEvent) -> String {
         #("duration_ms", json.int(duration_ms)),
         #("tool_call", tool_call_to_json(tool_call)),
         #("result", json.string(result)),
+      ])
+      |> json.to_string()
+    }
+
+    ToolBlocked(tool_call:, extension_name:, reason:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("tool_blocked")),
+        #("tool_call", tool_call_to_json(tool_call)),
+        #("extension_name", json.string(extension_name)),
+        #("reason", json.string(reason)),
+      ])
+      |> json.to_string()
+    }
+
+    ExtensionActed(extension_name:, hook:, action:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("extension_acted")),
+        #("extension_name", json.string(extension_name)),
+        #("hook", json.string(hook_to_string(hook))),
+        #("action", json.object([
+          #("action_type", json.string(action.action_type)),
+          #("description", json.string(action.description)),
+        ])),
       ])
       |> json.to_string()
     }
@@ -223,6 +300,14 @@ fn handle_message(
       actor.stop()
     }
   }
+}
+
+/// Handle consumer messages (SessionEvent directly, not wrapped in WriterMessage).
+/// Used by the supervised consumer actor that receives events from the dispatcher.
+fn handle_consumer_message(state: State, event: SessionEvent) -> actor.Next(State, SessionEvent) {
+  let json_str = format_event(event)
+  let _ = simplifile.append(state.path, json_str <> "\n")
+  actor.continue(state)
 }
 
 // ── JSON Serialization Helpers ────────────────────────────────────────
@@ -322,5 +407,15 @@ fn reason_to_json(reason: SessionEndReason) -> json.Json {
     Interrupted -> {
       json.object([#("type", json.string("interrupted"))])
     }
+  }
+}
+
+fn hook_to_string(hook: ExtensionHook) -> String {
+  case hook {
+    BeforeToolCall -> "before_tool_call"
+    AfterToolCall -> "after_tool_call"
+    BeforeInference -> "before_inference"
+    AfterInference -> "after_inference"
+    OnError -> "on_error"
   }
 }

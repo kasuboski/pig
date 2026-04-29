@@ -6,8 +6,10 @@
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option
 import pig/agent/state
 import pig/ai/message.{type ToolCall}
+import pig/obs/emit
 import pig/obs/events
 import pig/tool
 import pig/tool/execution
@@ -58,17 +60,25 @@ fn spawn_and_collect(
   st: state.AgentState,
   calls: List(ToolCall),
 ) -> List(Result(json.Json, tool.ToolError)) {
+  // Capture dispatcher subject for spawned processes
+  let dispatcher_opt = st.config.dispatcher
   // Create a reply subject for each tool call
   let subjects =
     list.map(calls, fn(call) {
       let reply_subject = process.new_subject()
       let _pid =
         process.spawn(fn() {
-          events.emit(events.ToolStart(
-            tool_name: call.name,
-            tool_call_id: call.id,
-            arguments_json: call.arguments_json,
-          ))
+          // Emit based on whether dispatcher is configured
+          case dispatcher_opt {
+            option.Some(disp) ->
+              emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
+            option.None ->
+              events.emit(events.ToolStart(
+                tool_name: call.name,
+                tool_call_id: call.id,
+                arguments_json: call.arguments_json,
+              ))
+          }
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
@@ -76,12 +86,24 @@ fn spawn_and_collect(
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
-          events.emit(events.ToolStop(
-            tool_name: call.name,
-            tool_call_id: call.id,
-            duration_ms: duration,
-            result: result_str,
-          ))
+          case dispatcher_opt {
+            option.Some(disp) ->
+              emit.to_dispatcher(
+                disp,
+                events.ToolExecuted(
+                  tool_call: call,
+                  result: result_str,
+                  duration_ms: duration,
+                ),
+              )
+            option.None ->
+              events.emit(events.ToolStop(
+                tool_name: call.name,
+                tool_call_id: call.id,
+                duration_ms: duration,
+                result: result_str,
+              ))
+          }
           process.send(reply_subject, result)
         })
       reply_subject

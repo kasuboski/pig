@@ -29,6 +29,17 @@ pub fn system_time() -> Int {
   ffi_system_time()
 }
 
+/// Public wrapper for the FFI execute function.
+/// This allows other modules (like the dispatcher) to emit telemetry events
+/// without exposing the FFI implementation directly.
+pub fn execute_telemetry(
+  name: List(String),
+  measurements: Dict(String, Int),
+  metadata: Dict(String, String),
+) -> Nil {
+  ffi_execute(name, measurements, metadata)
+}
+
 // ── Event Union Type ─────────────────────────────────────────────────
 //// All pig telemetry events as typed variants. Construct these directly
 //// and pass to `emit()`.
@@ -76,6 +87,10 @@ pub fn tool_exception_name() -> List(String) {
   ["pig", "tool", "exception"]
 }
 
+pub fn tool_blocked_name() -> List(String) {
+  ["pig", "tool", "blocked"]
+}
+
 /// All pig event names, useful for attaching a listener to everything.
 pub fn all_event_names() -> List(List(String)) {
   [
@@ -85,10 +100,9 @@ pub fn all_event_names() -> List(List(String)) {
     tool_start_name(),
     tool_stop_name(),
     tool_exception_name(),
+    tool_blocked_name(),
   ]
 }
-
-// ── Event Accessors ──────────────────────────────────────────────────
 
 /// Get the telemetry event name for a given event.
 pub fn event_name(event: Event) -> List(String) {
@@ -101,6 +115,8 @@ pub fn event_name(event: Event) -> List(String) {
     ToolException(..) -> tool_exception_name()
   }
 }
+
+// ── Event Accessors ──────────────────────────────────────────────────
 
 /// Convert an event name list to a dot-separated string for display.
 pub fn name_to_string(name: List(String)) -> String {
@@ -357,6 +373,20 @@ pub type SessionEndReason {
   Interrupted
 }
 
+/// Extension hook points for lifecycle events.
+pub type ExtensionHook {
+  BeforeToolCall
+  AfterToolCall
+  BeforeInference
+  AfterInference
+  OnError
+}
+
+/// Details of an extension's action.
+pub type ExtensionActionDetail {
+  ExtensionActionDetail(action_type: String, description: String)
+}
+
 /// Rich session events for pig consumers (session writer, terminal printer, OTel).
 /// Carries full message content, tool args/results, token counts, and timing.
 pub type SessionEvent {
@@ -367,6 +397,7 @@ pub type SessionEvent {
     provider_name: Option(String),
     system_prompt: Option(String),
   )
+  InferenceStarted(model: String, message_count: Int)
   InferenceCompleted(
     message: Message,
     response_id: Option(String),
@@ -377,11 +408,14 @@ pub type SessionEvent {
     duration_ms: Int,
     input_messages: List(Message),
   )
+  ToolStarted(tool_call: ToolCall)
   ToolExecuted(
     tool_call: ToolCall,
     result: String,
     duration_ms: Int,
   )
+  ToolBlocked(tool_call: ToolCall, extension_name: String, reason: String)
+  ExtensionActed(extension_name: String, hook: ExtensionHook, action: ExtensionActionDetail)
   InferenceFailed(
     error: AiError,
     duration_ms: Int,

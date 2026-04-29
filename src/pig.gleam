@@ -16,6 +16,10 @@ import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
 import pig/ai/provider.{type Provider, from_message}
+import pig/obs/consumer_spec.{type ConsumerSpec}
+import pig/obs/dispatcher
+import pig/obs/session
+import pig/obs/terminal
 import pig/skill
 import pig/skill/librarian
 import pig/tool
@@ -27,6 +31,7 @@ pub opaque type PigConfig {
     agent_config: state.AgentConfig,
     skills: List(skill.Skill),
     persistence_path: Option(String),
+    consumer_specs: List(ConsumerSpec),
   )
 }
 
@@ -38,12 +43,13 @@ pub opaque type Agent {
 /// Create a new PigConfig with a provider and sensible defaults.
 ///
 /// Defaults: empty tool registry, no system prompt, no skills,
-/// no persistence, model "unknown", max iterations 50.
+/// no persistence, model "unknown", max iterations 50, no consumers.
 pub fn new(provider: Provider) -> PigConfig {
   PigConfig(
     agent_config: state.config(provider),
     skills: [],
     persistence_path: option.None,
+    consumer_specs: [],
   )
 }
 
@@ -138,6 +144,28 @@ pub fn with_provider_name(config: PigConfig, name: String) -> PigConfig {
   )
 }
 
+/// Register a session writer consumer that writes JSONL to the given path.
+pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
+  let name = process.new_name("pig_session_writer")
+  let spec = session.supervised(path, name)
+  let start_fn = fn() { session.start_consumer(path) }
+  PigConfig(..config, consumer_specs: [
+    consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
+    ..config.consumer_specs
+  ])
+}
+
+/// Register a terminal output consumer that prints formatted events to stdout.
+pub fn with_terminal_output(config: PigConfig) -> PigConfig {
+  let name = process.new_name("pig_terminal")
+  let spec = terminal.supervised(name)
+  let start_fn = fn() { terminal.start_consumer() }
+  PigConfig(..config, consumer_specs: [
+    consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
+    ..config.consumer_specs
+  ])
+}
+
 /// Get the underlying AgentConfig. Useful for testing and inspection.
 pub fn agent_config(config: PigConfig) -> state.AgentConfig {
   config.agent_config
@@ -147,9 +175,27 @@ pub fn agent_config(config: PigConfig) -> state.AgentConfig {
 ///
 /// Builds the final `AgentConfig`: registers the librarian tool if
 /// skills are present, composes system prompt from skill descriptions.
+/// Also creates a dispatcher actor and registers all configured consumers.
 /// Returns an `Agent` handle for sending prompts.
 pub fn start(config: PigConfig) -> Result(Agent, StartError) {
   let final_config = build_agent_config(config)
+
+  // Start dispatcher
+  let assert Ok(dispatcher_subject) = dispatcher.start()
+  let final_config = state.AgentConfig(
+    ..final_config,
+    dispatcher: option.Some(dispatcher_subject),
+  )
+
+  // Start and register each consumer (unsupervised)
+  list.each(config.consumer_specs, fn(entry) {
+    let assert Ok(consumer_subject) = entry.start_fn()
+    process.send(
+      dispatcher_subject,
+      dispatcher.RegisterConsumer(consumer_subject),
+    )
+  })
+
   case agent_actor.start(final_config) {
     Ok(subject) -> Ok(Agent(subject))
     Error(e) -> Error(e)

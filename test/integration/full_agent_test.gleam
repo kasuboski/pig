@@ -8,7 +8,6 @@
 
 import gleam/dynamic
 import gleam/dynamic/decode
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/string
@@ -23,6 +22,7 @@ import pig/ai/openai
 import pig/ai/provider.{type Provider}
 import pig/ai/tool_definition
 import pig/obs/events
+import temporary
 import pig/obs/listener
 import pig/tool
 
@@ -165,21 +165,30 @@ pub fn agent_with_session_writer_test() {
   case gate.skip_unless_enabled() {
     True -> Nil
     False -> {
-      let session_path =
-        "/tmp/pig_integration_session_"
-        <> int.to_string(erlang_unique_integer())
+      let tmp =
+        temporary.file()
+        |> temporary.with_prefix("pig_integ_session_")
+        |> temporary.with_suffix(".jsonl")
+      let assert Ok(_) =
+        temporary.create(tmp, fn(session_path) {
+          let cfg =
+            pig.new(make_provider_fn())
+            |> pig.with_model(config.model())
+            |> pig.with_persistence(session_path)
+          let assert Ok(agent) = pig.start(cfg)
+          let result =
+            pig.run_with_timeout(
+              agent,
+              "Say exactly: session test",
+              60_000,
+            )
+          pig.stop(agent)
 
-      let cfg =
-        pig.new(make_provider_fn())
-        |> pig.with_model(config.model())
-        |> pig.with_persistence(session_path)
-      let assert Ok(agent) = pig.start(cfg)
-      let result =
-        pig.run_with_timeout(agent, "Say exactly: session test", 60_000)
-      pig.stop(agent)
-
-      let assert Ok(message.Assistant(content:, ..)) = result
-      should.be_true(string.length(content) > 0)
+          let assert Ok(message.Assistant(content:, ..)) = result
+          should.be_true(string.length(content) > 0)
+          Nil
+        })
+      Nil
     }
   }
 }
@@ -244,6 +253,3 @@ pub fn agent_tool_loop_with_telemetry_test() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
-
-@external(erlang, "erlang", "unique_integer")
-fn erlang_unique_integer() -> Int
