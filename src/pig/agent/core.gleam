@@ -8,21 +8,134 @@
 //// Telemetry events are emitted as fire-and-forget side effects via
 //// `pig/obs/events`. They do not affect the return values.
 
+import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option
 import pig/agent/state as state
-import pig/ai/error.{type AiError, ApiError, InvalidResponse, RateLimited, Timeout}
+import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
+import pig/obs/dispatcher
+import pig/obs/emit
 import pig/obs/events
 import pig/tool/execution
 
-/// Convert an AiError to a string for error_type telemetry.
-fn error_to_string(err: AiError) -> String {
-  case err {
-    ApiError(_) -> "ApiError"
-    RateLimited -> "RateLimited"
-    Timeout -> "Timeout"
-    InvalidResponse(_) -> "InvalidResponse"
+// ── Emission Helpers ───────────────────────────────────────────────
+
+// ── Dispatcher Resolution ───────────────────────────────────────────
+
+/// Get the dispatcher subject from the agent state.
+/// If dispatcher is None but dispatcher_name is Some, resolve the name to a subject.
+fn get_dispatcher(st: state.AgentState) -> option.Option(process.Subject(dispatcher.DispatcherMessage)) {
+  case st.config.dispatcher {
+    option.Some(disp) -> option.Some(disp)
+    option.None -> {
+      case st.config.dispatcher_name {
+        option.Some(name) -> option.Some(process.named_subject(name))
+        option.None -> option.None
+      }
+    }
+  }
+}
+
+// ── Emission Helpers ───────────────────────────────────────────────
+
+/// Emit InferenceStarted event.
+fn emit_inference_start(st: state.AgentState, model: String, count: Int) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) -> emit.to_dispatcher(disp, events.InferenceStarted(model:, message_count: count))
+    option.None -> Nil
+  }
+}
+
+/// Emit InferenceCompleted event.
+fn emit_inference_complete(
+  st: state.AgentState,
+  model: String,
+  _msg_count: Int,
+  duration_ms: Int,
+  response_id: option.Option(String),
+  provider_response_model: option.Option(String),
+  finish_reason: option.Option(String),
+  input_tokens: option.Option(Int),
+  output_tokens: option.Option(Int),
+  message: Message,
+  input_messages: List(Message),
+) -> Nil {
+  // Prefer the model returned by the provider in the API response;
+  // fall back to the config model when the provider doesn't supply one.
+  let response_model = case provider_response_model {
+    option.Some(_) as m -> m
+    option.None -> option.Some(model)
+  }
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.InferenceCompleted(
+          message:,
+          response_id:,
+          response_model:,
+          finish_reason:,
+          input_tokens:,
+          output_tokens:,
+          duration_ms:,
+          input_messages:,
+        ),
+      )
+    option.None -> Nil
+  }
+}
+
+/// Emit InferenceFailed event.
+fn emit_inference_failed(
+  st: state.AgentState,
+  _model: String,
+  _msg_count: Int,
+  error: AiError,
+  duration_ms: Int,
+  input_messages: List(Message),
+) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.InferenceFailed(
+          error:,
+          duration_ms:,
+          input_messages:,
+        ),
+      )
+    option.None -> Nil
+  }
+}
+
+/// Emit ToolStarted event.
+fn emit_tool_start(st: state.AgentState, call: ToolCall) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) -> emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
+    option.None -> Nil
+  }
+}
+
+/// Emit ToolExecuted event.
+fn emit_tool_executed(
+  st: state.AgentState,
+  call: ToolCall,
+  duration_ms: Int,
+  result_str: String,
+) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.ToolExecuted(
+          tool_call: call,
+          result: result_str,
+          duration_ms:,
+        ),
+      )
+    option.None -> Nil
   }
 }
 
@@ -38,15 +151,15 @@ pub type StepResult {
 
 /// Execute one step: call the provider and branch on the response.
 ///
-/// Emits `InferenceStart` before the call and `InferenceStop` or
-/// `InferenceException` after, with duration measurement.
+/// Emits `InferenceStarted` before the call and `InferenceCompleted` or
+/// `InferenceFailed` after, with duration measurement.
 pub fn step(st: state.AgentState) -> StepResult {
   let defs = state.tool_definitions(st)
   let msgs = state.messages_for_provider(st)
   let msg_count = list.length(msgs)
   let model = st.config.model
 
-  events.emit(events.InferenceStart(model:, message_count: msg_count))
+  emit_inference_start(st, model, msg_count)
   let start_time = events.system_time()
 
   let result = case st.config.provider(msgs, defs) {
@@ -55,15 +168,19 @@ pub fn step(st: state.AgentState) -> StepResult {
       let meta = inference_result.metadata
       let updated = state.add_message(st, msg)
       let duration = events.system_time() - start_time
-      events.emit(events.InferenceStop(
-        model:,
-        message_count: msg_count,
-        duration_ms: duration,
-        response_id: meta.response_id,
-        finish_reason: meta.finish_reason,
-        input_tokens: meta.input_tokens,
-        output_tokens: meta.output_tokens,
-      ))
+      emit_inference_complete(
+        st,
+        model,
+        msg_count,
+        duration,
+        meta.response_id,
+        meta.response_model,
+        meta.finish_reason,
+        meta.input_tokens,
+        meta.output_tokens,
+        msg,
+        msgs,
+      )
       case msg {
         message.Assistant(content: _, tool_calls: calls, thinking: _) ->
           case calls {
@@ -74,11 +191,15 @@ pub fn step(st: state.AgentState) -> StepResult {
       }
     }
     Error(e) -> {
-      events.emit(events.InferenceException(
-        model:,
-        message_count: msg_count,
-        error_type: error_to_string(e),
-      ))
+      let duration = events.system_time() - start_time
+      emit_inference_failed(
+        st,
+        model,
+        msg_count,
+        e,
+        duration,
+        msgs,
+      )
       StepError(e)
     }
   }
@@ -87,7 +208,7 @@ pub fn step(st: state.AgentState) -> StepResult {
 
 /// Execute tool calls against the registry and append results to history.
 ///
-/// Emits `ToolStart` and `ToolStop` for each tool call.
+/// Emits `ToolStarted` and `ToolExecuted` for each tool call.
 /// Errors are caught and turned into Tool messages — the LLM adapts.
 pub fn execute_tools_and_advance(
   st: state.AgentState,
@@ -95,11 +216,7 @@ pub fn execute_tools_and_advance(
 ) -> state.AgentState {
   let tool_messages =
     list.map(calls, fn(call) {
-      events.emit(events.ToolStart(
-        tool_name: call.name,
-        tool_call_id: call.id,
-        arguments_json: call.arguments_json,
-      ))
+      emit_tool_start(st, call)
       let start_time = events.system_time()
       let result = execution.execute_tool(st.config.tools, call)
       let duration = events.system_time() - start_time
@@ -107,12 +224,7 @@ pub fn execute_tools_and_advance(
         Ok(json_result) -> json.to_string(json_result)
         Error(tool_err) -> "Tool error: " <> tool_err.message
       }
-      events.emit(events.ToolStop(
-        tool_name: call.name,
-        tool_call_id: call.id,
-        duration_ms: duration,
-        result: result_str,
-      ))
+      emit_tool_executed(st, call, duration, result_str)
       case result {
         Ok(json_result) ->
           message.Tool(

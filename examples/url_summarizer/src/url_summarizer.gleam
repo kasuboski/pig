@@ -16,20 +16,13 @@
 ////   cd examples/url_summarizer
 ////   gleam run
 
-import gleam/int
 import gleam/io
-import gleam/list
-import gleam/option.{Some, None}
 import gleam/result
-import gleam/dynamic/decode
-import gleam/json
 import gleam/string
 import pig
 import pig/ai/error
 import pig/ai/message
 import pig/ai/openai
-import pig/obs/events.{type Event}
-import pig/obs/listener
 import pig/tool/web_fetch
 import envoy
 
@@ -53,8 +46,6 @@ fn model() -> String {
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main() {
-  let telemetry = listener.attach()
-
   let provider =
     openai.provider_with_base_url(api_key(), model(), base_url())
 
@@ -67,6 +58,7 @@ pub fn main() {
         <> "Use bullet points. Focus on the key takeaways.",
     )
     |> pig.with_tool(web_fetch.tool())
+    |> pig.with_terminal_output()
 
   let assert Ok(agent) = pig.start(cfg)
 
@@ -109,85 +101,5 @@ pub fn main() {
     }
   }
 
-  // Collect and display telemetry
-  let events = listener.get_events(telemetry)
-  listener.detach(telemetry)
-
-  io.println("\n=== How the agent decided ===\n")
-  print_timeline(events)
-
   pig.stop(agent)
-}
-
-// ── Telemetry Formatting ─────────────────────────────────────────────
-
-fn print_timeline(events: List(Event)) -> Nil {
-  let _ =
-    events
-    |> list.index_map(fn(event, i) {
-      let label = format_timeline_event(event)
-      io.println(int.to_string(i + 1) <> ". " <> label)
-    })
-  Nil
-}
-
-fn format_timeline_event(event: Event) -> String {
-  case event {
-    events.InferenceStart(model:, message_count:) -> {
-      "🧠 Model call ("
-        <> model
-        <> ", "
-        <> int.to_string(message_count)
-        <> " messages)"
-    }
-    events.InferenceStop(
-      duration_ms:,
-      input_tokens:,
-      output_tokens:,
-      finish_reason:,
-      ..
-    ) -> {
-      let secs = int.to_string(duration_ms / 1000) <> "s"
-      let tokens = case input_tokens, output_tokens {
-        Some(inp), Some(out) ->
-          " (" <> int.to_string(inp) <> "→" <> int.to_string(out) <> " tokens)"
-        _, _ -> ""
-      }
-      let reason = case finish_reason {
-        Some(r) -> " [" <> r <> "]"
-        None -> ""
-      }
-      "🧠 Response " <> secs <> tokens <> reason
-    }
-    events.InferenceException(error_type:, ..) -> {
-      "🧠 Inference failed: " <> error_type
-    }
-    events.ToolStart(tool_name:, arguments_json:, ..) -> {
-      let args_label = format_tool_args(tool_name, arguments_json)
-      "🔧 Called " <> tool_name <> args_label
-    }
-    events.ToolStop(tool_name:, duration_ms:, result:, ..) -> {
-      let args_label = format_tool_args(tool_name, result)
-      let secs = int.to_string(duration_ms / 1000) <> "s"
-      "🔧 " <> tool_name <> args_label <> " done (" <> secs <> ")"
-    }
-    events.ToolException(tool_name:, arguments_json:, ..) -> {
-      let args_label = format_tool_args(tool_name, arguments_json)
-      "🔧 " <> tool_name <> args_label <> " failed"
-    }
-  }
-}
-
-fn format_tool_args(tool_name: String, arguments_json: String) -> String {
-  case tool_name {
-    "web_fetch" -> {
-      case
-        json.parse(from: arguments_json, using: decode.field("url", decode.string, decode.success))
-      {
-        Ok(url) -> "(" <> url <> ")"
-        Error(_) -> ""
-      }
-    }
-    _ -> ""
-  }
 }

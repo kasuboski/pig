@@ -4,9 +4,11 @@
 //// getter/setter round-trips. Per TESTING_STRATEGY §Axiom 1:
 //// "If we entirely replace the internals, no tests should break."
 
+import gleeunit
 import gleam/list
 import gleam/option.{None}
-import gleeunit
+import gleam/erlang/process
+import gleeunit/should
 import pig/agent/state
 import pig/ai/message
 import support/harness
@@ -94,6 +96,34 @@ pub fn exceeded_max_iterations_boundary_test() {
       state.exceeded_max_iterations(s2)
     }
   }
+}
+
+// ── Dispatcher Config ──────────────────────────────────────────────
+
+/// Default config has no dispatcher_name.
+pub fn default_config_has_no_dispatcher_name_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  cfg.dispatcher_name |> should.equal(option.None)
+}
+
+/// with_dispatcher_name sets the dispatcher_name field.
+pub fn with_dispatcher_name_sets_name_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let name = process.new_name("test_dispatcher")
+  let cfg2 = state.with_dispatcher_name(cfg, name)
+  cfg2.dispatcher_name |> should.equal(option.Some(name))
+}
+
+/// with_dispatcher_name does not mutate original config.
+pub fn with_dispatcher_name_does_not_mutate_original_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let name = process.new_name("test_dispatcher")
+  let cfg2 = state.with_dispatcher_name(cfg, name)
+  
+  // Original config still has None
+  cfg.dispatcher_name |> should.equal(option.None)
+  // New config has the name
+  cfg2.dispatcher_name |> should.equal(option.Some(name))
 }
 
 

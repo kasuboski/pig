@@ -6,16 +6,19 @@
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option
 import pig/agent/state
 import pig/ai/message.{type ToolCall}
+import pig/obs/dispatcher
+import pig/obs/emit
 import pig/obs/events
 import pig/tool
 import pig/tool/execution
 
 /// Execute tool calls in parallel and append results to state.
 ///
-/// Spawns one process per tool call. Each process emits ToolStart,
-/// executes the tool, emits ToolStop, and sends the result back.
+/// Spawns one process per tool call. Each process emits ToolStarted,
+/// executes the tool, emits ToolExecuted, and sends the result back.
 /// The caller collects all results and builds Tool messages.
 ///
 /// If a spawned process crashes before sending a result, this function
@@ -58,17 +61,18 @@ fn spawn_and_collect(
   st: state.AgentState,
   calls: List(ToolCall),
 ) -> List(Result(json.Json, tool.ToolError)) {
+  // Capture dispatcher subject for spawned processes
+  let disp = get_dispatcher(st)
   // Create a reply subject for each tool call
   let subjects =
     list.map(calls, fn(call) {
       let reply_subject = process.new_subject()
       let _pid =
         process.spawn(fn() {
-          events.emit(events.ToolStart(
-            tool_name: call.name,
-            tool_call_id: call.id,
-            arguments_json: call.arguments_json,
-          ))
+          case disp {
+            option.Some(d) -> emit.to_dispatcher(d, events.ToolStarted(tool_call: call))
+            option.None -> Nil
+          }
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
@@ -76,12 +80,18 @@ fn spawn_and_collect(
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
-          events.emit(events.ToolStop(
-            tool_name: call.name,
-            tool_call_id: call.id,
-            duration_ms: duration,
-            result: result_str,
-          ))
+          case disp {
+            option.Some(d) ->
+              emit.to_dispatcher(
+                d,
+                events.ToolExecuted(
+                  tool_call: call,
+                  result: result_str,
+                  duration_ms: duration,
+                ),
+              )
+            option.None -> Nil
+          }
           process.send(reply_subject, result)
         })
       reply_subject
@@ -92,4 +102,18 @@ fn spawn_and_collect(
       process.receive(subject, 5000)
     result
   })
+}
+
+/// Get the dispatcher subject from the agent state.
+/// If dispatcher is None but dispatcher_name is Some, resolve the name to a subject.
+fn get_dispatcher(st: state.AgentState) -> option.Option(process.Subject(dispatcher.DispatcherMessage)) {
+  case st.config.dispatcher {
+    option.Some(disp) -> option.Some(disp)
+    option.None -> {
+      case st.config.dispatcher_name {
+        option.Some(name) -> option.Some(process.named_subject(name))
+        option.None -> option.None
+      }
+    }
+  }
 }

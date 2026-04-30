@@ -3,12 +3,13 @@
 //// OTP actor that receives SessionEvents and prints formatted output.
 //// Pure `format_event` function for testing without side effects.
 
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Subject, type Name}
 import gleam/int
 import gleam/option.{None, Some}
 import gleam/otp/actor
+import gleam/otp/supervision
 import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
-import pig/obs/events.{type SessionEvent, type SessionEndReason, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted}
+import pig/obs/events.{type SessionEvent, type SessionEndReason, type ExtensionHook, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted}
 import gleam/io
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -38,6 +39,10 @@ pub fn format_event(event: SessionEvent) -> String {
       "[START] Session started | model: " <> model <> agent_part
     }
 
+    events.InferenceStarted(model:, message_count:) -> {
+      "[INF] Started | model: " <> model <> " | messages: " <> int.to_string(message_count)
+    }
+
     events.InferenceCompleted(
       message: _,
       response_id: _,
@@ -63,9 +68,21 @@ pub fn format_event(event: SessionEvent) -> String {
       "[INF] Completed | " <> duration_str <> token_part <> finish_part
     }
 
+    events.ToolStarted(tool_call:) -> {
+      "[TOOL] Started | " <> tool_call.name
+    }
+
     events.ToolExecuted(tool_call:, result: _, duration_ms:) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       "[TOOL] " <> tool_call.name <> " | " <> duration_str
+    }
+
+    events.ToolBlocked(tool_call:, extension_name:, reason:) -> {
+      "[TOOL] Blocked | " <> tool_call.name <> " | " <> extension_name <> " | " <> reason
+    }
+
+    events.ExtensionActed(extension_name:, hook:, action:) -> {
+      "[EXT] " <> extension_name <> " | " <> hook_to_string(hook) <> " | " <> action.action_type
     }
 
     events.InferenceFailed(
@@ -106,6 +123,17 @@ fn format_end_reason(reason: SessionEndReason) -> String {
   }
 }
 
+/// Format an ExtensionHook for display.
+fn hook_to_string(hook: ExtensionHook) -> String {
+  case hook {
+    events.BeforeToolCall -> "before_tool_call"
+    events.AfterToolCall -> "after_tool_call"
+    events.BeforeInference -> "before_inference"
+    events.AfterInference -> "after_inference"
+    events.OnError -> "on_error"
+  }
+}
+
 // ── Actor Initialization ───────────────────────────────────────────────
 
 /// Start the terminal printer actor.
@@ -118,6 +146,31 @@ pub fn start() -> Result(Subject(SessionEvent), actor.StartError) {
     Ok(started) -> Ok(started.data)
     Error(e) -> Error(e)
   }
+}
+
+/// Start a terminal consumer actor that accepts SessionEvent directly.
+/// Used by the dispatcher to fan out events. Returns the Subject for registration.
+/// This is the consumer version of the actor — same as start() since terminal
+/// already receives SessionEvent directly.
+pub fn start_consumer() -> Result(Subject(SessionEvent), actor.StartError) {
+  start()
+}
+
+/// Create a supervised terminal consumer actor for use in a supervision tree.
+/// The supervised actor's message type is SessionEvent.
+pub fn supervised(
+  name: Name(SessionEvent),
+) -> supervision.ChildSpecification(Nil) {
+  supervision.worker(fn() {
+    let builder =
+      actor.new(State)
+      |> actor.on_message(handle_message)
+      |> actor.named(name)
+    case actor.start(builder) {
+      Ok(started) -> Ok(actor.Started(data: Nil, pid: started.pid))
+      Error(e) -> Error(e)
+    }
+  })
 }
 
 /// Handle incoming messages to the printer actor.
