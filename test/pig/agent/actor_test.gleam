@@ -5,18 +5,19 @@
 //// Thin OTP wrapper — logic lives in core.gleam.
 
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleeunit
+import gleeunit/should
 import pig/agent/actor
 import pig/agent/state
-import pig/ai/error
 import pig/ai/message
 import pig/ai/provider
 import pig/obs/dispatcher
 import pig/tool
+import simplifile
 import support/harness
+import temporary
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -76,14 +77,15 @@ pub fn run_tool_call_scenario_test() {
   msg == final
 }
 
-// ── State Isolation ──────────────────────────────────────────────
+// ── State Accumulation (Sessions) ──────────────────────────────────
 
-/// Two sequential runs on the same actor start from fresh state.
-/// The second run does NOT see history from the first.
-pub fn runs_are_state_isolated_test() {
-  // Provider counts user messages. If history bleeds between runs,
-  // second call would see 2 user messages (run1's + run2's).
+/// Two sequential runs on the same actor accumulate history.
+/// The second run sees the first run's user messages in history.
+pub fn runs_accumulate_history_test() {
   let ok_response = message.Assistant("ok", [], None)
+  // Provider expects to see accumulated user messages.
+  // Second call MUST see 2 user messages (from both runs).
+  let call_count = process.new_subject()
   let provider = fn(msgs, _tools) {
     let user_count =
       msgs
@@ -94,26 +96,23 @@ pub fn runs_are_state_isolated_test() {
         }
       })
       |> list.length()
-    case user_count == 1 {
-      True -> Ok(provider.from_message(ok_response))
-      False ->
-        Error(error.ApiError(
-          "history bleed! saw " <> int.to_string(user_count)
-            <> " user messages",
-        ))
-    }
+    // Send observed count to test for verification
+    process.send(call_count, user_count)
+    Ok(provider.from_message(ok_response))
   }
   let assert Ok(dispatcher_subject) = dispatcher.start()
   let config =
     state.config(provider)
     |> state.with_dispatcher(dispatcher_subject)
   let assert Ok(subject) = actor.start(config)
-  // First run succeeds
-  let assert Ok(m1) = actor.run(subject, "prompt one", 5000)
-  let assert True = m1 == ok_response
-  // Second run also succeeds — no history from first run
-  let assert Ok(m2) = actor.run(subject, "prompt two", 5000)
-  let assert True = m2 == ok_response
+  // First run: should see 1 user message
+  let assert Ok(_) = actor.run(subject, "prompt one", 5000)
+  let assert Ok(count1) = process.receive(call_count, 1000)
+  should.equal(count1, 1)
+  // Second run: should see 2 user messages (accumulated from first run)
+  let assert Ok(_) = actor.run(subject, "prompt two", 5000)
+  let assert Ok(count2) = process.receive(call_count, 1000)
+  should.equal(count2, 2)
   process.send(dispatcher_subject, dispatcher.Stop)
 }
 
@@ -171,4 +170,55 @@ pub fn provider_error_returns_error_not_crash_test() {
   // Actor still alive — second call also returns error
   let assert Error(_) = actor.run(subject, "hello again", 5000)
   process.send(dispatcher_subject, dispatcher.Stop)
+}
+
+// ── Session Replay on Init ────────────────────────────────────────
+
+/// When session_path is set and the file has history, actor replays on init.
+/// The provider sees the replayed messages in history on first run.
+pub fn actor_replays_session_on_init_test() {
+  // Pre-create a JSONL session file with a user message
+  let tmp =
+    temporary.file()
+    |> temporary.with_prefix("pig_replay_init_")
+    |> temporary.with_suffix(".jsonl")
+  let assert Ok(Nil) =
+    temporary.create(tmp, fn(path) {
+      // Write a session with one inference (user -> assistant)
+      let line1 =
+        "{\"event\":\"inference_completed\",\"input_messages\":[{\"role\":\"user\",\"content\":\"from replay\"}],\"message\":{\"role\":\"assistant\",\"content\":\"replayed answer\",\"tool_calls\":[]}}"
+      let assert Ok(Nil) = simplifile.write(line1 <> "\n", to: path)
+
+      // Provider checks that it sees the replayed history
+      let seen_count = process.new_subject()
+      let provider = fn(msgs, _tools) {
+        let user_msgs =
+          msgs
+          |> list.filter(fn(m) {
+            case m {
+              message.User(content) -> content == "from replay"
+              _ -> False
+            }
+          })
+        process.send(seen_count, list.length(user_msgs))
+        Ok(provider.from_message(message.Assistant("fresh", [], None)))
+      }
+
+      let assert Ok(disp) = dispatcher.start()
+      let config =
+        state.config(provider)
+        |> state.with_dispatcher(disp)
+        |> state.with_session_path(path)
+
+      let assert Ok(subject) = actor.start(config)
+      let assert Ok(_) = actor.run(subject, "new prompt", 5000)
+
+      // Provider should have seen the replayed "from replay" user message
+      let assert Ok(count) = process.receive(seen_count, 2000)
+      should.equal(count, 1)
+
+      actor.stop(subject)
+      process.send(disp, dispatcher.Stop)
+      Nil
+    })
 }

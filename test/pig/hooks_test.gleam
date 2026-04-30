@@ -1,0 +1,516 @@
+//// Hooks system tests.
+////
+//// Comprehensive unit tests for the hooks module following TDD principles.
+//// Tests verify the renamed Hooks type (was Extension) and composition
+//// functions that take List(Hooks) instead of ExtensionStack.
+
+import gleeunit
+import gleeunit/should
+import gleam/option.{None}
+import pig/ai/error
+import pig/ai/message
+import pig/hooks
+
+pub fn main() -> Nil {
+  gleeunit.main()
+}
+
+// ── Builder Tests ───────────────────────────────────────────────────
+
+pub fn new_creates_hooks_with_name_test() {
+  let _h = hooks.new("my-hooks")
+  True
+}
+
+pub fn new_hooks_allows_tools_by_default_test() {
+  let h = hooks.new("test")
+  let event = hooks.ToolCallEvent(
+    tool_name: "test_tool",
+    tool_call_id: "call_123",
+    arguments_json: "{}",
+  )
+  let action = case h {
+    hooks.Hooks(on_tool_call: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.AllowTool)
+}
+
+pub fn new_hooks_keeps_results_by_default_test() {
+  let h = hooks.new("test")
+  let event = hooks.ToolResultEvent(
+    tool_name: "test_tool",
+    tool_call_id: "call_123",
+    result: "original result",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let action = case h {
+    hooks.Hooks(on_tool_result: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.KeepResult)
+}
+
+pub fn new_hooks_keeps_messages_by_default_test() {
+  let h = hooks.new("test")
+  let messages = [message.User("hello"), message.System("system")]
+  let event = hooks.BeforeInferenceEvent(
+    model: "gpt-4",
+    messages: messages,
+  )
+  let action = case h {
+    hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.KeepMessages)
+}
+
+pub fn on_tool_call_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_tool_call(fn(_) { hooks.BlockTool("blocked") })
+  let event = hooks.ToolCallEvent(
+    tool_name: "test_tool",
+    tool_call_id: "call_123",
+    arguments_json: "{}",
+  )
+  let action = case h {
+    hooks.Hooks(on_tool_call: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.BlockTool("blocked"))
+}
+
+pub fn on_tool_result_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_tool_result(fn(_) {
+      hooks.ReplaceResult("new result", True)
+    })
+  let event = hooks.ToolResultEvent(
+    tool_name: "test_tool",
+    tool_call_id: "call_123",
+    result: "original result",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let action = case h {
+    hooks.Hooks(on_tool_result: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.ReplaceResult("new result", True))
+}
+
+pub fn on_before_inference_replaces_handler_test() {
+  let new_messages = [message.User("modified")]
+  let h =
+    hooks.new("test")
+    |> hooks.on_before_inference(fn(_) {
+      hooks.ReplaceMessages(new_messages)
+    })
+  let event = hooks.BeforeInferenceEvent(
+    model: "gpt-4",
+    messages: [message.User("original")],
+  )
+  let action = case h {
+    hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
+  }
+  should.equal(action, hooks.ReplaceMessages(new_messages))
+}
+
+pub fn on_after_inference_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_after_inference(fn(_) { Nil })
+  let event = hooks.AfterInferenceEvent(
+    model: "gpt-4",
+    message: message.Assistant("response", [], None),
+    duration_ms: 100,
+  )
+  let _ = case h {
+    hooks.Hooks(on_after_inference: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn on_error_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_error(fn(_) { Nil })
+  let event = hooks.ErrorEvent(
+    model: "gpt-4",
+    error: error.ApiError("test error"),
+  )
+  let _ = case h {
+    hooks.Hooks(on_error: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn on_complete_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_complete(fn(_) { Nil })
+  let event = hooks.CompleteEvent(
+    model: "gpt-4",
+    message: message.Assistant("final", [], None),
+    total_iterations: 5,
+  )
+  let _ = case h {
+    hooks.Hooks(on_complete: handler, ..) -> handler(event)
+  }
+  True
+}
+
+// ── Composition Tests: Notification Handlers (List(Hooks)) ──────────
+
+pub fn notify_after_inference_calls_all_handlers_test() {
+  let h1 =
+    hooks.new("observer1")
+    |> hooks.on_after_inference(fn(_) { Nil })
+  let h2 =
+    hooks.new("observer2")
+    |> hooks.on_after_inference(fn(_) { Nil })
+  let event = hooks.AfterInferenceEvent(
+    model: "gpt-4",
+    message: message.Assistant("response", [], None),
+    duration_ms: 100,
+  )
+  hooks.notify_after_inference([h1, h2], event)
+  True
+}
+
+pub fn notify_error_calls_all_handlers_test() {
+  let h1 =
+    hooks.new("error_handler1")
+    |> hooks.on_error(fn(_) { Nil })
+  let h2 =
+    hooks.new("error_handler2")
+    |> hooks.on_error(fn(_) { Nil })
+  let event = hooks.ErrorEvent(
+    model: "gpt-4",
+    error: error.ApiError("test error"),
+  )
+  hooks.notify_error([h1, h2], event)
+  True
+}
+
+pub fn notify_complete_calls_all_handlers_test() {
+  let h1 =
+    hooks.new("observer1")
+    |> hooks.on_complete(fn(_) { Nil })
+  let h2 =
+    hooks.new("observer2")
+    |> hooks.on_complete(fn(_) { Nil })
+  let event = hooks.CompleteEvent(
+    model: "gpt-4",
+    message: message.Assistant("final", [], None),
+    total_iterations: 5,
+  )
+  hooks.notify_complete([h1, h2], event)
+  True
+}
+
+// ── Action Constructor Tests ─────────────────────────────────────────
+
+pub fn allow_tool_returns_allow_test() {
+  let action = hooks.allow_tool()
+  should.equal(action, hooks.AllowTool)
+}
+
+pub fn block_tool_returns_block_with_reason_test() {
+  let action = hooks.block_tool("not allowed")
+  should.equal(action, hooks.BlockTool("not allowed"))
+}
+
+pub fn keep_result_returns_keep_test() {
+  let action = hooks.keep_result()
+  should.equal(action, hooks.KeepResult)
+}
+
+pub fn replace_result_returns_replace_test() {
+  let action = hooks.replace_result("new content", True)
+  should.equal(action, hooks.ReplaceResult("new content", True))
+}
+
+pub fn keep_messages_returns_keep_test() {
+  let action = hooks.keep_messages()
+  should.equal(action, hooks.KeepMessages)
+}
+
+pub fn replace_messages_returns_replace_test() {
+  let messages = [message.User("test")]
+  let action = hooks.replace_messages(messages)
+  should.equal(action, hooks.ReplaceMessages(messages))
+}
+
+// ── Decision Type Tests ──────────────────────────────────────────────
+
+// decide_tool_call returns ToolCallDecision with attribution
+
+pub fn decide_tool_call_allows_when_no_hooks_test() {
+  let event = hooks.ToolCallEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    arguments_json: "{}",
+  )
+  let decision = hooks.decide_tool_call([], event)
+  should.equal(decision, hooks.ToolAllowed)
+}
+
+pub fn decide_tool_call_allows_when_all_allow_test() {
+  let h =
+    hooks.new("guard")
+    |> hooks.on_tool_call(fn(_) { hooks.AllowTool })
+  let event = hooks.ToolCallEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    arguments_json: "{}",
+  )
+  let decision = hooks.decide_tool_call([h], event)
+  should.equal(decision, hooks.ToolAllowed)
+}
+
+pub fn decide_tool_call_blocked_carries_attribution_test() {
+  let h =
+    hooks.new("safety-guard")
+    |> hooks.on_tool_call(fn(_) { hooks.BlockTool("dangerous") })
+  let event = hooks.ToolCallEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    arguments_json: "{}",
+  )
+  let decision = hooks.decide_tool_call([h], event)
+  should.equal(
+    decision,
+    hooks.ToolBlocked(extension_name: "safety-guard", reason: "dangerous"),
+  )
+}
+
+pub fn decide_tool_call_first_block_wins_test() {
+  let h1 =
+    hooks.new("first")
+    |> hooks.on_tool_call(fn(_) { hooks.BlockTool("nope") })
+  let h2 =
+    hooks.new("second")
+    |> hooks.on_tool_call(fn(_) { hooks.BlockTool("also nope") })
+  let event = hooks.ToolCallEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    arguments_json: "{}",
+  )
+  let decision = hooks.decide_tool_call([h1, h2], event)
+  should.equal(
+    decision,
+    hooks.ToolBlocked(extension_name: "first", reason: "nope"),
+  )
+}
+
+pub fn decide_tool_call_allow_then_block_blocks_test() {
+  let h1 =
+    hooks.new("allower")
+    |> hooks.on_tool_call(fn(_) { hooks.AllowTool })
+  let h2 =
+    hooks.new("blocker")
+    |> hooks.on_tool_call(fn(_) { hooks.BlockTool("stop") })
+  let event = hooks.ToolCallEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    arguments_json: "{}",
+  )
+  let decision = hooks.decide_tool_call([h1, h2], event)
+  should.equal(
+    decision,
+    hooks.ToolBlocked(extension_name: "blocker", reason: "stop"),
+  )
+}
+
+// decide_tool_result returns ToolResultDecision with attribution
+
+pub fn decide_tool_result_unchanged_when_no_hooks_test() {
+  let event = hooks.ToolResultEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    result: "output",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let decision = hooks.decide_tool_result([], event)
+  should.equal(decision, hooks.ResultUnchanged(original_event: event))
+}
+
+pub fn decide_tool_result_unchanged_when_all_keep_test() {
+  let h =
+    hooks.new("keeper")
+    |> hooks.on_tool_result(fn(_) { hooks.KeepResult })
+  let event = hooks.ToolResultEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    result: "output",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let decision = hooks.decide_tool_result([h], event)
+  should.equal(decision, hooks.ResultUnchanged(original_event: event))
+}
+
+pub fn decide_tool_result_transformed_carries_attribution_test() {
+  let h =
+    hooks.new("scrubber")
+    |> hooks.on_tool_result(fn(_) { hooks.ReplaceResult("scrubbed", False) })
+  let event = hooks.ToolResultEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    result: "sensitive data",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let decision = hooks.decide_tool_result([h], event)
+  let assert hooks.ResultTransformed(final_event:, transformers:) = decision
+  should.equal(final_event.result, "scrubbed")
+  should.equal(transformers, ["scrubber"])
+}
+
+pub fn decide_tool_result_chain_carries_all_transformers_test() {
+  let h1 =
+    hooks.new("first")
+    |> hooks.on_tool_result(fn(e) {
+      hooks.ReplaceResult(e.result <> " +1", False)
+    })
+  let h2 =
+    hooks.new("second")
+    |> hooks.on_tool_result(fn(e) {
+      hooks.ReplaceResult(e.result <> " +2", False)
+    })
+  let event = hooks.ToolResultEvent(
+    tool_name: "bash",
+    tool_call_id: "c1",
+    result: "orig",
+    is_error: False,
+    duration_ms: 100,
+  )
+  let decision = hooks.decide_tool_result([h1, h2], event)
+  let assert hooks.ResultTransformed(final_event:, transformers:) = decision
+  should.equal(final_event.result, "orig +1 +2")
+  should.equal(transformers, ["first", "second"])
+}
+
+// decide_messages returns MessagesDecision with attribution
+
+pub fn decide_messages_unchanged_when_no_hooks_test() {
+  let messages = [message.User("hello")]
+  let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages:)
+  let decision = hooks.decide_messages([], event)
+  should.equal(decision, hooks.MessagesUnchanged(original: messages))
+}
+
+pub fn decide_messages_unchanged_when_all_keep_test() {
+  let messages = [message.User("hello")]
+  let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages:)
+  let h =
+    hooks.new("noop")
+    |> hooks.on_before_inference(fn(_) { hooks.KeepMessages })
+  let decision = hooks.decide_messages([h], event)
+  should.equal(decision, hooks.MessagesUnchanged(original: messages))
+}
+
+pub fn decide_messages_replaced_carries_attribution_test() {
+  let new_msgs = [message.System("injected"), message.User("hello")]
+  let h =
+    hooks.new("injector")
+    |> hooks.on_before_inference(fn(_) {
+      hooks.ReplaceMessages(new_msgs)
+    })
+  let event = hooks.BeforeInferenceEvent(
+    model: "gpt-4",
+    messages: [message.User("hello")],
+  )
+  let decision = hooks.decide_messages([h], event)
+  let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
+  should.equal(final_messages, new_msgs)
+  should.equal(transformers, ["injector"])
+}
+
+pub fn decide_messages_chain_carries_all_transformers_test() {
+  let h1 =
+    hooks.new("first")
+    |> hooks.on_before_inference(fn(_) {
+      hooks.ReplaceMessages([message.System("ctx")])
+    })
+  let h2 =
+    hooks.new("second")
+    |> hooks.on_before_inference(fn(_) {
+      hooks.ReplaceMessages([message.User("override")])
+    })
+  let event = hooks.BeforeInferenceEvent(
+    model: "gpt-4",
+    messages: [message.User("hello")],
+  )
+  let decision = hooks.decide_messages([h1, h2], event)
+  let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
+  should.equal(final_messages, [message.User("override")])
+  should.equal(transformers, ["first", "second"])
+}
+
+// ── Session Lifecycle Hook Tests ──────────────────────────────────────
+
+pub fn new_hooks_has_no_session_start_by_default_test() {
+  let h = hooks.new("test")
+  let event = hooks.SessionStartEvent(history: [])
+  // Default handler is no-op — should not crash
+  case h {
+    hooks.Hooks(on_session_start: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn new_hooks_has_no_session_shutdown_by_default_test() {
+  let h = hooks.new("test")
+  let event = hooks.SessionShutdownEvent(history: [], iterations: 0)
+  case h {
+    hooks.Hooks(on_session_shutdown: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn on_session_start_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_session_start(fn(_) { Nil })
+  let event = hooks.SessionStartEvent(history: [])
+  case h {
+    hooks.Hooks(on_session_start: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn on_session_shutdown_replaces_handler_test() {
+  let h =
+    hooks.new("test")
+    |> hooks.on_session_shutdown(fn(_) { Nil })
+  let event = hooks.SessionShutdownEvent(history: [], iterations: 0)
+  case h {
+    hooks.Hooks(on_session_shutdown: handler, ..) -> handler(event)
+  }
+  True
+}
+
+pub fn notify_session_start_calls_all_handlers_test() {
+  let h1 =
+    hooks.new("observer1")
+    |> hooks.on_session_start(fn(_) { Nil })
+  let h2 =
+    hooks.new("observer2")
+    |> hooks.on_session_start(fn(_) { Nil })
+  let event = hooks.SessionStartEvent(history: [])
+  hooks.notify_session_start([h1, h2], event)
+  True
+}
+
+pub fn notify_session_shutdown_calls_all_handlers_test() {
+  let h1 =
+    hooks.new("observer1")
+    |> hooks.on_session_shutdown(fn(_) { Nil })
+  let h2 =
+    hooks.new("observer2")
+    |> hooks.on_session_shutdown(fn(_) { Nil })
+  let event = hooks.SessionShutdownEvent(history: [], iterations: 5)
+  hooks.notify_session_shutdown([h1, h2], event)
+  True
+}

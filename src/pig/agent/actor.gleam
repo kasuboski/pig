@@ -1,12 +1,14 @@
 //// Agent OTP actor — thin wrapper around the pure core.
 ////
-//// Holds `AgentConfig` (immutable). Each `Run` creates fresh `AgentState`,
-//// runs to completion, and returns the result. No state bleeds between runs.
+//// Holds `AgentState` (config + history). History accumulates across
+//// `run()` calls. Session lifecycle hooks fire on init and stop.
 ////
 //// Logic lives in `pig/agent/core.gleam` and `pig/agent/parallel.gleam`.
 //// This module is wiring only.
 
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/list
+import gleam/option
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
 import pig/agent/core
@@ -14,6 +16,8 @@ import pig/agent/parallel
 import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, User}
+import pig/hooks
+import pig/obs/session
 
 /// Messages the agent actor can receive.
 pub type AgentMessage {
@@ -26,11 +30,13 @@ pub type AgentMessage {
 /// Start an agent actor with the given configuration.
 ///
 /// Returns a `Subject(AgentMessage)` for sending messages to the actor.
+/// The actor holds `AgentState` — history accumulates across `run()` calls.
 pub fn start(
   config: state.AgentConfig,
 ) -> Result(Subject(AgentMessage), StartError) {
+  let initial_state = init_state(config)
   let builder =
-    actor.new(config)
+    actor.new(initial_state)
     |> actor.on_message(handle_message)
   case actor.start(builder) {
     Ok(started) -> Ok(started.data)
@@ -65,8 +71,9 @@ pub fn supervised(
   name: Name(AgentMessage),
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
+    let initial_state = init_state(config)
     let builder =
-      actor.new(config)
+      actor.new(initial_state)
       |> actor.on_message(handle_message)
       |> actor.named(name)
     case actor.start(builder) {
@@ -76,34 +83,77 @@ pub fn supervised(
   })
 }
 
+/// Internal: initialize agent state from config.
+/// Fires session_start hooks if any are registered.
+/// If session_path is set, replays history from JSONL.
+fn init_state(config: state.AgentConfig) -> state.AgentState {
+  let st = state.new(config)
+  // Replay history from session file if path is set
+  let st = case config.session_path {
+    option.Some(path) -> {
+      case session.replay(path) {
+        Ok(replayed_messages) -> {
+          let st_with_history =
+            list.fold(replayed_messages, st, state.add_message)
+          st_with_history
+        }
+        Error(_) -> st
+      }
+    }
+    option.None -> st
+  }
+  hooks.notify_session_start(
+    config.hooks,
+    hooks.SessionStartEvent(history: st.history),
+  )
+  st
+}
+
 /// Internal: message handler for the actor.
+/// Holds AgentState — history accumulates across Run messages.
 fn handle_message(
-  config: state.AgentConfig,
+  st: state.AgentState,
   msg: AgentMessage,
-) -> actor.Next(state.AgentConfig, AgentMessage) {
+) -> actor.Next(state.AgentState, AgentMessage) {
   case msg {
     Run(prompt, reply_to) -> {
-      let st =
-        state.new(config)
-        |> state.add_message(User(prompt))
-      let result = do_run(st)
+      // Reset iterations for this run, add user message to accumulated history
+      let st = state.AgentState(
+        config: st.config,
+        history: st.history,
+        iterations: 0,
+      )
+      let st = state.add_message(st, User(prompt))
+      let #(final_state, result) = do_run(st)
       process.send(reply_to, result)
-      actor.continue(config)
+      actor.continue(final_state)
     }
-    Stop -> actor.stop()
+    Stop -> {
+      // Fire session_shutdown hooks before stopping
+      hooks.notify_session_shutdown(
+        st.config.hooks,
+        hooks.SessionShutdownEvent(
+          history: st.history,
+          iterations: st.iterations,
+        ),
+      )
+      actor.stop()
+    }
   }
 }
 
 /// Run the agent loop with parallel tool execution.
-/// Reimplements core.run_to_completion but uses parallel tool execution
-/// instead of sequential.
-fn do_run(st: state.AgentState) -> Result(Message, AiError) {
+/// Returns the final state (with accumulated history) and the result.
+fn do_run(st: state.AgentState) -> #(state.AgentState, Result(Message, AiError)) {
   case state.exceeded_max_iterations(st) {
-    True -> Error(state.max_iterations_error(st))
+    True -> #(st, Error(state.max_iterations_error(st)))
     False ->
       case core.step(st) {
-        core.Complete(msg) -> Ok(msg)
-        core.StepError(e) -> Error(e)
+        core.Complete(msg) -> {
+          let final_st = state.add_message(st, msg)
+          #(final_st, Ok(msg))
+        }
+        core.StepError(e) -> #(st, Error(e))
         core.NeedsToolExecution(calls, updated_state) -> {
           let advanced =
             updated_state

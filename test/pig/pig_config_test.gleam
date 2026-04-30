@@ -6,6 +6,7 @@ import gleam/string
 import gleam/option
 import pig
 import pig/ai/message
+import pig/hooks
 import simplifile
 import temporary
 
@@ -161,4 +162,47 @@ pub fn start_with_session_writer_registers_consumer_test() {
   // Should have at least one event line
   let line_count = list.length(non_empty_lines)
   line_count |> should.not_equal(0)
+}
+
+// ── Hooks Tests ──────────────────────────────────────────────────────
+
+// Test 8: with_hooks adds hooks to agent config
+pub fn with_hooks_adds_hooks_to_config_test() {
+  let h = hooks.new("test-hook")
+  let config =
+    pig.test_harness()
+    |> pig.with_hooks(h)
+
+  let agent_cfg = pig.agent_config(config)
+  list.length(agent_cfg.hooks) |> should.equal(1)
+}
+
+// Test 9: with_hooks can be chained
+pub fn with_hooks_chains_multiple_test() {
+  let h1 = hooks.new("first")
+  let h2 = hooks.new("second")
+  let config =
+    pig.test_harness()
+    |> pig.with_hooks(h1)
+    |> pig.with_hooks(h2)
+
+  let agent_cfg = pig.agent_config(config)
+  list.length(agent_cfg.hooks) |> should.equal(2)
+}
+
+// Test 10: with_session_writer sets session_path on agent config
+pub fn with_session_writer_sets_session_path_test() {
+  let config =
+    pig.test_harness()
+    |> pig.with_session_writer("/tmp/test.jsonl")
+
+  let agent_cfg = pig.agent_config(config)
+  agent_cfg.session_path |> should.equal(option.Some("/tmp/test.jsonl"))
+}
+
+// Test 11: default config has no session_path
+pub fn default_config_has_no_session_path_test() {
+  let config = pig.test_harness()
+  let agent_cfg = pig.agent_config(config)
+  agent_cfg.session_path |> should.equal(option.None)
 }

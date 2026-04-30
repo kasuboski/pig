@@ -9,6 +9,7 @@ import gleam/list
 import gleam/option
 import pig/agent/state
 import pig/ai/message.{type ToolCall}
+import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
@@ -17,13 +18,14 @@ import pig/tool/execution
 
 /// Execute tool calls in parallel and append results to state.
 ///
-/// Spawns one process per tool call. Each process emits ToolStarted,
-/// executes the tool, emits ToolExecuted, and sends the result back.
-/// The caller collects all results and builds Tool messages.
+/// For each tool call:
+/// 1. Check hooks (decide_tool_call) — blocked tools get error Tool messages
+/// 2. Spawn a process for each allowed tool call
+/// 3. Apply result hooks (decide_tool_result) — transform results
 ///
-/// If a spawned process crashes before sending a result, this function
-/// will block until the timeout. Crashes are caught and turned into
-/// error Tool messages — the LLM adapts.
+/// Blocked tools do NOT spawn processes — they get error Tool messages inline.
+/// Spawns one process per allowed tool call. Each process emits ToolStarted,
+/// executes the tool, emits ToolExecuted, and sends the result back.
 pub fn execute_tools_and_advance(
   st: state.AgentState,
   calls: List(ToolCall),
@@ -31,28 +33,112 @@ pub fn execute_tools_and_advance(
   case calls {
     [] -> st
     _ -> {
-      // Spawn a process per tool call
-      let results = spawn_and_collect(st, calls)
-      // Build Tool messages from results
-      let tool_messages =
-        list.zip(calls, results)
+      // Partition into blocked (handled inline) and allowed (spawned)
+      let #(blocked_msgs, allowed_calls) =
+        partition_by_hook_decision(st.config.hooks, calls)
+
+      // Emit ToolBlocked events for blocked calls
+      let disp = get_dispatcher(st)
+      list.each(blocked_msgs, fn(blocked) {
+        case disp {
+          option.Some(d) ->
+            emit.to_dispatcher(
+              d,
+              events.ToolBlocked(
+                tool_call: blocked.call,
+                extension_name: blocked.extension_name,
+                reason: blocked.reason,
+              ),
+            )
+          option.None -> Nil
+        }
+      })
+
+      // Spawn processes for allowed calls
+      let results = spawn_and_collect(st, allowed_calls)
+
+      // Build Tool messages: apply result hooks to executed results
+      let executed_msgs =
+        list.zip(allowed_calls, results)
         |> list.map(fn(pair) {
           let #(call, result) = pair
-          case result {
-            Ok(json_result) ->
+          let raw_content = case result {
+            Ok(json_result) -> json.to_string(json_result)
+            Error(tool_err) -> "Tool error: " <> tool_err.message
+          }
+          // Apply result hooks
+          let result_event = hooks.ToolResultEvent(
+            tool_name: call.name,
+            tool_call_id: call.id,
+            result: raw_content,
+            is_error: is_error(result),
+            duration_ms: 0,
+          )
+          case hooks.decide_tool_result(st.config.hooks, result_event) {
+            hooks.ResultUnchanged(..) ->
               message.Tool(
                 tool_call_id: call.id,
-                content: json.to_string(json_result),
+                content: raw_content,
               )
-            Error(tool_err) ->
+            hooks.ResultTransformed(final_event:, ..) ->
               message.Tool(
                 tool_call_id: call.id,
-                content: "Tool error: " <> tool_err.message,
+                content: final_event.result,
               )
           }
         })
-      list.fold(tool_messages, st, state.add_message)
+
+      // Combine: blocked messages first, then executed
+      let all_messages =
+        list.map(blocked_msgs, fn(b) {
+          let content =
+            "Tool blocked by '" <> b.extension_name <> "': " <> b.reason
+          message.Tool(tool_call_id: b.call.id, content:)
+        })
+        |> list.append(executed_msgs)
+
+      list.fold(all_messages, st, state.add_message)
     }
+  }
+}
+
+type BlockedTool {
+  BlockedTool(call: ToolCall, extension_name: String, reason: String)
+}
+
+/// Partition tool calls by hook decision.
+/// Returns #(blocked, allowed).
+fn partition_by_hook_decision(
+  hooks_list: List(hooks.Hooks),
+  calls: List(ToolCall),
+) -> #(List(BlockedTool), List(ToolCall)) {
+  let #(blocked, allowed) =
+    list.fold(calls, #([], []), fn(acc, call) {
+      let #(blocked_acc, allowed_acc) = acc
+      let hook_event = hooks.ToolCallEvent(
+        tool_name: call.name,
+        tool_call_id: call.id,
+        arguments_json: call.arguments_json,
+      )
+      case hooks.decide_tool_call(hooks_list, hook_event) {
+        hooks.ToolAllowed ->
+          #(blocked_acc, list.append(allowed_acc, [call]))
+        hooks.ToolBlocked(extension_name:, reason:) ->
+          #(
+            list.append(blocked_acc, [
+              BlockedTool(call:, extension_name:, reason:),
+            ]),
+            allowed_acc,
+          )
+      }
+    })
+  #(blocked, allowed)
+}
+
+fn is_error(result: Result(a, b)) -> Bool {
+  case result {
+    Ok(_) -> False
+    Error(_) -> True
   }
 }
 

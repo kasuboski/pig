@@ -15,6 +15,7 @@ import gleam/option
 import pig/agent/state as state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
+import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
@@ -139,6 +140,61 @@ fn emit_tool_executed(
   }
 }
 
+/// Emit ToolBlocked event.
+fn emit_tool_blocked(
+  st: state.AgentState,
+  call: ToolCall,
+  extension_name: String,
+  reason: String,
+) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      emit.to_dispatcher(
+        disp,
+        events.ToolBlocked(
+          tool_call: call,
+          extension_name:,
+          reason:,
+        ),
+      )
+    option.None -> Nil
+  }
+}
+
+/// Emit ExtensionActed event for each transformer name.
+fn emit_extension_acted_list(
+  st: state.AgentState,
+  transformer_names: List(String),
+  hook: events.ExtensionHook,
+  description: String,
+) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      list.each(transformer_names, fn(name) {
+        emit.to_dispatcher(
+          disp,
+          events.ExtensionActed(
+            extension_name: name,
+            hook:,
+            action: events.ExtensionActionDetail(
+              action_type: "transform",
+              description:,
+            ),
+          ),
+        )
+      })
+    option.None -> Nil
+  }
+}
+
+/// Helper to check if a result is an error.
+fn result_is_error(result: Result(a, b)) -> Bool {
+  case result {
+    Ok(_) -> False
+    Error(_) -> True
+  }
+}
+
 /// Result of a single step in the agent loop.
 pub type StepResult {
   /// Provider returned a text response — loop terminates.
@@ -151,18 +207,36 @@ pub type StepResult {
 
 /// Execute one step: call the provider and branch on the response.
 ///
+/// Applies before_inference hooks (decide_messages) to transform messages
+/// before calling the provider.
+///
 /// Emits `InferenceStarted` before the call and `InferenceCompleted` or
 /// `InferenceFailed` after, with duration measurement.
 pub fn step(st: state.AgentState) -> StepResult {
   let defs = state.tool_definitions(st)
   let msgs = state.messages_for_provider(st)
-  let msg_count = list.length(msgs)
   let model = st.config.model
 
+  // Apply before_inference hooks to transform messages
+  let before_event = hooks.BeforeInferenceEvent(model:, messages: msgs)
+  let final_msgs = case hooks.decide_messages(st.config.hooks, before_event) {
+    hooks.MessagesUnchanged(..) -> msgs
+    hooks.MessagesReplaced(final_messages:, transformers:) -> {
+      emit_extension_acted_list(
+        st,
+        transformers,
+        events.BeforeInference,
+        "Transformed messages before inference",
+      )
+      final_messages
+    }
+  }
+
+  let msg_count = list.length(final_msgs)
   emit_inference_start(st, model, msg_count)
   let start_time = events.system_time()
 
-  let result = case st.config.provider(msgs, defs) {
+  let result = case st.config.provider(final_msgs, defs) {
     Ok(inference_result) -> {
       let msg = inference_result.message
       let meta = inference_result.metadata
@@ -179,7 +253,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         meta.input_tokens,
         meta.output_tokens,
         msg,
-        msgs,
+        final_msgs,
       )
       case msg {
         message.Assistant(content: _, tool_calls: calls, thinking: _) ->
@@ -198,7 +272,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         msg_count,
         e,
         duration,
-        msgs,
+        final_msgs,
       )
       StepError(e)
     }
@@ -208,7 +282,12 @@ pub fn step(st: state.AgentState) -> StepResult {
 
 /// Execute tool calls against the registry and append results to history.
 ///
-/// Emits `ToolStarted` and `ToolExecuted` for each tool call.
+/// For each tool call:
+/// 1. Check hooks (decide_tool_call) — blocked tools get error Tool messages
+/// 2. Execute allowed tools
+/// 3. Apply result hooks (decide_tool_result) — transform results
+///
+/// Emits `ToolStarted`, `ToolExecuted`, `ToolBlocked`, `ExtensionActed`.
 /// Errors are caught and turned into Tool messages — the LLM adapts.
 pub fn execute_tools_and_advance(
   st: state.AgentState,
@@ -216,26 +295,64 @@ pub fn execute_tools_and_advance(
 ) -> state.AgentState {
   let tool_messages =
     list.map(calls, fn(call) {
-      emit_tool_start(st, call)
-      let start_time = events.system_time()
-      let result = execution.execute_tool(st.config.tools, call)
-      let duration = events.system_time() - start_time
-      let result_str = case result {
-        Ok(json_result) -> json.to_string(json_result)
-        Error(tool_err) -> "Tool error: " <> tool_err.message
-      }
-      emit_tool_executed(st, call, duration, result_str)
-      case result {
-        Ok(json_result) ->
-          message.Tool(
+      // Step 1: Check hooks for tool call decision
+      let hook_event = hooks.ToolCallEvent(
+        tool_name: call.name,
+        tool_call_id: call.id,
+        arguments_json: call.arguments_json,
+      )
+      case hooks.decide_tool_call(st.config.hooks, hook_event) {
+        hooks.ToolAllowed -> {
+          // Execute the tool normally
+          emit_tool_start(st, call)
+          let start_time = events.system_time()
+          let result = execution.execute_tool(st.config.tools, call)
+          let duration = events.system_time() - start_time
+          let result_str = case result {
+            Ok(json_result) -> json.to_string(json_result)
+            Error(tool_err) -> "Tool error: " <> tool_err.message
+          }
+          emit_tool_executed(st, call, duration, result_str)
+
+          // Step 3: Apply result hooks
+          let raw_content = case result {
+            Ok(json_result) -> json.to_string(json_result)
+            Error(tool_err) -> "Tool error: " <> tool_err.message
+          }
+          let result_event = hooks.ToolResultEvent(
+            tool_name: call.name,
             tool_call_id: call.id,
-            content: json.to_string(json_result),
+            result: raw_content,
+            is_error: result_is_error(result),
+            duration_ms: duration,
           )
-        Error(tool_err) ->
-          message.Tool(
-            tool_call_id: call.id,
-            content: "Tool error: " <> tool_err.message,
-          )
+          case hooks.decide_tool_result(st.config.hooks, result_event) {
+            hooks.ResultUnchanged(..) ->
+              message.Tool(
+                tool_call_id: call.id,
+                content: raw_content,
+              )
+            hooks.ResultTransformed(final_event:, transformers:) -> {
+              emit_extension_acted_list(
+                st,
+                transformers,
+                events.AfterToolCall,
+                "Transformed result",
+              )
+              message.Tool(
+                tool_call_id: call.id,
+                content: final_event.result,
+              )
+            }
+          }
+        }
+        hooks.ToolBlocked(extension_name:, reason:) -> {
+          // Tool blocked by hook — emit observability and create error Tool message
+          emit_tool_blocked(st, call, extension_name, reason)
+          let content =
+            "Tool blocked by '" <> extension_name <> "': " <> reason
+          message.Tool(tool_call_id: call.id, content:)
+        }
       }
     })
   list.fold(tool_messages, st, state.add_message)
