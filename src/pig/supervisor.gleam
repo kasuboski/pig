@@ -7,12 +7,16 @@
 
 
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/list
+import gleam/option
 import gleam/otp/actor as otp_actor
 import gleam/otp/static_supervisor
 import pig/agent/actor
 import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
+import pig/obs/consumer_spec
+import pig/obs/dispatcher
 
 /// Handle to a supervised agent.
 ///
@@ -26,23 +30,59 @@ pub type SupervisedAgent {
   )
 }
 
-/// Start a supervised agent from an AgentConfig.
+/// Start a supervised agent from an AgentConfig and consumer specs.
 ///
-/// Spawns a OneForOne static supervisor containing the agent actor.
-/// The actor is named so the Subject can be recovered after
+/// Spawns a nested OneForOne static supervisor containing:
+/// - An event subtree (dispatcher + consumers)
+/// - The agent actor
+///
+/// The dispatcher and agent are named so Subjects can be recovered after
 /// supervisor start. Returns a `SupervisedAgent` handle.
 pub fn start_supervised(
   agent_config: state.AgentConfig,
+  consumer_specs: List(consumer_spec.ConsumerSpec),
 ) -> Result(SupervisedAgent, otp_actor.StartError) {
-  let name = process.new_name("pig_agent")
-  let child_spec = actor.supervised(agent_config, name)
-  let sup_builder =
+  let dispatcher_name = process.new_name("pig_event_dispatcher")
+  let agent_name = process.new_name("pig_agent")
+
+  // Wire dispatcher name into agent config
+  let agent_config = state.AgentConfig(
+    ..agent_config,
+    dispatcher_name: option.Some(dispatcher_name),
+  )
+
+  // Build event subtree: dispatcher + consumers
+  // OneForAll ensures that if the dispatcher restarts, consumers restart too
+  // and re-register via their init logic. With OneForOne, a dispatcher restart
+  // would leave consumers alive but unregistered (silent event loss).
+  let event_tree =
+    static_supervisor.new(static_supervisor.OneForAll)
+    |> static_supervisor.add(dispatcher.supervised(dispatcher_name))
+    |> list.fold(consumer_specs, _, fn(builder, entry) {
+      static_supervisor.add(builder, entry.spec)
+    })
+
+  // Build top-level: event subtree (as supervised child) → agent
+  let app_tree =
     static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(child_spec)
-  case static_supervisor.start(sup_builder) {
+    |> static_supervisor.add(static_supervisor.supervised(event_tree))
+    |> static_supervisor.add(actor.supervised(agent_config, agent_name))
+
+  case static_supervisor.start(app_tree) {
     Ok(started) -> {
-      let subject = process.named_subject(name)
-      Ok(SupervisedAgent(subject:, sup_pid: started.pid))
+      let dispatcher_subject = process.named_subject(dispatcher_name)
+      let agent_subject = process.named_subject(agent_name)
+
+      // Register all consumers with the dispatcher
+      list.each(consumer_specs, fn(entry) {
+        let consumer_subject = process.named_subject(entry.name)
+        process.send(
+          dispatcher_subject,
+          dispatcher.RegisterConsumer(consumer_subject),
+        )
+      })
+
+      Ok(SupervisedAgent(subject: agent_subject, sup_pid: started.pid))
     }
     Error(e) -> Error(e)
   }

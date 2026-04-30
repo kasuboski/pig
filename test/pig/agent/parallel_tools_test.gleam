@@ -21,7 +21,8 @@ import pig/ai/tool_definition
 import pig/agent/actor
 import pig/agent/state
 import pig/ai/message
-import pig/obs/listener
+import pig/obs/dispatcher
+import pig/obs/events
 import pig/tool
 import support/harness
 
@@ -31,7 +32,7 @@ pub fn main() -> Nil {
 
 // ── Parallelism Proof ────────────────────────────────────────────
 
-/// Three slow tools: all ToolStart events fire before any ToolStop.
+/// Three slow tools: all ToolStarted events fire before any ToolExecuted.
 /// This proves concurrent execution (sequential would interleave).
 pub fn parallel_tools_all_starts_before_stops_test() {
   let tc1 =
@@ -55,21 +56,31 @@ pub fn parallel_tools_all_starts_before_stops_test() {
   let tool_resp = message.Assistant("", [tc1, tc2, tc3], None)
   let final = message.Assistant("done!", [], None)
   let provider = harness.sequenced_provider_for_actor([tool_resp, final])
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   let config =
     state.config(provider)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.with_tools(
       tool.new_registry() |> tool.register(slow_echo_tool(50)),
     )
-  let handle = listener.attach()
+  // Create a consumer to receive SessionEvents
+  let consumer_subject = process.new_subject()
+  process.send(dispatcher_subject, dispatcher.RegisterConsumer(consumer_subject))
   let assert Ok(subject) = actor.start(config)
   let assert Ok(msg) = actor.run(subject, "parallel", 10_000)
-  let evts = listener.get_events(handle)
-  listener.detach(handle)
   let assert True = msg == final
+  // Collect all events from the consumer
+  let evts = collect_events(consumer_subject, 6, 5000)
   // Prove parallelism: all starts before any stop
-  let names = harness.event_type_names(evts)
-  let starts = find_indices(names, "pig.tool.start")
-  let stops = find_indices(names, "pig.tool.stop")
+  let event_types = list.map(evts, fn(e) {
+    case e {
+      events.ToolStarted(..) -> "ToolStarted"
+      events.ToolExecuted(..) -> "ToolExecuted"
+      _ -> "Other"
+    }
+  })
+  let starts = find_indices(event_types, "ToolStarted")
+  let stops = find_indices(event_types, "ToolExecuted")
   let max_start = list.fold(starts, 0, int.max)
   let min_stop =
     case stops {
@@ -102,8 +113,10 @@ pub fn parallel_tools_produces_correct_results_test() {
   let tool_resp = message.Assistant("", [tc1, tc2, tc3], None)
   let final = message.Assistant("complete", [], None)
   let provider = harness.sequenced_provider_for_actor([tool_resp, final])
+  let assert Ok(dispatcher_subject) = dispatcher.start()
   let config =
     state.config(provider)
+    |> state.with_dispatcher(dispatcher_subject)
     |> state.with_tools(
       tool.new_registry() |> tool.register(slow_echo_tool(10)),
     )
@@ -146,4 +159,35 @@ fn find_indices(haystack: List(String), needle: String) -> List(Int) {
     let assert Some(v) = x
     v
   })
+}
+
+/// Collect a specific number of events from a subject.
+fn collect_events(
+  subject: process.Subject(events.SessionEvent),
+  count: Int,
+  timeout: Int,
+) -> List(events.SessionEvent) {
+  collect_events_helper(subject, count, [], timeout)
+}
+
+fn collect_events_helper(
+  subject: process.Subject(events.SessionEvent),
+  remaining: Int,
+  acc: List(events.SessionEvent),
+  timeout: Int,
+) -> List(events.SessionEvent) {
+  case remaining <= 0 {
+    True -> list.reverse(acc)
+    False ->
+      case process.receive(subject, timeout) {
+        Ok(event) ->
+          collect_events_helper(
+            subject,
+            remaining - 1,
+            [event, ..acc],
+            timeout,
+          )
+        Error(_) -> list.reverse(acc)
+      }
+  }
 }

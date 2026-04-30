@@ -1,5 +1,10 @@
 import gleeunit
-import pig/obs/events
+import gleeunit/should
+import gleam/erlang/process
+import pig/obs/events.{InferenceStarted, SessionStarted, SessionEnded, NormalEnd}
+import pig/obs/dispatcher
+import pig/obs/emit
+import pig/obs/listener
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
@@ -370,4 +375,72 @@ pub fn decode_preserves_inference_exception_error_type_test() {
   let assert events.InferenceException(model:, message_count:, error_type:) =
     events.decode(raw)
   model == "llama" && message_count == 7 && error_type == "api_error"
+}
+
+// ── emit_to Tests ──────────────────────────────────────────────────
+
+/// to_dispatcher sends a SessionEvent to the dispatcher.
+/// Uses the process.receive pattern — no sleep needed.
+pub fn to_dispatcher_sends_event_to_dispatcher_test() {
+  let assert Ok(disp) = dispatcher.start()
+  let consumer = process.new_subject()
+  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  
+  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  emit.to_dispatcher(disp, event)
+  
+  let assert Ok(received) = process.receive(consumer, 2000)
+  let assert InferenceStarted(model:, message_count:) = received
+  model |> should.equal("gpt-4")
+  message_count |> should.equal(3)
+  
+  process.send(disp, dispatcher.Stop)
+}
+
+/// to_dispatcher triggers telemetry projection.
+/// Uses the test listener to verify telemetry was emitted.
+pub fn to_dispatcher_triggers_telemetry_test() {
+  let handle = listener.attach()
+  let assert Ok(disp) = dispatcher.start()
+  let consumer = process.new_subject()
+  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  
+  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  emit.to_dispatcher(disp, event)
+  
+  // Confirm via consumer (guarantees telemetry already fired)
+  let assert Ok(_) = process.receive(consumer, 2000)
+  
+  let captured = listener.get_events(handle)
+  let assert [events.InferenceStart(model:, ..)] = captured
+  model |> should.equal("gpt-4")
+  
+  listener.detach(handle)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// to_dispatcher works with all SessionEvent variants.
+pub fn to_dispatcher_sends_all_variants_test() {
+  let assert Ok(disp) = dispatcher.start()
+  let consumer = process.new_subject()
+  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  
+  // Send multiple events and verify they're all received
+  emit.to_dispatcher(disp, SessionStarted(
+    agent_id: Some("agent-1"),
+    agent_name: None,
+    model: "gpt-4",
+    provider_name: None,
+    system_prompt: None,
+  ))
+  let assert Ok(_) = process.receive(consumer, 2000)
+  
+  emit.to_dispatcher(disp, InferenceStarted(model: "gpt-4", message_count: 2))
+  let assert Ok(_) = process.receive(consumer, 2000)
+  
+  emit.to_dispatcher(disp, SessionEnded(NormalEnd))
+  let assert Ok(_) = process.receive(consumer, 2000)
+  
+  process.send(disp, dispatcher.Stop)
+  True
 }

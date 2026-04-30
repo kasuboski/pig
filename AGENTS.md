@@ -9,8 +9,8 @@ High-Level Goals
 
 No backwards compatibility is necessary - use the latest versions and NO deprecated methods.
 
-
 Code Quality:
+- mise run build MUST pass. This builds the library and examples
 - Fix compiler warnings — zero warnings is the baseline
 - Prefer union types over multiple related types — a single `Event` custom type with variants
   is better than six separate `FooMeta` record types. It gives exhaustiveness checking,
