@@ -87,11 +87,6 @@ pub fn with_hooks(config: PigConfig, h: Hooks) -> PigConfig {
   )
 }
 
-/// Set the session persistence directory (used by Phase 9).
-pub fn with_persistence(config: PigConfig, path: String) -> PigConfig {
-  PigConfig(..config, agent_config: state.with_session_path(config.agent_config, path))
-}
-
 /// Set the system prompt.
 pub fn with_system_prompt(config: PigConfig, prompt: String) -> PigConfig {
   PigConfig(

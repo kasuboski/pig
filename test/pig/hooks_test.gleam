@@ -279,7 +279,7 @@ pub fn decide_tool_call_blocked_carries_attribution_test() {
   let decision = hooks.decide_tool_call([h], event)
   should.equal(
     decision,
-    hooks.ToolBlocked(extension_name: "safety-guard", reason: "dangerous"),
+    hooks.ToolBlocked(hook_name: "safety-guard", reason: "dangerous"),
   )
 }
 
@@ -298,7 +298,7 @@ pub fn decide_tool_call_first_block_wins_test() {
   let decision = hooks.decide_tool_call([h1, h2], event)
   should.equal(
     decision,
-    hooks.ToolBlocked(extension_name: "first", reason: "nope"),
+    hooks.ToolBlocked(hook_name: "first", reason: "nope"),
   )
 }
 
@@ -317,7 +317,7 @@ pub fn decide_tool_call_allow_then_block_blocks_test() {
   let decision = hooks.decide_tool_call([h1, h2], event)
   should.equal(
     decision,
-    hooks.ToolBlocked(extension_name: "blocker", reason: "stop"),
+    hooks.ToolBlocked(hook_name: "blocker", reason: "stop"),
   )
 }
 

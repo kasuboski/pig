@@ -41,15 +41,27 @@ pub fn execute_tools_and_advance(
       let disp = get_dispatcher(st)
       list.each(blocked_msgs, fn(blocked) {
         case disp {
-          option.Some(d) ->
+          option.Some(d) -> {
             emit.to_dispatcher(
               d,
               events.ToolBlocked(
                 tool_call: blocked.call,
-                extension_name: blocked.extension_name,
+                hook_name: blocked.hook_name,
                 reason: blocked.reason,
               ),
             )
+            emit.to_dispatcher(
+              d,
+              events.HookActed(
+                hook_name: blocked.hook_name,
+                hook_point: events.BeforeToolCall,
+                action: events.HookActionDetail(
+                  action_type: "block",
+                  description: "Blocked tool: " <> blocked.reason,
+                ),
+              ),
+            )
+          }
           option.None -> Nil
         }
       })
@@ -92,7 +104,7 @@ pub fn execute_tools_and_advance(
       let all_messages =
         list.map(blocked_msgs, fn(b) {
           let content =
-            "Tool blocked by '" <> b.extension_name <> "': " <> b.reason
+            "Tool blocked by '" <> b.hook_name <> "': " <> b.reason
           message.Tool(tool_call_id: b.call.id, content:)
         })
         |> list.append(executed_msgs)
@@ -103,7 +115,7 @@ pub fn execute_tools_and_advance(
 }
 
 type BlockedTool {
-  BlockedTool(call: ToolCall, extension_name: String, reason: String)
+  BlockedTool(call: ToolCall, hook_name: String, reason: String)
 }
 
 /// Partition tool calls by hook decision.
@@ -123,10 +135,10 @@ fn partition_by_hook_decision(
       case hooks.decide_tool_call(hooks_list, hook_event) {
         hooks.ToolAllowed ->
           #(blocked_acc, list.append(allowed_acc, [call]))
-        hooks.ToolBlocked(extension_name:, reason:) ->
+        hooks.ToolBlocked(hook_name:, reason:) ->
           #(
             list.append(blocked_acc, [
-              BlockedTool(call:, extension_name:, reason:),
+              BlockedTool(call:, hook_name:, reason:),
             ]),
             allowed_acc,
           )

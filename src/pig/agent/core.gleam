@@ -144,7 +144,7 @@ fn emit_tool_executed(
 fn emit_tool_blocked(
   st: state.AgentState,
   call: ToolCall,
-  extension_name: String,
+  hook_name: String,
   reason: String,
 ) -> Nil {
   case get_dispatcher(st) {
@@ -153,7 +153,7 @@ fn emit_tool_blocked(
         disp,
         events.ToolBlocked(
           tool_call: call,
-          extension_name:,
+          hook_name:,
           reason:,
         ),
       )
@@ -161,11 +161,11 @@ fn emit_tool_blocked(
   }
 }
 
-/// Emit ExtensionActed event for each transformer name.
-fn emit_extension_acted_list(
+/// Emit HookActed event for each transformer name.
+fn emit_hook_acted_list(
   st: state.AgentState,
   transformer_names: List(String),
-  hook: events.ExtensionHook,
+  hook: events.HookPoint,
   description: String,
 ) -> Nil {
   case get_dispatcher(st) {
@@ -173,10 +173,10 @@ fn emit_extension_acted_list(
       list.each(transformer_names, fn(name) {
         emit.to_dispatcher(
           disp,
-          events.ExtensionActed(
-            extension_name: name,
-            hook:,
-            action: events.ExtensionActionDetail(
+          events.HookActed(
+            hook_name: name,
+            hook_point: hook,
+            action: events.HookActionDetail(
               action_type: "transform",
               description:,
             ),
@@ -222,7 +222,7 @@ pub fn step(st: state.AgentState) -> StepResult {
   let final_msgs = case hooks.decide_messages(st.config.hooks, before_event) {
     hooks.MessagesUnchanged(..) -> msgs
     hooks.MessagesReplaced(final_messages:, transformers:) -> {
-      emit_extension_acted_list(
+      emit_hook_acted_list(
         st,
         transformers,
         events.BeforeInference,
@@ -255,6 +255,11 @@ pub fn step(st: state.AgentState) -> StepResult {
         msg,
         final_msgs,
       )
+      // Fire after_inference hooks
+      hooks.notify_after_inference(
+        st.config.hooks,
+        hooks.AfterInferenceEvent(model:, message: msg, duration_ms: duration),
+      )
       case msg {
         message.Assistant(content: _, tool_calls: calls, thinking: _) ->
           case calls {
@@ -274,6 +279,11 @@ pub fn step(st: state.AgentState) -> StepResult {
         duration,
         final_msgs,
       )
+      // Fire error hooks
+      hooks.notify_error(
+        st.config.hooks,
+        hooks.ErrorEvent(model:, error: e),
+      )
       StepError(e)
     }
   }
@@ -287,7 +297,7 @@ pub fn step(st: state.AgentState) -> StepResult {
 /// 2. Execute allowed tools
 /// 3. Apply result hooks (decide_tool_result) — transform results
 ///
-/// Emits `ToolStarted`, `ToolExecuted`, `ToolBlocked`, `ExtensionActed`.
+/// Emits `ToolStarted`, `ToolExecuted`, `ToolBlocked`, `HookActed`.
 /// Errors are caught and turned into Tool messages — the LLM adapts.
 pub fn execute_tools_and_advance(
   st: state.AgentState,
@@ -333,7 +343,7 @@ pub fn execute_tools_and_advance(
                 content: raw_content,
               )
             hooks.ResultTransformed(final_event:, transformers:) -> {
-              emit_extension_acted_list(
+              emit_hook_acted_list(
                 st,
                 transformers,
                 events.AfterToolCall,
@@ -346,11 +356,17 @@ pub fn execute_tools_and_advance(
             }
           }
         }
-        hooks.ToolBlocked(extension_name:, reason:) -> {
+        hooks.ToolBlocked(hook_name:, reason:) -> {
           // Tool blocked by hook — emit observability and create error Tool message
-          emit_tool_blocked(st, call, extension_name, reason)
+          emit_tool_blocked(st, call, hook_name, reason)
+          emit_hook_acted_list(
+            st,
+            [hook_name],
+            events.BeforeToolCall,
+            "Blocked tool: " <> reason,
+          )
           let content =
-            "Tool blocked by '" <> extension_name <> "': " <> reason
+            "Tool blocked by '" <> hook_name <> "': " <> reason
           message.Tool(tool_call_id: call.id, content:)
         }
       }
@@ -371,10 +387,22 @@ pub fn run_to_completion(st: state.AgentState) -> Result(Message, AiError) {
 
 fn do_run(st: state.AgentState) -> Result(Message, AiError) {
   case state.exceeded_max_iterations(st) {
-    True -> Error(state.max_iterations_error(st))
+    True -> {
+      hooks.notify_error(
+        st.config.hooks,
+        hooks.ErrorEvent(model: st.config.model, error: state.max_iterations_error(st)),
+      )
+      Error(state.max_iterations_error(st))
+    }
     False ->
       case step(st) {
-        Complete(msg) -> Ok(msg)
+        Complete(msg) -> {
+          hooks.notify_complete(
+            st.config.hooks,
+            hooks.CompleteEvent(model: st.config.model, message: msg, total_iterations: st.iterations),
+          )
+          Ok(msg)
+        }
         StepError(e) -> Error(e)
         NeedsToolExecution(calls, updated_state) -> {
           let advanced =

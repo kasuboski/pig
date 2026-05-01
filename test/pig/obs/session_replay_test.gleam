@@ -82,3 +82,21 @@ pub fn replay_with_tool_calls_reconstructs_full_history_test() {
   should.equal(done, "Done!")
   should.equal(tc_id, "c1")
 }
+
+/// Replay handles tool_blocked events after last inference (crash recovery).
+pub fn replay_with_blocked_tool_after_last_inference_test() {
+  use path <- with_temp_file("blocked_tool")
+  write_jsonl(path, [
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"inference_started\",\"model\":\"gpt-4\",\"message_count\":1}",
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"inference_completed\",\"duration_ms\":50,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"}]},\"input_messages\":[{\"role\":\"user\",\"content\":\"rm -rf /\"}]}",
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"tool_blocked\",\"tool_call\":{\"id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{}\"},\"hook_name\":\"safety-guard\",\"reason\":\"dangerous command\"}",
+  ])
+  let assert Ok(messages) = session.replay(path)
+  // Should have: input_messages from last inference + assistant + blocked tool message = 3
+  should.equal(list.length(messages), 3)
+  let assert [User(content: prompt), Assistant(content: "", tool_calls: [_tc], ..), Tool(tool_call_id: id, content: blocked_content)] = messages
+  should.equal(prompt, "rm -rf /")
+  should.equal(id, "c1")
+  // Blocked tool content should reconstruct from hook_name + reason
+  should.equal(blocked_content, "Tool blocked by 'safety-guard': dangerous command")
+}

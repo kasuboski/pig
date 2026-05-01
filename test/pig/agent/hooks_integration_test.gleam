@@ -287,10 +287,19 @@ pub fn actor_hook_blocks_tool_and_session_writer_records_it_test() {
   let has_blocked =
     list.any(lines, fn(line) {
       string.contains(line, "\"event\":\"tool_blocked\"")
-        && string.contains(line, "\"extension_name\":\"guard\"")
+        && string.contains(line, "\"hook_name\":\"guard\"")
         && string.contains(line, "\"reason\":\"echo blocked\"")
     })
   should.be_true(has_blocked)
+
+  // Also verify HookActed event is emitted for the blocked tool
+  let has_hook_acted =
+    list.any(lines, fn(line) {
+      string.contains(line, "\"event\":\"hook_acted\"")
+        && string.contains(line, "\"hook_name\":\"guard\"")
+        && string.contains(line, "\"hook_point\":\"before_tool_call\"")
+    })
+  should.be_true(has_hook_acted)
 }
 
 /// Actor accumulates history across multiple runs with hooks.

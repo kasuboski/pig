@@ -6,11 +6,11 @@ import gleeunit
 import gleeunit/should
 import pig/ai/message.{ToolCall}
 import pig/obs/events.{
-  ExtensionActionDetail,
+  HookActionDetail,
   InferenceStarted,
   ToolStarted,
   ToolBlocked,
-  ExtensionActed,
+  HookActed,
   BeforeToolCall,
   AfterToolCall,
   BeforeInference,
@@ -23,10 +23,10 @@ pub fn main() {
   gleeunit.main()
 }
 
-// ── ExtensionHook Type Tests ──────────────────────────────────────────
+// ── HookPoint Type Tests ──────────────────────────────────────────
 
-pub fn extension_hook_variants_construct_test() {
-  // Verify all ExtensionHook variants can be constructed without crashing
+pub fn hook_point_variants_construct_test() {
+  // Verify all HookPoint variants can be constructed without crashing
   let _ = BeforeToolCall
   let _ = AfterToolCall
   let _ = BeforeInference
@@ -54,10 +54,10 @@ pub fn extension_hook_variants_construct_test() {
   |> should.not_equal(AfterToolCall)
 }
 
-// ── ExtensionActionDetail Type Tests ───────────────────────────────────
+// ── HookActionDetail Type Tests ───────────────────────────────────
 
-pub fn extension_action_detail_constructs_test() {
-  let detail = ExtensionActionDetail(
+pub fn hook_action_detail_constructs_test() {
+  let detail = HookActionDetail(
     action_type: "modify_args",
     description: "Changed expression format",
   )
@@ -69,7 +69,7 @@ pub fn extension_action_detail_constructs_test() {
   |> should.equal("Changed expression format")
 
   // Verify structural equality
-  let detail2 = ExtensionActionDetail(
+  let detail2 = HookActionDetail(
     action_type: "modify_args",
     description: "Changed expression format",
   )
@@ -78,7 +78,7 @@ pub fn extension_action_detail_constructs_test() {
   |> should.equal(detail2)
 
   // Verify different details are not equal
-  let detail3 = ExtensionActionDetail(
+  let detail3 = HookActionDetail(
     action_type: "block",
     description: "Blocked for safety",
   )
@@ -162,7 +162,7 @@ pub fn tool_blocked_constructs_test() {
   let event =
     ToolBlocked(
       tool_call: tool_call,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Expression contains disallowed characters",
     )
 
@@ -172,7 +172,7 @@ pub fn tool_blocked_constructs_test() {
   event.tool_call.name
   |> should.equal("calculator")
 
-  event.extension_name
+  event.hook_name
   |> should.equal("safety_guard")
 
   event.reason
@@ -187,7 +187,7 @@ pub fn tool_blocked_constructs_test() {
   let event2 =
     ToolBlocked(
       tool_call: tool_call2,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Expression contains disallowed characters",
     )
   event
@@ -197,33 +197,33 @@ pub fn tool_blocked_constructs_test() {
   let event3 =
     ToolBlocked(
       tool_call: tool_call,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Different reason",
     )
   event
   |> should.not_equal(event3)
 }
 
-// ── ExtensionActed Variant Tests ───────────────────────────────────────
+// ── HookActed Variant Tests ───────────────────────────────────────
 
-pub fn extension_acted_constructs_test() {
+pub fn hook_acted_constructs_test() {
   let action =
-    ExtensionActionDetail(
+    HookActionDetail(
       action_type: "modify_args",
       description: "Changed expression format",
     )
 
   let event =
-    ExtensionActed(
-      extension_name: "safety_guard",
-      hook: BeforeToolCall,
+    HookActed(
+      hook_name: "safety_guard",
+      hook_point: BeforeToolCall,
       action: action,
     )
 
-  event.extension_name
+  event.hook_name
   |> should.equal("safety_guard")
 
-  event.hook
+  event.hook_point
   |> should.equal(BeforeToolCall)
 
   event.action.action_type
@@ -234,14 +234,14 @@ pub fn extension_acted_constructs_test() {
 
   // Verify structural equality
   let action2 =
-    ExtensionActionDetail(
+    HookActionDetail(
       action_type: "modify_args",
       description: "Changed expression format",
     )
   let event2 =
-    ExtensionActed(
-      extension_name: "safety_guard",
-      hook: BeforeToolCall,
+    HookActed(
+      hook_name: "safety_guard",
+      hook_point: BeforeToolCall,
       action: action2,
     )
   event
@@ -249,9 +249,9 @@ pub fn extension_acted_constructs_test() {
 
   // Verify different events are not equal
   let event3 =
-    ExtensionActed(
-      extension_name: "safety_guard",
-      hook: AfterToolCall,
+    HookActed(
+      hook_name: "safety_guard",
+      hook_point: AfterToolCall,
       action: action,
     )
   event

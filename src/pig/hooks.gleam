@@ -234,7 +234,7 @@ pub fn replace_messages(messages: List(Message)) -> BeforeInferenceAction {
 /// whether to execute or create an error Tool message.
 pub type ToolCallDecision {
   ToolAllowed
-  ToolBlocked(extension_name: String, reason: String)
+  ToolBlocked(hook_name: String, reason: String)
 }
 
 /// Decision from tool_result hooks. Carries attribution for observability.
@@ -274,7 +274,7 @@ fn find_blocking_hook(
     [] -> ToolAllowed
     [h, ..rest] -> {
       case h.on_tool_call(event) {
-        BlockTool(reason) -> ToolBlocked(extension_name: h.name, reason:)
+        BlockTool(reason) -> ToolBlocked(hook_name: h.name, reason:)
         AllowTool -> find_blocking_hook(rest, event)
       }
     }

@@ -12,11 +12,11 @@ import pig/obs/events.{
   ToolStarted,
   ToolExecuted,
   ToolBlocked,
-  ExtensionActed,
+  HookActed,
   InferenceFailed,
   SessionEnded,
   BeforeToolCall,
-  ExtensionActionDetail,
+  HookActionDetail,
   NormalEnd,
 }
 import pig/obs/listener
@@ -154,7 +154,7 @@ pub fn dispatcher_emits_tool_blocked_telemetry_test() {
   let event =
     ToolBlocked(
       tool_call:,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Disallowed characters",
     )
   send_and_confirm(disp, event, consumer)
@@ -205,14 +205,14 @@ pub fn dispatcher_does_not_emit_telemetry_for_session_started_test() {
   cleanup()
 }
 
-pub fn dispatcher_does_not_emit_telemetry_for_extension_acted_test() {
+pub fn dispatcher_does_not_emit_telemetry_for_hook_acted_test() {
   let #(#(disp, consumer, handle), cleanup) = setup_with_listener()
 
   let event =
-    ExtensionActed(
-      extension_name: "safety_guard",
-      hook: BeforeToolCall,
-      action: ExtensionActionDetail("modify_args", "Changed format"),
+    HookActed(
+      hook_name: "safety_guard",
+      hook_point: BeforeToolCall,
+      action: HookActionDetail("modify_args", "Changed format"),
     )
   send_and_confirm(disp, event, consumer)
 

@@ -14,7 +14,7 @@ import gleam/otp/supervision
 import gleam/string
 import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
 import pig/ai/message.{type Message, type ToolCall, User, System, Assistant, Tool, Thinking, ToolCall}
-import pig/obs/events.{type SessionEndReason, type SessionEvent, type ExtensionHook, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceStarted, InferenceCompleted, ToolStarted, ToolExecuted, ToolBlocked, ExtensionActed, InferenceFailed, SessionEnded, BeforeToolCall, AfterToolCall, BeforeInference, AfterInference, OnError}
+import pig/obs/events.{type SessionEndReason, type SessionEvent, type HookPoint, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceStarted, InferenceCompleted, ToolStarted, ToolExecuted, ToolBlocked, HookActed, InferenceFailed, SessionEnded, BeforeToolCall, AfterToolCall, BeforeInference, AfterInference, OnError, OnComplete, OnSessionStart, OnSessionShutdown}
 import gleam/dynamic/decode as dynamic_decode
 import simplifile
 
@@ -131,6 +131,7 @@ fn replay_lines(
             |> list.filter_map(fn(line) {
               case decode_event_type_str(line) {
                 "tool_executed" -> parse_tool_message(line)
+                "tool_blocked" -> parse_blocked_tool_message(line)
                 _ -> Error(Nil)
               }
             })
@@ -210,6 +211,27 @@ fn parse_tool_message(line: String) -> Result(Message, Nil) {
       case json.parse(from: line, using: result_decoder) {
         Ok(result) -> Ok(Tool(tool_call_id: id, content: result))
         Error(_) -> Error(Nil)
+      }
+    }
+    Error(_) -> Error(Nil)
+  }
+}
+
+/// Parse a Tool message from a ToolBlocked JSON line.
+fn parse_blocked_tool_message(line: String) -> Result(Message, Nil) {
+  let id_decoder =
+    dynamic_decode.at(["tool_call", "id"], dynamic_decode.string)
+  let hook_name_decoder =
+    dynamic_decode.at(["hook_name"], dynamic_decode.string)
+  let reason_decoder =
+    dynamic_decode.at(["reason"], dynamic_decode.string)
+
+  case json.parse(from: line, using: id_decoder) {
+    Ok(id) -> {
+      case json.parse(from: line, using: hook_name_decoder), json.parse(from: line, using: reason_decoder) {
+        Ok(hook_name), Ok(reason) ->
+          Ok(Tool(tool_call_id: id, content: "Tool blocked by '" <> hook_name <> "': " <> reason))
+        _, _ -> Error(Nil)
       }
     }
     Error(_) -> Error(Nil)
@@ -407,23 +429,23 @@ pub fn format_event(event: SessionEvent) -> String {
       |> json.to_string()
     }
 
-    ToolBlocked(tool_call:, extension_name:, reason:) -> {
+    ToolBlocked(tool_call:, hook_name:, reason:) -> {
       json.object([
         #("ts", json.string(ts)),
         #("event", json.string("tool_blocked")),
         #("tool_call", tool_call_to_json(tool_call)),
-        #("extension_name", json.string(extension_name)),
+        #("hook_name", json.string(hook_name)),
         #("reason", json.string(reason)),
       ])
       |> json.to_string()
     }
 
-    ExtensionActed(extension_name:, hook:, action:) -> {
+    HookActed(hook_name:, hook_point:, action:) -> {
       json.object([
         #("ts", json.string(ts)),
-        #("event", json.string("extension_acted")),
-        #("extension_name", json.string(extension_name)),
-        #("hook", json.string(hook_to_string(hook))),
+        #("event", json.string("hook_acted")),
+        #("hook_name", json.string(hook_name)),
+        #("hook_point", json.string(hook_to_string(hook_point))),
         #("action", json.object([
           #("action_type", json.string(action.action_type)),
           #("description", json.string(action.description)),
@@ -592,12 +614,15 @@ fn reason_to_json(reason: SessionEndReason) -> json.Json {
   }
 }
 
-fn hook_to_string(hook: ExtensionHook) -> String {
+fn hook_to_string(hook: HookPoint) -> String {
   case hook {
     BeforeToolCall -> "before_tool_call"
     AfterToolCall -> "after_tool_call"
     BeforeInference -> "before_inference"
     AfterInference -> "after_inference"
     OnError -> "on_error"
+    OnComplete -> "on_complete"
+    OnSessionStart -> "on_session_start"
+    OnSessionShutdown -> "on_session_shutdown"
   }
 }
