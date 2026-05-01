@@ -13,7 +13,7 @@ import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
 import gleam/string
 import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
-import pig/ai/message.{type Message, type ToolCall, User, System, Assistant, Tool, Thinking, ToolCall}
+import pig/ai/message.{type Message, type Thinking, type ToolCall, User, System, Assistant, Tool, Thinking, ToolCall}
 import pig/obs/events.{type SessionEndReason, type SessionEvent, type HookPoint, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceStarted, InferenceCompleted, ToolStarted, ToolExecuted, ToolBlocked, HookActed, InferenceFailed, SessionEnded, BeforeToolCall, AfterToolCall, BeforeInference, AfterInference, OnError, OnComplete, OnSessionStart, OnSessionShutdown}
 import gleam/dynamic/decode as dynamic_decode
 import simplifile
@@ -261,10 +261,25 @@ pub fn decode_message() -> dynamic_decode.Decoder(Message) {
         "tool_calls",
         dynamic_decode.list(decode_tool_call()),
       )
-      dynamic_decode.success(Assistant(content:, tool_calls:, thinking: None))
+      use thinking <- dynamic_decode.optional_field(
+        "thinking",
+        option.None,
+        decode_thinking(),
+      )
+      dynamic_decode.success(Assistant(content:, tool_calls:, thinking:))
     }
-    _ -> dynamic_decode.success(User(content: "unknown role: " <> role))
+    _ ->
+      dynamic_decode.failure(
+        User(content: ""),
+        "unknown message role: " <> role,
+      )
   }
+}
+
+/// Decode Thinking from JSON.
+fn decode_thinking() -> dynamic_decode.Decoder(option.Option(Thinking)) {
+  use content <- dynamic_decode.field("content", dynamic_decode.string)
+  dynamic_decode.success(option.Some(Thinking(content:)))
 }
 
 /// Decode a ToolCall from JSON.

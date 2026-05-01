@@ -318,17 +318,13 @@ pub fn execute_tools_and_advance(
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
-          let result_str = case result {
-            Ok(json_result) -> json.to_string(json_result)
-            Error(tool_err) -> "Tool error: " <> tool_err.message
-          }
-          emit_tool_executed(st, call, duration, result_str)
-
-          // Step 3: Apply result hooks
           let raw_content = case result {
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
+          emit_tool_executed(st, call, duration, raw_content)
+
+          // Step 3: Apply result hooks
           let result_event = hooks.ToolResultEvent(
             tool_name: call.name,
             tool_call_id: call.id,

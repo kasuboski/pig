@@ -305,6 +305,7 @@ pub fn actor_hook_blocks_tool_and_session_writer_records_it_test() {
 /// Actor accumulates history across multiple runs with hooks.
 pub fn actor_hooks_accumulate_history_across_runs_test() {
   let ok = message.Assistant("ok", [], None)
+  let count_subject = process.new_subject()
   let provider = fn(msgs, _tools) {
     let user_count =
       msgs
@@ -315,7 +316,7 @@ pub fn actor_hooks_accumulate_history_across_runs_test() {
         }
       })
       |> list.length()
-    let _ = user_count
+    process.send(count_subject, user_count)
     Ok(provider.from_message(ok))
   }
 
@@ -331,7 +332,10 @@ pub fn actor_hooks_accumulate_history_across_runs_test() {
 
   let assert Ok(subject) = actor.start(cfg)
   let assert Ok(_) = actor.run(subject, "one", 5000)
+  let assert Ok(1) = process.receive(count_subject, 1000)
   let assert Ok(_) = actor.run(subject, "two", 5000)
+  // Second run should see both user messages (accumulated history)
+  let assert Ok(2) = process.receive(count_subject, 1000)
   actor.stop(subject)
   process.send(disp, dispatcher.Stop)
 }

@@ -187,7 +187,7 @@ pub fn actor_replays_session_on_init_test() {
       // Write a session with one inference (user -> assistant)
       let line1 =
         "{\"event\":\"inference_completed\",\"input_messages\":[{\"role\":\"user\",\"content\":\"from replay\"}],\"message\":{\"role\":\"assistant\",\"content\":\"replayed answer\",\"tool_calls\":[]}}"
-      let assert Ok(Nil) = simplifile.write(line1 <> "\n", to: path)
+      let assert Ok(Nil) = simplifile.write(to: path, contents: line1 <> "\n")
 
       // Provider checks that it sees the replayed history
       let seen_count = process.new_subject()

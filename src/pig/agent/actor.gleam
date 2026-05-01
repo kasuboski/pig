@@ -8,6 +8,8 @@
 
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
+import gleam/string
+import logging
 import gleam/option
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
@@ -97,7 +99,16 @@ fn init_state(config: state.AgentConfig) -> state.AgentState {
             list.fold(replayed_messages, st, state.add_message)
           st_with_history
         }
-        Error(_) -> st
+        Error(e) -> {
+          logging.log(
+            logging.Warning,
+            "Failed to replay session from "
+              <> path
+              <> ": "
+              <> string.inspect(e),
+          )
+          st
+        }
       }
     }
     option.None -> st

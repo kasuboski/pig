@@ -191,7 +191,7 @@ pub fn with_safety_guard(config: pig.PigConfig) -> pig.PigConfig {
 
 // A full extension: tools + hooks + state
 pub fn with_gleam_deps(config: pig.PigConfig) -> pig.PigConfig {
-  let store = qmd_store.start()
+  let assert Ok(store) = qmd_store.start()
   config
   |> pig.with_tool(make_search_tool(store))
   |> pig.with_hooks(
@@ -550,10 +550,19 @@ fn init(config: AgentConfig) -> AgentState {
 ```gleam
 // pig/obs/session.gleam — addition
 pub fn replay(path: String) -> Result(List(Message), ReplayError) {
-  let assert Ok(content) = simplifile.read(path)
-  let lines = string.split(content, "\n") |> filter_empty()
-  let events = list.map(lines, parse_session_event)
-  reconstruct_messages(events)
+  case simplifile.read(path) {
+    Error(e) -> Error(FileError(string.inspect(e)))
+    Ok(content) -> {
+      let lines =
+        content
+        |> string.split("\n")
+        |> list.filter(fn(l) { l != "" })
+      case lines {
+        [] -> Ok([])
+        _ -> replay_lines(lines)
+      }
+    }
+  }
 }
 ```
 
