@@ -16,6 +16,9 @@ import pig/obs/events.{
   BeforeInference,
   AfterInference,
   OnError,
+  OnComplete,
+  OnSessionStart,
+  OnSessionShutdown,
   tool_blocked_name,
 }
 
@@ -32,6 +35,9 @@ pub fn hook_point_variants_construct_test() {
   let _ = BeforeInference
   let _ = AfterInference
   let _ = OnError
+  let _ = OnComplete
+  let _ = OnSessionStart
+  let _ = OnSessionShutdown
 
   // Verify structural equality
   BeforeToolCall
@@ -49,9 +55,21 @@ pub fn hook_point_variants_construct_test() {
   OnError
   |> should.equal(OnError)
 
+  OnComplete
+  |> should.equal(OnComplete)
+
+  OnSessionStart
+  |> should.equal(OnSessionStart)
+
+  OnSessionShutdown
+  |> should.equal(OnSessionShutdown)
+
   // Verify they are NOT equal
   BeforeToolCall
   |> should.not_equal(AfterToolCall)
+
+  OnSessionStart
+  |> should.not_equal(BeforeToolCall)
 }
 
 // ── HookActionDetail Type Tests ───────────────────────────────────

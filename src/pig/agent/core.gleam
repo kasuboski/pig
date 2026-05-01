@@ -166,6 +166,7 @@ fn emit_hook_acted_list(
   st: state.AgentState,
   transformer_names: List(String),
   hook: events.HookPoint,
+  action_type: String,
   description: String,
 ) -> Nil {
   case get_dispatcher(st) {
@@ -177,7 +178,7 @@ fn emit_hook_acted_list(
             hook_name: name,
             hook_point: hook,
             action: events.HookActionDetail(
-              action_type: "transform",
+              action_type:,
               description:,
             ),
           ),
@@ -226,6 +227,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         st,
         transformers,
         events.BeforeInference,
+        "transform",
         "Transformed messages before inference",
       )
       final_messages
@@ -253,7 +255,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         meta.input_tokens,
         meta.output_tokens,
         msg,
-        final_msgs,
+        msgs,
       )
       // Fire after_inference hooks
       hooks.notify_after_inference(
@@ -277,7 +279,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         msg_count,
         e,
         duration,
-        final_msgs,
+        msgs,
       )
       // Fire error hooks
       hooks.notify_error(
@@ -322,9 +324,7 @@ pub fn execute_tools_and_advance(
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
-          emit_tool_executed(st, call, duration, raw_content)
-
-          // Step 3: Apply result hooks
+          // Step 3: Apply result hooks before emitting
           let result_event = hooks.ToolResultEvent(
             tool_name: call.name,
             tool_call_id: call.id,
@@ -332,25 +332,27 @@ pub fn execute_tools_and_advance(
             is_error: result_is_error(result),
             duration_ms: duration,
           )
-          case hooks.decide_tool_result(st.config.hooks, result_event) {
-            hooks.ResultUnchanged(..) ->
-              message.Tool(
-                tool_call_id: call.id,
-                content: raw_content,
-              )
+          let final_content = case hooks.decide_tool_result(
+            st.config.hooks,
+            result_event,
+          ) {
+            hooks.ResultUnchanged(..) -> raw_content
             hooks.ResultTransformed(final_event:, transformers:) -> {
               emit_hook_acted_list(
                 st,
                 transformers,
                 events.AfterToolCall,
+                "transform",
                 "Transformed result",
               )
-              message.Tool(
-                tool_call_id: call.id,
-                content: final_event.result,
-              )
+              final_event.result
             }
           }
+          emit_tool_executed(st, call, duration, final_content)
+          message.Tool(
+            tool_call_id: call.id,
+            content: final_content,
+          )
         }
         hooks.ToolBlocked(hook_name:, reason:) -> {
           // Tool blocked by hook — emit observability and create error Tool message
@@ -359,6 +361,7 @@ pub fn execute_tools_and_advance(
             st,
             [hook_name],
             events.BeforeToolCall,
+            "block",
             "Blocked tool: " <> reason,
           )
           let content =

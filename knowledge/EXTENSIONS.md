@@ -124,39 +124,13 @@ Extension(name, on_before_inference, on_after_inference, on_tool_call, on_tool_r
 
 **Tests**: 33 passing in `test/pig/extension_test.gleam`.
 
-### Done: Observability infrastructure
-
-The dispatcher-actor pattern is fully implemented. See `OBSERVABILITY.md` for full details.
-
-Hook-related types already exist in `obs/events.gleam`:
-- `ToolBlocked(tool_call, extension_name, reason)` — `SessionEvent` variant
-- `ExtensionActed(extension_name, hook, action)` — `SessionEvent` variant
-- `ExtensionHook` — enum (`BeforeToolCall`, `AfterToolCall`, `BeforeInference`, `AfterInference`, `OnError`)
-- `ExtensionActionDetail` — record (`action_type: String, description: String`)
-
-### Not Yet Done
-
-- [ ] Rename `extension.gleam` → `hooks.gleam`, `Extension` → `Hooks`, drop `ExtensionStack`
-- [ ] Add `on_session_start` and `on_session_shutdown` to `Hooks`
-- [ ] Refactor composition functions to return decision types with attribution
-- [ ] Add `hooks: List(Hooks)` field to `AgentConfig`
-- [ ] Add `session_path: Option(String)` field to `AgentConfig`, remove `persistence_path` from `PigConfig`
-- [ ] Change agent actor to hold `AgentState` instead of `AgentConfig`
-- [ ] Add `session.replay(path)` for JSONL → `List(Message)` reconstruction
-- [ ] Wire hooks into `agent/core.gleam` at each lifecycle point
-- [ ] Wire hooks into `agent/parallel.gleam` for parallel tool execution
-- [ ] Add `pig.with_hooks(h)` builder function
-- [ ] Wire `with_session_writer` to also set `session_path` on config
-- [ ] Update session writer and terminal printer to handle `ExtensionActed` and `ToolBlocked`
-- [ ] Write integration tests
-
 ---
 
 ## 4. Architecture
 
 ### The three customization points
 
-```
+```text
 pig.new(provider)                         // create config
   |> pig.with_tool(search_tool)           // add a capability
   |> pig.with_hooks(guard)                // add lifecycle mediation
@@ -212,7 +186,7 @@ let agent =
 
 ### Agent actor holds state (session)
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │  Agent Actor (holds AgentState)                         │
 │                                                         │
@@ -290,9 +264,9 @@ Hook authors never touch telemetry. They return a typed action. The core loop em
 
 | Hook returns | Core emits |
 |---|---|
-| `BlockTool(reason)` | `ToolBlocked` + `ExtensionActed` → dispatcher projects `[:pig, :tool, :blocked]` |
-| `ReplaceResult(content)` | `ToolExecuted` (with transformed result) + `ExtensionActed` |
-| `ReplaceMessages(msgs)` | `InferenceStarted` (with modified messages) + `ExtensionActed` |
+| `BlockTool(reason)` | `ToolBlocked` + `HookActed` → dispatcher projects `[:pig, :tool, :blocked]` |
+| `ReplaceResult(content)` | `ToolExecuted` (with transformed result) + `HookActed` |
+| `ReplaceMessages(msgs)` | `InferenceStarted` (with modified messages) + `HookActed` |
 | Fire-and-forget (observe) | Nothing extra — invisible by design |
 
 ---
@@ -339,7 +313,7 @@ Composition functions will return decision types that carry attribution:
 ```gleam
 pub type ToolCallDecision {
   ToolAllowed
-  ToolBlocked(extension_name: String, reason: String)
+  ToolBlocked(hook_name: String, reason: String)
 }
 
 pub type ToolResultDecision {
@@ -381,9 +355,9 @@ pub fn with_safety_guard(config: pig.PigConfig) -> pig.PigConfig {
 ```
 
 **What gets emitted automatically (hook author does nothing):**
-- SessionEvent: `ToolBlocked(tool_call:, extension_name: "safety-guard", reason: "Dangerous command blocked")`
-- Telemetry: `[:pig, :tool, :blocked]` with `extension_name: "safety-guard"`
-- SessionEvent: `ExtensionActed(extension_name: "safety-guard", hook: BeforeToolCall, ...)`
+- SessionEvent: `ToolBlocked(tool_call:, hook_name: "safety-guard", reason: "Dangerous command blocked")`
+- Telemetry: `[:pig, :tool, :blocked]` with `hook_name: "safety-guard"`
+- SessionEvent: `HookActed(hook_name: "safety-guard", hook: BeforeToolCall, ...)`
 - LLM sees: `Tool(tool_call_id: "c1", content: "Tool blocked by 'safety-guard': Dangerous command blocked")`
 
 ### Audit logger — fire-and-forget observer
@@ -593,7 +567,7 @@ Per `TESTING_STRATEGY.md`:
 - **Composition:** Test `decide_tool_call`, `decide_tool_result`, `transform_messages` directly with `List(Hooks)` — no OTP processes needed.
 - **Integration with core:** Use `check_scenario` harness with hooks registered in the config.
 - **No mocks needed:** Hooks are functions. Create test hooks inline.
-- **Decision types are testable:** Pattern match on `ToolBlocked(extension_name:, reason:)` to assert both values.
+- **Decision types are testable:** Pattern match on `ToolBlocked(hook_name:, reason:)` to assert both values.
 - **Telemetry assertions:** Use `capture_scenario` harness with test listener.
 - **Session replay assertions:** Write a known JSONL, call `session.replay`, verify reconstructed messages.
 
@@ -605,7 +579,7 @@ pub fn decision_carries_attribution_test() {
     |> hooks.on_tool_call(fn(_) { hooks.block_tool("nope") })
   let event = ToolCallEvent(tool_name: "bash", tool_call_id: "1", arguments_json: "{}")
   let decision = hooks.decide_tool_call([guard], event)
-  decision == ToolBlocked(extension_name: "guard", reason: "nope")
+  decision == ToolBlocked(hook_name: "guard", reason: "nope")
 }
 
 // Example: extension is just a function
@@ -658,11 +632,11 @@ Core loop implementation in `core.gleam`:
 ```gleam
 case hooks.decide_tool_call(config.hooks, event) {
   ToolAllowed -> // execute tool normally
-  ToolBlocked(extension_name, reason) -> {
+  ToolBlocked(hook_name, reason) -> {
     // Emit observability
-    emit_tool_blocked(st, call, extension_name, reason)
+    emit_tool_blocked(st, call, hook_name, reason)
     // Create the message the LLM will see
-    let content = "Tool blocked by '" <> extension_name <> "': " <> reason
+    let content = "Tool blocked by '" <> hook_name <> "': " <> reason
     message.Tool(tool_call_id: call.id, content:)
   }
 }
@@ -694,18 +668,18 @@ Hooks are pure functions. But what if a hook needs to track state across turns (
 | `src/pig/hooks.gleam` | Rename type to `Hooks`, drop `ExtensionStack`, add `on_session_start`/`on_session_shutdown`, return decision types |
 | `src/pig/agent/state.gleam` | Add `hooks: List(Hooks)` and `session_path: Option(String)` to `AgentConfig` |
 | `src/pig/agent/actor.gleam` | Hold `AgentState` instead of `AgentConfig`, replay on init, fire session lifecycle hooks |
-| `src/pig/agent/core.gleam` | Wire hooks at each lifecycle point, emit `ToolBlocked`/`ExtensionActed` |
+| `src/pig/agent/core.gleam` | Wire hooks at each lifecycle point, emit `ToolBlocked`/`HookActed` |
 | `src/pig/agent/parallel.gleam` | Wire hooks for parallel tool execution |
 | `src/pig.gleam` | Add `with_hooks()`, remove `persistence_path`, wire `with_session_writer` to set `session_path` |
-| `src/pig/obs/session.gleam` | Add `replay()` function, handle `ExtensionActed`/`ToolBlocked` in `format_event` |
-| `src/pig/obs/terminal.gleam` | Handle `ExtensionActed` and `ToolBlocked` in `format_event` |
+| `src/pig/obs/session.gleam` | Add `replay()` function, handle `HookActed`/`ToolBlocked` in `format_event` |
+| `src/pig/obs/terminal.gleam` | Handle `HookActed` and `ToolBlocked` in `format_event` |
 
 ### Needs Creation
 
 | File | Purpose |
 |------|---------|
 | `test/pig/agent/hooks_integration_test.gleam` | Integration tests: hooks wired through core loop |
-| `test/pig/obs/hooks_observability_test.gleam` | Test `ToolBlocked` telemetry and `ExtensionActed` SessionEvents |
+| `test/pig/obs/hooks_observability_test.gleam` | Test `ToolBlocked` telemetry and `HookActed` SessionEvents |
 | `test/pig/obs/session_replay_test.gleam` | Test JSONL → `List(Message)` reconstruction |
 
 ---
@@ -718,7 +692,7 @@ Hooks are pure functions. But what if a hook needs to track state across turns (
 4. **Update `agent/state.gleam`** — Add `hooks: List(Hooks)` and `session_path: Option(String)` to `AgentConfig`.
 5. **Update `agent/actor.gleam`** — Hold `AgentState`, replay on init, fire session lifecycle hooks.
 6. **Add `session.replay()`** — JSONL → `List(Message)` in `obs/session.gleam`.
-7. **Wire `agent/core.gleam`** — Call hooks at each lifecycle point. Emit `ToolBlocked`/`ExtensionActed`.
+7. **Wire `agent/core.gleam`** — Call hooks at each lifecycle point. Emit `ToolBlocked`/`HookActed`.
 8. **Wire `agent/parallel.gleam`** — Same hooks, parallel execution path.
 9. **Wire `pig.gleam`** — Add `with_hooks()`, remove `persistence_path`, wire `with_session_writer` → `session_path`.
 10. **Update consumers** — `obs/session.gleam` and `obs/terminal.gleam` handle new event types.

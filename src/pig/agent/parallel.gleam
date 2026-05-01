@@ -3,6 +3,7 @@
 //// Spawns a process per tool call, collects results, emits telemetry.
 //// Tools run concurrently — telemetry ordering proves parallelism.
 
+import gleam/dict
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -66,48 +67,79 @@ pub fn execute_tools_and_advance(
         }
       })
 
-      // Spawn processes for allowed calls
+      // Spawn processes for allowed calls (returns results with durations)
       let results = spawn_and_collect(st, allowed_calls)
 
-      // Build Tool messages: apply result hooks to executed results
-      let executed_msgs =
-        list.zip(allowed_calls, results)
-        |> list.map(fn(pair) {
-          let #(call, result) = pair
+      // Build lookup maps for blocked and executed messages keyed by call.id
+      let blocked_map =
+        list.fold(blocked_msgs, dict.new(), fn(m, b) {
+          dict.insert(m, b.call.id, b)
+        })
+
+      let executed_map =
+        list.fold(list.zip(allowed_calls, results), dict.new(), fn(m, pair) {
+          let #(call, result_and_dur) = pair
+          let #(result, duration) = result_and_dur
           let raw_content = case result {
             Ok(json_result) -> json.to_string(json_result)
             Error(tool_err) -> "Tool error: " <> tool_err.message
           }
-          // Apply result hooks
+          // Apply result hooks with real duration
           let result_event = hooks.ToolResultEvent(
             tool_name: call.name,
             tool_call_id: call.id,
             result: raw_content,
             is_error: is_error(result),
-            duration_ms: 0,
+            duration_ms: duration,
           )
-          case hooks.decide_tool_result(st.config.hooks, result_event) {
-            hooks.ResultUnchanged(..) ->
-              message.Tool(
-                tool_call_id: call.id,
-                content: raw_content,
+          let final_content = case hooks.decide_tool_result(
+            st.config.hooks,
+            result_event,
+          ) {
+            hooks.ResultUnchanged(..) -> raw_content
+            hooks.ResultTransformed(final_event:, transformers:) -> {
+              emit_hook_acted_list(
+                st,
+                transformers,
+                events.AfterToolCall,
+                "transform",
+                "Transformed result",
               )
-            hooks.ResultTransformed(final_event:, ..) ->
-              message.Tool(
-                tool_call_id: call.id,
-                content: final_event.result,
-              )
+              final_event.result
+            }
           }
+          // Emit ToolExecuted with post-hook content and real duration
+          let disp = get_dispatcher(st)
+          case disp {
+            option.Some(d) ->
+              emit.to_dispatcher(
+                d,
+                events.ToolExecuted(
+                  tool_call: call,
+                  result: final_content,
+                  duration_ms: duration,
+                ),
+              )
+            option.None -> Nil
+          }
+          dict.insert(m, call.id, final_content)
         })
 
-      // Combine: blocked messages first, then executed
+      // Reconstruct messages in original call order
       let all_messages =
-        list.map(blocked_msgs, fn(b) {
-          let content =
-            "Tool blocked by '" <> b.hook_name <> "': " <> b.reason
-          message.Tool(tool_call_id: b.call.id, content:)
+        list.map(calls, fn(call) {
+          case dict.get(blocked_map, call.id) {
+            Ok(b) -> {
+              let content =
+                "Tool blocked by '" <> b.hook_name <> "': " <> b.reason
+              message.Tool(tool_call_id: call.id, content:)
+            }
+            Error(_) -> {
+              let assert Ok(content) = dict.get(executed_map, call.id)
+              message.Tool(tool_call_id: call.id, content:)
+            }
+          }
         })
-        |> list.append(executed_msgs)
 
       list.fold(all_messages, st, state.add_message)
     }
@@ -154,11 +186,40 @@ fn is_error(result: Result(a, b)) -> Bool {
   }
 }
 
-/// Spawn one process per tool call and collect results.
+/// Emit HookActed event for each transformer name.
+fn emit_hook_acted_list(
+  st: state.AgentState,
+  transformer_names: List(String),
+  hook: events.HookPoint,
+  action_type: String,
+  description: String,
+) -> Nil {
+  case get_dispatcher(st) {
+    option.Some(disp) ->
+      list.each(transformer_names, fn(name) {
+        emit.to_dispatcher(
+          disp,
+          events.HookActed(
+            hook_name: name,
+            hook_point: hook,
+            action: events.HookActionDetail(
+              action_type:,
+              description:,
+            ),
+          ),
+        )
+      })
+    option.None -> Nil
+  }
+}
+
+/// Spawn one process per tool call and collect results with durations.
+/// ToolStarted is emitted in the spawned process; ToolExecuted is emitted
+/// by the caller after hooks have been applied.
 fn spawn_and_collect(
   st: state.AgentState,
   calls: List(ToolCall),
-) -> List(Result(json.Json, tool.ToolError)) {
+) -> List(#(Result(json.Json, tool.ToolError), Int)) {
   // Capture dispatcher subject for spawned processes
   let disp = get_dispatcher(st)
   // Create a reply subject for each tool call
@@ -168,37 +229,22 @@ fn spawn_and_collect(
       let _pid =
         process.spawn(fn() {
           case disp {
-            option.Some(d) -> emit.to_dispatcher(d, events.ToolStarted(tool_call: call))
+            option.Some(d) ->
+              emit.to_dispatcher(d, events.ToolStarted(tool_call: call))
             option.None -> Nil
           }
           let start_time = events.system_time()
           let result = execution.execute_tool(st.config.tools, call)
           let duration = events.system_time() - start_time
-          let result_str = case result {
-            Ok(json_result) -> json.to_string(json_result)
-            Error(tool_err) -> "Tool error: " <> tool_err.message
-          }
-          case disp {
-            option.Some(d) ->
-              emit.to_dispatcher(
-                d,
-                events.ToolExecuted(
-                  tool_call: call,
-                  result: result_str,
-                  duration_ms: duration,
-                ),
-              )
-            option.None -> Nil
-          }
-          process.send(reply_subject, result)
+          process.send(reply_subject, #(result, duration))
         })
       reply_subject
     })
   // Collect results in order
   list.map(subjects, fn(subject) {
-    let assert Ok(result) =
+    let assert Ok(pair) =
       process.receive(subject, 5000)
-    result
+    pair
   })
 }
 

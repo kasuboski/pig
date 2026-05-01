@@ -18,8 +18,9 @@ pub fn main() -> Nil {
 // ── Builder Tests ───────────────────────────────────────────────────
 
 pub fn new_creates_hooks_with_name_test() {
-  let _h = hooks.new("my-hooks")
-  True
+  let h = hooks.new("my-hooks")
+  let hooks.Hooks(name:, ..) = h
+  name == "my-hooks"
 }
 
 pub fn new_hooks_allows_tools_by_default_test() {
