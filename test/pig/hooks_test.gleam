@@ -6,6 +6,7 @@
 
 import gleeunit
 import gleeunit/should
+import gleam/erlang/process
 import gleam/option.{None}
 import pig/ai/error
 import pig/ai/message
@@ -116,9 +117,10 @@ pub fn on_before_inference_replaces_handler_test() {
 }
 
 pub fn on_after_inference_replaces_handler_test() {
+  let signal = process.new_subject()
   let h =
     hooks.new("test")
-    |> hooks.on_after_inference(fn(_) { Nil })
+    |> hooks.on_after_inference(fn(_) { process.send(signal, Nil) })
   let event = hooks.AfterInferenceEvent(
     model: "gpt-4",
     message: message.Assistant("response", [], None),
@@ -127,13 +129,14 @@ pub fn on_after_inference_replaces_handler_test() {
   let _ = case h {
     hooks.Hooks(on_after_inference: handler, ..) -> handler(event)
   }
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 pub fn on_error_replaces_handler_test() {
+  let signal = process.new_subject()
   let h =
     hooks.new("test")
-    |> hooks.on_error(fn(_) { Nil })
+    |> hooks.on_error(fn(_) { process.send(signal, Nil) })
   let event = hooks.ErrorEvent(
     model: "gpt-4",
     error: error.ApiError("test error"),
@@ -141,13 +144,14 @@ pub fn on_error_replaces_handler_test() {
   let _ = case h {
     hooks.Hooks(on_error: handler, ..) -> handler(event)
   }
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 pub fn on_complete_replaces_handler_test() {
+  let signal = process.new_subject()
   let h =
     hooks.new("test")
-    |> hooks.on_complete(fn(_) { Nil })
+    |> hooks.on_complete(fn(_) { process.send(signal, Nil) })
   let event = hooks.CompleteEvent(
     model: "gpt-4",
     message: message.Assistant("final", [], None),
@@ -156,56 +160,62 @@ pub fn on_complete_replaces_handler_test() {
   let _ = case h {
     hooks.Hooks(on_complete: handler, ..) -> handler(event)
   }
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 // ── Composition Tests: Notification Handlers (List(Hooks)) ──────────
 
 pub fn notify_after_inference_calls_all_handlers_test() {
+  let signal = process.new_subject()
   let h1 =
     hooks.new("observer1")
-    |> hooks.on_after_inference(fn(_) { Nil })
+    |> hooks.on_after_inference(fn(_) { process.send(signal, Nil) })
   let h2 =
     hooks.new("observer2")
-    |> hooks.on_after_inference(fn(_) { Nil })
+    |> hooks.on_after_inference(fn(_) { process.send(signal, Nil) })
   let event = hooks.AfterInferenceEvent(
     model: "gpt-4",
     message: message.Assistant("response", [], None),
     duration_ms: 100,
   )
   hooks.notify_after_inference([h1, h2], event)
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 pub fn notify_error_calls_all_handlers_test() {
+  let signal = process.new_subject()
   let h1 =
     hooks.new("error_handler1")
-    |> hooks.on_error(fn(_) { Nil })
+    |> hooks.on_error(fn(_) { process.send(signal, Nil) })
   let h2 =
     hooks.new("error_handler2")
-    |> hooks.on_error(fn(_) { Nil })
+    |> hooks.on_error(fn(_) { process.send(signal, Nil) })
   let event = hooks.ErrorEvent(
     model: "gpt-4",
     error: error.ApiError("test error"),
   )
   hooks.notify_error([h1, h2], event)
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 pub fn notify_complete_calls_all_handlers_test() {
+  let signal = process.new_subject()
   let h1 =
     hooks.new("observer1")
-    |> hooks.on_complete(fn(_) { Nil })
+    |> hooks.on_complete(fn(_) { process.send(signal, Nil) })
   let h2 =
     hooks.new("observer2")
-    |> hooks.on_complete(fn(_) { Nil })
+    |> hooks.on_complete(fn(_) { process.send(signal, Nil) })
   let event = hooks.CompleteEvent(
     model: "gpt-4",
     message: message.Assistant("final", [], None),
     total_iterations: 5,
   )
   hooks.notify_complete([h1, h2], event)
-  True
+  let assert Ok(Nil) = process.receive(signal, 1000)
+  let assert Ok(Nil) = process.receive(signal, 1000)
 }
 
 // ── Action Constructor Tests ─────────────────────────────────────────

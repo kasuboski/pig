@@ -8,6 +8,7 @@ import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option
+import logging
 import pig/agent/state
 import pig/ai/message.{type ToolCall}
 import pig/hooks
@@ -240,11 +241,18 @@ fn spawn_and_collect(
         })
       reply_subject
     })
-  // Collect results in order
+  // Collect results in order — handle timeouts gracefully
   list.map(subjects, fn(subject) {
-    let assert Ok(pair) =
-      process.receive(subject, 5000)
-    pair
+    case process.receive(subject, 5000) {
+      Ok(pair) -> pair
+      Error(Nil) -> {
+        logging.log(
+          logging.Error,
+          "Tool execution timed out after 5000ms",
+        )
+        #(Error(tool.ToolError(message: "Tool execution timed out")), 0)
+      }
+    }
   })
 }
 

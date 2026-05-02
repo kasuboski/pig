@@ -255,7 +255,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         meta.input_tokens,
         meta.output_tokens,
         msg,
-        msgs,
+        st.history,
       )
       // Fire after_inference hooks
       hooks.notify_after_inference(
@@ -279,7 +279,7 @@ pub fn step(st: state.AgentState) -> StepResult {
         msg_count,
         e,
         duration,
-        msgs,
+        st.history,
       )
       // Fire error hooks
       hooks.notify_error(
