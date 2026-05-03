@@ -79,6 +79,11 @@ const review_system_prompt = "You are a senior code reviewer. You have access to
 
 // ── Main ─────────────────────────────────────────────────────────────
 
+/// Entry point for the code reviewer CLI tool.
+///
+/// Takes a repository path as a CLI argument, extracts the git diff,
+/// generates an AI summary, loads the repo into a VFS workspace,
+/// and runs a thorough code review using an AI agent.
 pub fn main() {
   io.println("=== Pig Code Reviewer ===")
   io.println("")
@@ -101,12 +106,21 @@ pub fn main() {
   io.println("")
 
   // 2. Validate path is a git repo
+  // .git can be a directory (normal repo) or a file (worktree/submodule)
   let git_dir = filepath.join(repo_path, ".git")
-  case simplifile.is_directory(git_dir) {
-    Ok(True) -> Nil
-    _ -> {
+  let is_valid_git = case simplifile.is_directory(git_dir) {
+    Ok(True) -> True
+    _ ->
+      case simplifile.is_file(git_dir) {
+        Ok(True) -> True
+        _ -> False
+      }
+  }
+  case is_valid_git {
+    True -> Nil
+    False -> {
       io.println("Warning: Not a git repository: " <> repo_path)
-      io.println("  (Could not find .git directory)")
+      io.println("  (Could not find .git)")
       panic as "Not a git repository"
     }
   }
