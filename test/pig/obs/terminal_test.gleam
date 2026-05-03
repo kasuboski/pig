@@ -1,4 +1,4 @@
-import pig/obs/events.{NormalEnd, MaxIterationsExceeded, ExtensionActionDetail, InferenceStarted, BeforeToolCall}
+import pig/obs/events.{NormalEnd, MaxIterationsExceeded, HookActionDetail, InferenceStarted, BeforeToolCall}
 import pig/obs/terminal
 import pig/obs/dispatcher
 import pig/ai/error.{ApiError}
@@ -162,7 +162,7 @@ pub fn format_tool_blocked_shows_info_test() {
   let event =
     events.ToolBlocked(
       tool_call: tool_call,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Dangerous command detected",
     )
 
@@ -175,22 +175,22 @@ pub fn format_tool_blocked_shows_info_test() {
   string.contains(result, "Dangerous command detected") |> should.be_true
 }
 
-pub fn format_extension_acted_shows_info_test() {
+pub fn format_hook_acted_shows_info_test() {
   let action =
-    ExtensionActionDetail(
+    HookActionDetail(
       action_type: "modify_args",
       description: "Changed expression format",
     )
   let event =
-    events.ExtensionActed(
-      extension_name: "safety_guard",
-      hook: BeforeToolCall,
+    events.HookActed(
+      hook_name: "safety_guard",
+      hook_point: BeforeToolCall,
       action: action,
     )
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "EXT") |> should.be_true
+  string.contains(result, "[HOOK]") |> should.be_true
   string.contains(result, "safety_guard") |> should.be_true
   string.contains(result, "before_tool_call") |> should.be_true
   string.contains(result, "modify_args") |> should.be_true

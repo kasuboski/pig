@@ -9,7 +9,7 @@ import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
-import pig/obs/events.{type SessionEvent, type SessionEndReason, type ExtensionHook, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted}
+import pig/obs/events.{type SessionEvent, type SessionEndReason, type HookPoint, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted}
 import gleam/io
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -77,12 +77,12 @@ pub fn format_event(event: SessionEvent) -> String {
       "[TOOL] " <> tool_call.name <> " | " <> duration_str
     }
 
-    events.ToolBlocked(tool_call:, extension_name:, reason:) -> {
-      "[TOOL] Blocked | " <> tool_call.name <> " | " <> extension_name <> " | " <> reason
+    events.ToolBlocked(tool_call:, hook_name:, reason:) -> {
+      "[TOOL] Blocked | " <> tool_call.name <> " | " <> hook_name <> " | " <> reason
     }
 
-    events.ExtensionActed(extension_name:, hook:, action:) -> {
-      "[EXT] " <> extension_name <> " | " <> hook_to_string(hook) <> " | " <> action.action_type
+    events.HookActed(hook_name:, hook_point:, action:) -> {
+      "[HOOK] " <> hook_name <> " | " <> hook_to_string(hook_point) <> " | " <> action.action_type
     }
 
     events.InferenceFailed(
@@ -123,14 +123,17 @@ fn format_end_reason(reason: SessionEndReason) -> String {
   }
 }
 
-/// Format an ExtensionHook for display.
-fn hook_to_string(hook: ExtensionHook) -> String {
+/// Format a HookPoint for display.
+fn hook_to_string(hook: HookPoint) -> String {
   case hook {
-    events.BeforeToolCall -> "before_tool_call"
-    events.AfterToolCall -> "after_tool_call"
+    events.OnSessionStart -> "on_session_start"
+    events.OnSessionShutdown -> "on_session_shutdown"
     events.BeforeInference -> "before_inference"
     events.AfterInference -> "after_inference"
+    events.BeforeToolCall -> "before_tool_call"
+    events.AfterToolCall -> "after_tool_call"
     events.OnError -> "on_error"
+    events.OnComplete -> "on_complete"
   }
 }
 

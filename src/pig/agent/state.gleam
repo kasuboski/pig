@@ -12,6 +12,7 @@ import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
 import pig/ai/provider.{type Provider}
 import pig/ai/tool_definition.{type ToolDefinition}
+import pig/hooks.{type Hooks}
 import pig/tool.{type ToolRegistry}
 import pig/obs/dispatcher
 
@@ -29,6 +30,9 @@ pub type AgentConfig {
     agent_description: Option(String),
     agent_version: Option(String),
     provider_name: Option(String),
+    // Hooks and session fields
+    hooks: List(Hooks),
+    session_path: Option(String),
     // Observability fields
     dispatcher_name: Option(Name(dispatcher.DispatcherMessage)),
     dispatcher: Option(Subject(dispatcher.DispatcherMessage)),
@@ -70,6 +74,8 @@ pub fn config(provider: Provider) -> AgentConfig {
     agent_description: option.None,
     agent_version: option.None,
     provider_name: option.None,
+    hooks: [],
+    session_path: option.None,
     dispatcher_name: option.None,
     dispatcher: option.None,
   )
@@ -145,6 +151,16 @@ pub fn with_dispatcher(
   subject: Subject(dispatcher.DispatcherMessage),
 ) -> AgentConfig {
   AgentConfig(..config, dispatcher: option.Some(subject))
+}
+
+/// Append a hooks set to the hooks list.
+pub fn with_hooks(config: AgentConfig, h: Hooks) -> AgentConfig {
+  AgentConfig(..config, hooks: list.append(config.hooks, [h]))
+}
+
+/// Set the session path for persistence and replay.
+pub fn with_session_path(config: AgentConfig, path: String) -> AgentConfig {
+  AgentConfig(..config, session_path: option.Some(path))
 }
 
 /// Create initial agent state from config.

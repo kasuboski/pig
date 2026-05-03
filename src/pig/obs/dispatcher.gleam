@@ -21,7 +21,7 @@ import pig/obs/events.{
   ToolStarted,
   ToolExecuted,
   ToolBlocked,
-  ExtensionActed,
+  HookActed,
   InferenceFailed,
   SessionEnded,
   inference_start_name,
@@ -193,20 +193,20 @@ fn emit_telemetry(event: SessionEvent) {
         ])
       execute_telemetry(tool_stop_name(), measurements, metadata)
     }
-    ToolBlocked(tool_call:, extension_name:, reason:) -> {
+    ToolBlocked(tool_call:, hook_name:, reason:) -> {
       let measurements = dict.from_list([#("system_time", system_time())])
       let metadata =
         dict.from_list([
           #("tool_name", tool_call.name),
           #("tool_call_id", tool_call.id),
-          #("extension_name", extension_name),
+          #("hook_name", hook_name),
           #("reason", reason),
         ])
       execute_telemetry(tool_blocked_name(), measurements, metadata)
     }
     // These events are NOT projected to telemetry
     SessionStarted(..) -> Nil
-    ExtensionActed(..) -> Nil
+    HookActed(..) -> Nil
     SessionEnded(..) -> Nil
   }
 }

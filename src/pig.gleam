@@ -8,7 +8,7 @@
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option
 import gleam/string
 import gleam/otp/actor.{type StartError}
 import pig/agent/actor as agent_actor
@@ -16,6 +16,7 @@ import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
 import pig/ai/provider.{type Provider, from_message}
+import pig/hooks.{type Hooks}
 import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher
 import pig/obs/session
@@ -30,7 +31,6 @@ pub opaque type PigConfig {
   PigConfig(
     agent_config: state.AgentConfig,
     skills: List(skill.Skill),
-    persistence_path: Option(String),
     consumer_specs: List(ConsumerSpec),
   )
 }
@@ -48,7 +48,6 @@ pub fn new(provider: Provider) -> PigConfig {
   PigConfig(
     agent_config: state.config(provider),
     skills: [],
-    persistence_path: option.None,
     consumer_specs: [],
   )
 }
@@ -80,9 +79,12 @@ pub fn with_skill(config: PigConfig, s: skill.Skill) -> PigConfig {
   PigConfig(..config, skills: [s, ..config.skills])
 }
 
-/// Set the session persistence directory (used by Phase 9).
-pub fn with_persistence(config: PigConfig, path: String) -> PigConfig {
-  PigConfig(..config, persistence_path: option.Some(path))
+/// Register a hooks set for lifecycle mediation.
+pub fn with_hooks(config: PigConfig, h: Hooks) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_hooks(config.agent_config, h),
+  )
 }
 
 /// Set the system prompt.
@@ -145,14 +147,19 @@ pub fn with_provider_name(config: PigConfig, name: String) -> PigConfig {
 }
 
 /// Register a session writer consumer that writes JSONL to the given path.
+/// Also sets session_path on agent config for replay on init.
 pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
   let name = process.new_name("pig_session_writer")
   let spec = session.supervised(path, name)
   let start_fn = fn() { session.start_consumer(path) }
-  PigConfig(..config, consumer_specs: [
-    consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
-    ..config.consumer_specs
-  ])
+  PigConfig(
+    ..config,
+    agent_config: state.with_session_path(config.agent_config, path),
+    consumer_specs: [
+      consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
+      ..config.consumer_specs
+    ],
+  )
 }
 
 /// Register a terminal output consumer that prints formatted events to stdout.
