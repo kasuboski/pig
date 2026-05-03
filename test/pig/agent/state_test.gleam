@@ -11,6 +11,7 @@ import gleam/erlang/process
 import gleeunit/should
 import pig/agent/state
 import pig/ai/message
+import pig/hooks
 import support/harness
 
 pub fn main() -> Nil {
@@ -124,6 +125,52 @@ pub fn with_dispatcher_name_does_not_mutate_original_test() {
   cfg.dispatcher_name |> should.equal(option.None)
   // New config has the name
   cfg2.dispatcher_name |> should.equal(option.Some(name))
+}
+
+// ── Hooks Config ────────────────────────────────────────────────────
+
+/// Default config has empty hooks list.
+pub fn default_config_has_empty_hooks_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  cfg.hooks |> should.equal([])
+}
+
+/// with_hooks appends a hook.
+pub fn with_hooks_adds_hook_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let h = hooks.new("test")
+  let cfg2 = state.with_hooks(cfg, h)
+  cfg2.hooks |> should.equal([h])
+}
+
+/// with_hooks does not mutate original.
+pub fn with_hooks_does_not_mutate_original_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let h = hooks.new("test")
+  let _cfg2 = state.with_hooks(cfg, h)
+  cfg.hooks |> should.equal([])
+}
+
+// ── Session Path Config ────────────────────────────────────────────
+
+/// Default config has no session path.
+pub fn default_config_has_no_session_path_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  cfg.session_path |> should.equal(option.None)
+}
+
+/// with_session_path sets the field.
+pub fn with_session_path_sets_path_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
+  cfg2.session_path |> should.equal(option.Some("/tmp/test.jsonl"))
+}
+
+/// with_session_path does not mutate original.
+pub fn with_session_path_does_not_mutate_original_test() {
+  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let _cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
+  cfg.session_path |> should.equal(option.None)
 }
 
 

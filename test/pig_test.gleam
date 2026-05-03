@@ -13,7 +13,6 @@ import pig/agent/state
 import pig/ai/message
 import pig/skill
 import support/harness
-import temporary
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -99,29 +98,6 @@ pub fn with_skill_works_test() {
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
   let assert True = msg == response
   pig.stop(agent)
-}
-
-// ── Builder: with_persistence ────────────────────────────────────
-
-/// with_persistence sets the session path without breaking flow.
-/// Actual persistence tested separately.
-pub fn with_persistence_works_test() {
-  let response = message.Assistant("ok", [], None)
-  let tmp =
-    temporary.directory()
-    |> temporary.with_prefix("pig_persistence_")
-  let assert Ok(path) =
-    temporary.create(tmp, fn(path) {
-      let config =
-        pig.new(harness.fixed_provider(response))
-        |> pig.with_persistence(path)
-      let assert Ok(agent) = pig.start(config)
-      let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-      let assert True = msg == response
-      pig.stop(agent)
-      path
-    })
-  path
 }
 
 // ── Full builder flow ────────────────────────────────────────────

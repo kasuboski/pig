@@ -18,8 +18,8 @@ import pig/ai/message.{User, Assistant, ToolCall}
 import pig/obs/events.{
   SessionStarted, InferenceCompleted, ToolExecuted, InferenceFailed,
   SessionEnded, NormalEnd, MaxIterationsExceeded,
-  InferenceStarted, ToolStarted, ToolBlocked, ExtensionActed,
-  BeforeToolCall, ExtensionActionDetail,
+  InferenceStarted, ToolStarted, ToolBlocked, HookActed,
+  BeforeToolCall, HookActionDetail,
 }
 import pig/obs/session
 import pig/obs/dispatcher
@@ -422,7 +422,7 @@ pub fn format_tool_blocked_produces_valid_json_test() {
   let event =
     ToolBlocked(
       tool_call: tool_call,
-      extension_name: "safety_guard",
+      hook_name: "safety_guard",
       reason: "Dangerous command detected",
     )
 
@@ -438,10 +438,10 @@ pub fn format_tool_blocked_produces_valid_json_test() {
     json.parse(from: json_str, using: name_decoder)
     |> result.map_error(fn(_) { Nil })
 
-  // Decode extension_name
-  let ext_decoder = dynamic_decode.at(["extension_name"], dynamic_decode.string)
+  // Decode hook_name
+  let hook_decoder = dynamic_decode.at(["hook_name"], dynamic_decode.string)
   let assert Ok("safety_guard") =
-    json.parse(from: json_str, using: ext_decoder)
+    json.parse(from: json_str, using: hook_decoder)
     |> result.map_error(fn(_) { Nil })
 
   // Decode reason
@@ -451,16 +451,16 @@ pub fn format_tool_blocked_produces_valid_json_test() {
     |> result.map_error(fn(_) { Nil })
 }
 
-pub fn format_extension_acted_produces_valid_json_test() {
+pub fn format_hook_acted_produces_valid_json_test() {
   let action =
-    ExtensionActionDetail(
+    HookActionDetail(
       action_type: "modify_args",
       description: "Changed expression format",
     )
   let event =
-    ExtensionActed(
-      extension_name: "safety_guard",
-      hook: BeforeToolCall,
+    HookActed(
+      hook_name: "safety_guard",
+      hook_point: BeforeToolCall,
       action: action,
     )
 
@@ -468,18 +468,18 @@ pub fn format_extension_acted_produces_valid_json_test() {
 
   // Decode the "event" field
   decode_event_type(json_str)
-  |> should.equal("extension_acted")
+  |> should.equal("hook_acted")
 
-  // Decode extension_name
-  let ext_decoder = dynamic_decode.at(["extension_name"], dynamic_decode.string)
+  // Decode hook_name
+  let hook_name_decoder = dynamic_decode.at(["hook_name"], dynamic_decode.string)
   let assert Ok("safety_guard") =
-    json.parse(from: json_str, using: ext_decoder)
+    json.parse(from: json_str, using: hook_name_decoder)
     |> result.map_error(fn(_) { Nil })
 
-  // Decode hook
-  let hook_decoder = dynamic_decode.at(["hook"], dynamic_decode.string)
+  // Decode hook_point
+  let hook_point_decoder = dynamic_decode.at(["hook_point"], dynamic_decode.string)
   let assert Ok("before_tool_call") =
-    json.parse(from: json_str, using: hook_decoder)
+    json.parse(from: json_str, using: hook_point_decoder)
     |> result.map_error(fn(_) { Nil })
 
   // Decode action fields

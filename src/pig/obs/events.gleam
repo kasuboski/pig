@@ -373,18 +373,21 @@ pub type SessionEndReason {
   Interrupted
 }
 
-/// Extension hook points for lifecycle events.
-pub type ExtensionHook {
+/// Hook points for lifecycle events.
+pub type HookPoint {
   BeforeToolCall
   AfterToolCall
   BeforeInference
   AfterInference
   OnError
+  OnComplete
+  OnSessionStart
+  OnSessionShutdown
 }
 
-/// Details of an extension's action.
-pub type ExtensionActionDetail {
-  ExtensionActionDetail(action_type: String, description: String)
+/// Details of a hook's action.
+pub type HookActionDetail {
+  HookActionDetail(action_type: String, description: String)
 }
 
 /// Rich session events for pig consumers (session writer, terminal printer, OTel).
@@ -414,8 +417,8 @@ pub type SessionEvent {
     result: String,
     duration_ms: Int,
   )
-  ToolBlocked(tool_call: ToolCall, extension_name: String, reason: String)
-  ExtensionActed(extension_name: String, hook: ExtensionHook, action: ExtensionActionDetail)
+  ToolBlocked(tool_call: ToolCall, hook_name: String, reason: String)
+  HookActed(hook_name: String, hook_point: HookPoint, action: HookActionDetail)
   InferenceFailed(
     error: AiError,
     duration_ms: Int,

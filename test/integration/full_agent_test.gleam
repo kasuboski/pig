@@ -177,7 +177,7 @@ pub fn agent_with_session_writer_test() {
           let cfg =
             pig.new(make_provider_fn())
             |> pig.with_model(config.model())
-            |> pig.with_persistence(session_path)
+            |> pig.with_session_writer(session_path)
           let assert Ok(agent) = pig.start(cfg)
           let result =
             pig.run_with_timeout(
