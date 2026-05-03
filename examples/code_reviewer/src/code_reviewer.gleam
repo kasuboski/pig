@@ -1,238 +1,57 @@
-//// Code Reviewer — an example pig agent that reviews a diff.
+//// Code Reviewer — a real code reviewer powered by pig agents.
 ////
-//// The agent has access to a fake in-memory "repo" via `list_files`
-//// and `read_file` tools. It receives a diff in the prompt and
-//// autonomously decides which surrounding files to read for context
-//// before producing a review.
+//// Takes a path to a git repository as a CLI argument, extracts the diff,
+//// generates an AI summary of changes, loads the repo into a VFS workspace,
+//// then runs a thorough code review using an AI agent with filesystem tools.
 ////
 //// ## Running
 ////
 //// Set environment variables for your OpenAI-compatible provider:
 ////
-////   OPENAI_COMPAT_BASE_URL=http://localhost:11434/v1
-////   OPENAI_COMPAT_API_KEY=ollama
-////   OPENAI_COMPAT_MODEL=llama3
+////   export OPENAI_COMPAT_BASE_URL=http://localhost:11434/v1
+////   export OPENAI_COMPAT_API_KEY=ollama
+////   export OPENAI_COMPAT_MODEL=llama3
 ////
 //// Then:
 ////
 ////   cd examples/code_reviewer
-////   gleam run
+////   gleam run -- /path/to/your/repo
+////
+//// The agent will:
+////   1. Extract the git diff (staged + unstaged, or vs main branch)
+////   2. Generate a structured summary of the changes
+////   3. Load the repo into a virtual filesystem
+////   4. Explore the codebase for context
+////   5. Produce a thorough code review
 
-import gleam/dict
-import gleam/dynamic/decode
+import gleam/int
 import gleam/io
-import gleam/json
 import gleam/result
 import gleam/string
-import jscheam/schema
+import envoy
 import pig
 import pig/ai/error
 import pig/ai/message
 import pig/ai/openai
-import pig/ai/tool_definition
-import pig/tool
-import envoy
+import pig/workspace
+import pig/workspace/tools
+import simplifile
+import filepath
+import code_reviewer/args
+import code_reviewer/git
+import code_reviewer/fs
 
-// ── Fake Filesystem ──────────────────────────────────────────────────
-// A hardcoded in-memory repo for the agent to explore.
+// ── CLI Args ────────────────────────────────────────────────────────
 
-fn fake_repo() -> dict.Dict(String, String) {
-  dict.from_list([
-    #(
-      "src/auth/login.gleam",
-      "import gleam/http/request\n"
-        <> "import gleam/json\n"
-        <> "import app/session\n"
-        <> "import app/permissions\n"
-        <> "\n"
-        <> "pub fn handle_login(req: request.Request(String)) {\n"
-        <> "  let assert Ok(body) = json.parse(req.body)\n"
-        <> "  let username = body.username\n"
-        <> "  let password = body.password\n"
-        <> "  case verify_credentials(username, password) {\n"
-        <> "    Ok(user) -> {\n"
-        <> "      let token = session.create_token(user.id)\n"
-        <> "      json.object([#(\"token\", json.string(token))])\n"
-        <> "    }\n"
-        <> "    Error(_) -> {\n"
-        <> "      let _ = permissions.log_failed_attempt(username)\n"
-        <> "      json.object([#(\"error\", json.string(\"unauthorized\"))])\n"
-        <> "    }\n"
-        <> "  }\n"
-        <> "}\n"
-        <> "\n"
-        <> "fn verify_credentials(user: String, pass: String) {\n"
-        <> "  todo\n"
-        <> "}",
-    ),
-    #(
-      "src/auth/session.gleam",
-      "import gleam/erlang/process\n"
-        <> "import gleam/otp/actor\n"
-        <> "\n"
-        <> "pub fn create_token(user_id: Int) -> String {\n"
-        <> "  // TODO: use proper JWT signing\n"
-        <> "  \"token_\" <> int.to_string(user_id)\n"
-        <> "}\n"
-        <> "\n"
-        <> "pub fn validate_token(token: String) -> Result(Int, Nil) {\n"
-        <> "  case string.split(token, on: \"_\") {\n"
-        <> "    [\"token\", id_str] -> {\n"
-        <> "      let assert Ok(id) = int.parse(id_str)\n"
-        <> "      Ok(id)\n"
-        <> "    }\n"
-        <> "    _ -> Error(Nil)\n"
-        <> "  }\n"
-        <> "}",
-    ),
-    #(
-      "src/auth/permissions.gleam",
-      "import gleam/io\n"
-        <> "import gleam/dict\n"
-        <> "\n"
-        <> "pub fn log_failed_attempt(username: String) -> Nil {\n"
-        <> "  io.println(\"Failed login attempt for: \" <> username)\n"
-        <> "}\n"
-        <> "\n"
-        <> "pub fn check_permission(user_id: Int, action: String) -> Bool {\n"
-        <> "  let roles = get_roles(user_id)\n"
-        <> "  case action {\n"
-        <> "    \"read\" -> True\n"
-        <> "    \"write\" -> list.member(roles, \"editor\")\n"
-        <> "    \"admin\" -> list.member(roles, \"admin\")\n"
-        <> "    _ -> False\n"
-        <> "  }\n"
-        <> "}\n"
-        <> "\n"
-        <> "fn get_roles(user_id: Int) -> List(String) {\n"
-        <> "  todo\n"
-        <> "}",
-    ),
-    #(
-      "src/middleware.gleam",
-      "import gleam/http/response\n"
-        <> "import gleam/http/request\n"
-        <> "import app/auth/session\n"
-        <> "\n"
-        <> "pub fn require_auth(\n"
-        <> "  req: request.Request(String),\n"
-        <> "  next: fn(request.Request(String)) -> response.Response(String),\n"
-        <> ") -> response.Response(String) {\n"
-        <> "  case request.get_header(req, \"authorization\") {\n"
-        <> "    Ok(token) -> {\n"
-        <> "      case session.validate_token(token) {\n"
-        <> "        Ok(user_id) -> next(req)\n"
-        <> "        Error(_) -> response.new(401)\n"
-        <> "      }\n"
-        <> "    }\n"
-        <> "    Error(_) -> response.new(401)\n"
-        <> "  }\n"
-        <> "}",
-    ),
-    #(
-      "src/app/router.gleam",
-      "import gleam/http.{Get, Post}\n"
-        <> "import gleam/http/request\n"
-        <> "import gleam/http/response\n"
-        <> "import app/auth/login\n"
-        <> "import app/middleware\n"
-        <> "import app/handlers/dashboard\n"
-        <> "\n"
-        <> "pub fn handle(req: request.Request(String)) {\n"
-        <> "  case request.method(req), req.path {\n"
-        <> "    Post, [\"api\", \"login\"] -> login.handle_login(req)\n"
-        <> "    Get, [\"api\", \"dashboard\"] -> {\n"
-        <> "      let req = middleware.require_auth(req, fn(r) { r })\n"
-        <> "      dashboard.show(r)\n"
-        <> "    }\n"
-        <> "    _, _ -> response.new(404)\n"
-        <> "  }\n"
-        <> "}",
-    ),
-  ])
-}
-
-// ── Tool Definitions ─────────────────────────────────────────────────
-
-fn list_files_tool() -> tool.Tool {
-  let repo = fake_repo()
-  tool.Tool(
-    definition: tool_definition.ToolDefinition(
-      name: "list_files",
-      description:
-        "List all file paths in the repository. "
-        <> "Use this to discover what files exist before reading them.",
-      parameters: schema.object([]),
-    ),
-    handler: fn(_args) {
-      let paths =
-        repo
-        |> dict.keys()
-        |> string.join("\n")
-      Ok(json.string(paths))
-    },
-  )
-}
-
-fn read_file_tool() -> tool.Tool {
-  let repo = fake_repo()
-  tool.Tool(
-    definition: tool_definition.ToolDefinition(
-      name: "read_file",
-      description:
-        "Read the full contents of a file by its path. "
-        <> "Use this to inspect surrounding code for context.",
-      parameters: schema.object([
-        schema.prop("path", schema.string()),
-      ]),
-    ),
-    handler: fn(args) {
-      case
-        decode.run(args, decode.field("path", decode.string, decode.success))
-      {
-        Ok(path) -> {
-          case dict.get(repo, path) {
-            Ok(content) -> Ok(json.string(content))
-            Error(Nil) ->
-              Error(tool.ToolError(
-                message: "File not found: " <> path,
-              ))
-          }
-        }
-        Error(_) ->
-          Error(tool.ToolError(
-            message: "Invalid arguments: expected {\"path\": \"<file-path>\"}",
-          ))
-      }
-    },
-  )
-}
-
-// ── Diff to Review ───────────────────────────────────────────────────
-
-fn diff() -> String {
-  "diff --git a/src/auth/login.gleam b/src/auth/login.gleam
---- a/src/auth/login.gleam
-+++ b/src/auth/login.gleam
-@@ -5,11 +5,10 @@
- pub fn handle_login(req: request.Request(String)) {
-   let assert Ok(body) = json.parse(req.body)
-   let username = body.username
-   let password = body.password
--  case verify_credentials(username, password) {
-+  case verify_credentials(username, password, req) {
-     Ok(user) -> {
--      let token = session.create_token(user.id)
-+      let token = session.create_token(user.id, 3600)
-       json.object([#(\"token\", json.string(token))])
-     }
-     Error(_) -> {
--      let _ = permissions.log_failed_attempt(username)
-+      permissions.log_failed_attempt(username, req.client_ip)
-       json.object([#(\"error\", json.string(\"unauthorized\"))])
-     }
-   }
- }"
+fn get_repo_path() -> Result(String, String) {
+  case args.get_args() {
+    [path] -> Ok(path)
+    [path, ..] -> Ok(path)
+    [] -> Error(
+      "Usage: gleam run -- /path/to/repo\n"
+        <> "Please provide a path to a git repository.",
+    )
+  }
 }
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -247,69 +66,226 @@ fn api_key() -> String {
   |> result.unwrap("ollama")
 }
 
-fn model() -> String {
+fn model_name() -> String {
   envoy.get("OPENAI_COMPAT_MODEL")
   |> result.unwrap("llama3")
 }
 
+// ── System Prompts ───────────────────────────────────────────────────
+
+const summary_system_prompt = "You are an expert software engineer. You will be given a git diff and a diff stat summary. Produce a clear, structured summary of the changes.\n\nYour summary should cover:\n1. **Files changed** - list each changed file and what changed in it\n2. **Nature of changes** - is this a bug fix, feature, refactor, etc?\n3. **Key modifications** - what are the most important code changes?\n4. **Potential concerns** - anything that stands out as risky or unusual\n\nBe concise but thorough. Use markdown formatting."
+
+const review_system_prompt = "You are a senior code reviewer. You have access to a virtual filesystem containing:\n- /diffs/summary.md - an AI-generated summary of the changes\n- /diffs/full.diff - the raw git diff\n- /diffs/stat.txt - the diff stat (files changed summary)\n- /repo/ - the full repository source code (excluding dependency directories)\n\n## Your Task\n\n1. Start by reading /diffs/summary.md to understand the high-level changes\n2. Read /diffs/full.diff for the detailed diff\n3. Read /diffs/stat.txt for the list of changed files\n4. Use list_directory to explore /repo/ and understand the project structure\n5. Read the changed files and their surrounding context from /repo/\n6. Use grep to find usages of changed functions/types if needed\n\n## Review Format\n\nProduce a thorough code review covering:\n1. **Summary** - brief recap of what these changes do\n2. **Correctness** - does the diff do what it intends? Any logic errors?\n3. **Side effects** - does it break existing callers or interfaces?\n4. **Security** - any injection, auth, data exposure, or input validation risks?\n5. **Performance** - any performance regressions or inefficiencies?\n6. **Style & Clarity** - naming, readability, language idioms\n7. **Action items** - numbered list of specific issues to address, ordered by severity\n\nBe concise. Use bullet points. Flag showstoppers first."
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main() {
-  let provider =
-    openai.provider_with_base_url(api_key(), model(), base_url())
-
-  let cfg =
-    pig.new(provider.call)
-    |> pig.with_model("code_reviewer")
-    |> pig.with_system_prompt(
-      "You are a senior code reviewer. You will be given a git diff. "
-        <> "Use the list_files and read_file tools to explore the codebase "
-        <> "for context before writing your review. "
-        <> "\n\n"
-        <> "In your review, cover:\n"
-        <> "1. **Correctness** — Does the diff do what it intends?\n"
-        <> "2. **Side effects** — Does it break existing callers?\n"
-        <> "3. **Security** — Any injection, auth, or data exposure risks?\n"
-        <> "4. **Style** — Naming, clarity, Gleam idioms.\n"
-        <> "\n"
-        <> "Be concise. Use bullet points. Flag showstoppers first.",
-    )
-    |> pig.with_tool(list_files_tool())
-    |> pig.with_tool(read_file_tool())
-    |> pig.with_terminal_output()
-
-  let assert Ok(agent) = pig.start(cfg)
-
-  io.println("=== Reviewing diff ===")
-  io.println("Model: " <> model())
-  io.println("Provider: " <> base_url())
+  io.println("=== Pig Code Reviewer ===")
   io.println("")
 
-  let result = pig.run_with_timeout(agent, "Review this diff:\n\n" <> diff(), 120_000)
-
-  case result {
-    Ok(message.Assistant(content:, ..)) -> {
-      io.println("\n=== Review ===\n")
-      io.println(content)
-    }
-    Ok(other) -> {
-      io.println("\n⚠ Unexpected response:")
-      io.println(string.inspect(other))
-    }
-    Error(error.Timeout) -> {
-      io.println("\n⚠ Timed out waiting for the model to respond.")
-      io.println("Try a faster model or increase the timeout.")
-    }
-    Error(error.ApiError(msg)) -> {
-      io.println("\n⚠ API error: " <> msg)
-    }
-    Error(error.RateLimited) -> {
-      io.println("\n⚠ Rate limited — wait a moment and try again.")
-    }
-    Error(error.InvalidResponse(detail)) -> {
-      io.println("\n⚠ Invalid response from provider: " <> detail)
+  // 1. Parse CLI args
+  let repo_path = case get_repo_path() {
+    Ok(path) -> path
+    Error(msg) -> {
+      io.println("Warning: " <> msg)
+      io.println("")
+      io.println("Example: gleam run -- /path/to/your/repo")
+      panic as "No repository path provided"
     }
   }
 
-  pig.stop(agent)
+  let model = model_name()
+  io.println("Repository: " <> repo_path)
+  io.println("Model: " <> model)
+  io.println("Provider: " <> base_url())
+  io.println("")
+
+  // 2. Validate path is a git repo
+  let git_dir = filepath.join(repo_path, ".git")
+  case simplifile.is_directory(git_dir) {
+    Ok(True) -> Nil
+    _ -> {
+      io.println("Warning: Not a git repository: " <> repo_path)
+      io.println("  (Could not find .git directory)")
+      panic as "Not a git repository"
+    }
+  }
+
+  // 3. Open workspace (in-memory SQLite with VFS schema initialized)
+  let assert Ok(ws) = workspace.open(":memory:")
+  let conn = workspace.connection(ws)
+
+  // ── Phase 0: Git Operations ─────────────────────────────────────
+
+  io.println("Phase 0: Extracting git diff...")
+
+  let diff = case git.get_diff(conn, repo_path) {
+    Ok(d) -> d
+    Error(msg) -> {
+      io.println("Warning: " <> msg)
+      panic as "Could not get git diff"
+    }
+  }
+
+  case git.get_diff_stat(conn, repo_path) {
+    Ok(_) -> Nil
+    Error(msg) ->
+      io.println("   Warning: Could not get diff stat: " <> msg)
+  }
+  io.println(
+    "   Done. Diff extracted ("
+      <> int.to_string(string.length(diff))
+      <> " chars)",
+  )
+  io.println("")
+
+  // ── Phase 1: Summarize ──────────────────────────────────────────
+
+  io.println("Phase 1: Generating change summary...")
+
+  let provider =
+    openai.provider_with_base_url(api_key(), model, base_url())
+
+  // Summary agent - no tools, just a simple call
+  let summary_cfg =
+    pig.new(provider.call)
+    |> pig.with_model("code_reviewer_summary")
+    |> pig.with_system_prompt(summary_system_prompt)
+    |> pig.with_terminal_output()
+
+  let assert Ok(summary_agent) = pig.start(summary_cfg)
+
+  let diff_stat = case workspace.read_file(ws, "/diffs/stat.txt") {
+    Ok(s) -> s
+    Error(_) -> "(no stat available)"
+  }
+
+  let summary_prompt =
+    "Summarize the following changes.\n\n"
+      <> "## Diff Stat\n\n"
+      <> diff_stat
+      <> "\n\n## Full Diff\n\n"
+      <> diff
+
+  let summary_result =
+    pig.run_with_timeout(summary_agent, summary_prompt, 120_000)
+
+  pig.stop(summary_agent)
+
+  let summary = case summary_result {
+    Ok(message.Assistant(content:, ..)) -> {
+      io.println("   Done. Summary generated.")
+      content
+    }
+    Ok(other) -> {
+      io.println("   Warning: Unexpected summary response:")
+      io.println(string.inspect(other))
+      "(summary generation failed)"
+    }
+    Error(error.Timeout) -> {
+      io.println("   Warning: Summary timed out.")
+      "(summary timed out)"
+    }
+    Error(error.ApiError(msg)) -> {
+      io.println("   Warning: API error: " <> msg)
+      "(api error)"
+    }
+    Error(error.RateLimited) -> {
+      io.println("   Warning: Rate limited.")
+      "(rate limited)"
+    }
+    Error(error.InvalidResponse(detail)) -> {
+      io.println("   Warning: Invalid response: " <> detail)
+      "(invalid response)"
+    }
+  }
+
+  // Write summary to VFS
+  let _ = workspace.write_file(ws, "/diffs/summary.md", summary)
+  io.println("")
+
+  // ── Phase 2: Load Repo ──────────────────────────────────────────
+
+  io.println("Phase 2: Loading repository into VFS...")
+  let file_count = fs.load_repo(conn, repo_path)
+  io.println(
+    "   Done. Loaded "
+      <> int.to_string(file_count)
+      <> " files into virtual filesystem.",
+  )
+  io.println("")
+
+  // ── Phase 3: Review Agent ───────────────────────────────────────
+
+  io.println("Phase 3: Running code review...")
+  io.println(
+    "   The agent will explore the codebase and produce a review.",
+  )
+  io.println(
+    "   This may take a few minutes depending on the model and repo size.",
+  )
+  io.println("")
+
+  // Only give the agent read-only VFS tools
+  let read_file_t = tools.read_file_tool(conn)
+  let list_dir_t = tools.list_directory_tool(conn)
+  let grep_t = tools.grep_tool(conn)
+
+  let review_cfg =
+    pig.new(provider.call)
+    |> pig.with_model("code_reviewer")
+    |> pig.with_system_prompt(review_system_prompt)
+    |> pig.with_tool(read_file_t)
+    |> pig.with_tool(list_dir_t)
+    |> pig.with_tool(grep_t)
+    |> pig.with_terminal_output()
+
+  let assert Ok(review_agent) = pig.start(review_cfg)
+
+  let review_prompt =
+    "Please review the changes in this repository.\n\n"
+      <> "Start by reading /diffs/summary.md, then /diffs/full.diff, "
+      <> "then explore /repo/ for surrounding context.\n\n"
+      <> "Produce a thorough code review."
+
+  let review_result =
+    pig.run_with_timeout(review_agent, review_prompt, 300_000)
+
+  case review_result {
+    Ok(message.Assistant(content:, ..)) -> {
+      io.println("\n")
+      io.println("=== Code Review ===")
+      io.println("")
+      io.println(content)
+    }
+    Ok(other) -> {
+      io.println("\nWarning: Unexpected response:")
+      io.println(string.inspect(other))
+    }
+    Error(error.Timeout) -> {
+      io.println("\nWarning: Review timed out (5 minute limit).")
+      io.println("Try a faster model or increase the timeout.")
+    }
+    Error(error.ApiError(msg)) -> {
+      io.println("\nWarning: API error: " <> msg)
+    }
+    Error(error.RateLimited) -> {
+      io.println(
+        "\nWarning: Rate limited - wait a moment and try again.",
+      )
+    }
+    Error(error.InvalidResponse(detail)) -> {
+      io.println(
+        "\nWarning: Invalid response from provider: " <> detail,
+      )
+    }
+  }
+
+  pig.stop(review_agent)
+
+  // Cleanup
+  let _ = workspace.close(ws)
+
+  io.println("")
+  io.println("Done.")
 }
