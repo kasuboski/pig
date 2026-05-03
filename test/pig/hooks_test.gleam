@@ -7,6 +7,7 @@
 import gleeunit
 import gleeunit/should
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None}
 import pig/ai/error
 import pig/ai/message
@@ -21,7 +22,7 @@ pub fn main() -> Nil {
 pub fn new_creates_hooks_with_name_test() {
   let h = hooks.new("my-hooks")
   let hooks.Hooks(name:, ..) = h
-  name == "my-hooks"
+  should.equal(name, "my-hooks")
 }
 
 pub fn new_hooks_allows_tools_by_default_test() {
@@ -439,15 +440,21 @@ pub fn decide_messages_replaced_carries_attribution_test() {
 }
 
 pub fn decide_messages_chain_carries_all_transformers_test() {
+  // h1 prepends [System("ctx")] to the incoming messages
   let h1 =
     hooks.new("first")
-    |> hooks.on_before_inference(fn(_) {
-      hooks.ReplaceMessages([message.System("ctx")])
+    |> hooks.on_before_inference(fn(event) {
+      hooks.ReplaceMessages(
+        list.append([message.System("ctx")], event.messages),
+      )
     })
+  // h2 appends [User("suffix")] to whatever h1 produced
   let h2 =
     hooks.new("second")
-    |> hooks.on_before_inference(fn(_) {
-      hooks.ReplaceMessages([message.User("override")])
+    |> hooks.on_before_inference(fn(event) {
+      hooks.ReplaceMessages(
+        list.append(event.messages, [message.User("suffix")]),
+      )
     })
   let event = hooks.BeforeInferenceEvent(
     model: "gpt-4",
@@ -455,7 +462,11 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
   )
   let decision = hooks.decide_messages([h1, h2], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
-  should.equal(final_messages, [message.User("override")])
+  // Only proper chaining produces: [System("ctx"), User("hello"), User("suffix")]
+  should.equal(
+    final_messages,
+    [message.System("ctx"), message.User("hello"), message.User("suffix")],
+  )
   should.equal(transformers, ["first", "second"])
 }
 

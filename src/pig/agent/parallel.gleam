@@ -5,6 +5,7 @@
 
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
@@ -26,8 +27,9 @@ import pig/tool/execution
 /// 3. Apply result hooks (decide_tool_result) — transform results
 ///
 /// Blocked tools do NOT spawn processes — they get error Tool messages inline.
-/// Spawns one process per allowed tool call. Each process emits ToolStarted,
-/// executes the tool, emits ToolExecuted, and sends the result back.
+/// Spawns one process per allowed tool call. Each spawned process emits
+/// ToolStarted, executes the tool, and sends the (result, duration) back.
+/// ToolExecuted is emitted by the caller after result hooks have been applied.
 pub fn execute_tools_and_advance(
   st: state.AgentState,
   calls: List(ToolCall),
@@ -223,11 +225,11 @@ fn spawn_and_collect(
 ) -> List(#(Result(json.Json, tool.ToolError), Int)) {
   // Capture dispatcher subject for spawned processes
   let disp = get_dispatcher(st)
-  // Create a reply subject for each tool call
-  let subjects =
+  // Create a reply subject and capture PID for each tool call
+  let pairs =
     list.map(calls, fn(call) {
       let reply_subject = process.new_subject()
-      let _pid =
+      let pid =
         process.spawn(fn() {
           case disp {
             option.Some(d) ->
@@ -239,18 +241,21 @@ fn spawn_and_collect(
           let duration = events.system_time() - start_time
           process.send(reply_subject, #(result, duration))
         })
-      reply_subject
+      #(pid, reply_subject)
     })
   // Collect results in order — handle timeouts gracefully
-  list.map(subjects, fn(subject) {
-    case process.receive(subject, 5000) {
+  let timeout_ms = 5000
+  list.map(pairs, fn(pair) {
+    let #(pid, subject) = pair
+    case process.receive(subject, timeout_ms) {
       Ok(pair) -> pair
       Error(Nil) -> {
+        process.kill(pid)
         logging.log(
           logging.Error,
-          "Tool execution timed out after 5000ms",
+          "Tool execution timed out after " <> int.to_string(timeout_ms) <> "ms",
         )
-        #(Error(tool.ToolError(message: "Tool execution timed out")), 0)
+        #(Error(tool.ToolError(message: "Tool execution timed out")), timeout_ms)
       }
     }
   })

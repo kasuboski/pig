@@ -9,7 +9,7 @@ import gleam/list
 import gleam/string
 import gleam/option.{None}
 import pig/ai/message.{User, Assistant, Tool, ToolCall}
-import pig/obs/events.{ToolBlocked, ToolExecuted}
+import pig/obs/events.{ToolBlocked, ToolExecuted, InferenceStarted, InferenceCompleted}
 import pig/obs/session
 import simplifile
 import temporary
@@ -103,6 +103,26 @@ pub fn replay_with_blocked_tool_after_last_inference_test() {
   should.equal(blocked_content, "Tool blocked by 'safety-guard': dangerous command")
 }
 
+/// Replay handles tool_executed events after last inference (crash recovery).
+/// Symmetric to replay_with_blocked_tool_after_last_inference_test but validates
+/// that executed tool results are recovered from raw JSONL tool_executed events.
+pub fn replay_with_executed_tool_after_last_inference_test() {
+  use path <- with_temp_file("executed_tool")
+  write_jsonl(path, [
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"inference_started\",\"model\":\"gpt-4\",\"message_count\":1}",
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"inference_completed\",\"duration_ms\":50,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"name\":\"ping\",\"arguments\":\"{}\"}]},\"input_messages\":[{\"role\":\"user\",\"content\":\"ping me\"}]}",
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"tool_executed\",\"duration_ms\":5,\"tool_call\":{\"id\":\"c1\",\"name\":\"ping\",\"arguments\":\"{}\"},\"result\":\"pong\"}",
+  ])
+  let assert Ok(messages) = session.replay(path)
+  // Should have: input_messages from last inference + assistant + executed tool message = 3
+  should.equal(list.length(messages), 3)
+  let assert [User(content: prompt), Assistant(content: "", tool_calls: [_tc], ..), Tool(tool_call_id: id, content: tool_content)] = messages
+  should.equal(prompt, "ping me")
+  should.equal(id, "c1")
+  // Executed tool content should come from the tool_executed result field
+  should.equal(tool_content, "pong")
+}
+
 // ── Round-trip Tests: format_event → write → replay ────────────────
 
 /// Verify that format_event produces JSONL that replay() can parse back
@@ -112,10 +132,10 @@ pub fn round_trip_single_inference_test() {
   let input_messages = [User("Hello")]
   let assistant_msg = Assistant("Hi there!", [], None)
   let line1 =
-    events.InferenceStarted(model: "gpt-4", message_count: 1)
+    InferenceStarted(model: "gpt-4", message_count: 1)
     |> session.format_event
   let line2 =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: assistant_msg,
       response_id: None,
       response_model: None,
@@ -143,15 +163,15 @@ pub fn round_trip_full_tool_loop_test() {
   let history =
     [
       User("Use echo"),
-      Assistant("", [message.ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")], None),
+      Assistant("", [ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")], None),
       Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"),
     ]
   let final_response = Assistant("Done!", [], None)
   let line1 =
-    events.InferenceStarted(model: "gpt-4", message_count: 4)
+    InferenceStarted(model: "gpt-4", message_count: 4)
     |> session.format_event
   let line2 =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: final_response,
       response_id: None,
       response_model: None,
@@ -186,7 +206,7 @@ pub fn round_trip_no_system_prompt_in_history_test() {
   let history = [User("What is 2+2?")]
   let response = Assistant("4", [], None)
   let line =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: response,
       response_id: None,
       response_model: None,
@@ -220,7 +240,7 @@ pub fn round_trip_blocked_tool_test() {
   // InferenceCompleted records history (original, no system prompt)
   // Then tool is blocked
   let inference_line =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: assistant_with_calls,
       response_id: None,
       response_model: None,
@@ -266,7 +286,7 @@ pub fn round_trip_transformed_result_test() {
   let final_response = Assistant("Here are the results", [], None)
   // First inference: user asks, assistant calls tool
   let inference1 =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: Assistant("", [call], None),
       response_id: None,
       response_model: None,
@@ -287,7 +307,7 @@ pub fn round_trip_transformed_result_test() {
     |> session.format_event
   // Second inference with tool result in history
   let inference2 =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: final_response,
       response_id: None,
       response_model: None,
@@ -321,7 +341,7 @@ pub fn round_trip_partial_session_with_transformed_tool_test() {
   let call = ToolCall(id: "c3", name: "read", arguments_json: "{\"path\":\"/etc/passwd\"}")
   // Only one inference completed, then a tool executed — no final inference
   let inference_line =
-    events.InferenceCompleted(
+    InferenceCompleted(
       message: Assistant("", [call], None),
       response_id: None,
       response_model: None,
