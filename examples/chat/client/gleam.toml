@@ -1,0 +1,19 @@
+name = "client"
+version = "0.1.0"
+target = "javascript"
+gleam = ">= 1.5.1"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+lustre = ">= 5.0.0 and < 6.0.0"
+modem = ">= 2.0.1 and < 3.0.0"
+gleam_json = ">= 3.1.0 and < 4.0.0"
+plinth = ">= 0.5.9 and < 1.0.0"
+birl = ">= 1.7.1 and < 2.0.0"
+lustre_pipes = ">= 0.3.0 and < 1.0.0"
+omnimessage_lustre = { path = "../../../knowledge/repos/omnimessage/omnimessage_lustre" }
+shared = { path = "../shared" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+lustre_dev_tools = ">= 2.0.0"
