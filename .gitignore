@@ -10,3 +10,6 @@ erl_crash.dump
 knowledge/repos/
 
 STATUS.md
+
+# Lustre dev binaries
+**/.lustre/bin/
