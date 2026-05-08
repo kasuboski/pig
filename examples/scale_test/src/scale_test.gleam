@@ -9,6 +9,8 @@ import gleam/http/response.{type Response}
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
+import envoy
 import group_registry.{type GroupRegistry}
 import lustre
 import lustre/attribute
@@ -16,21 +18,51 @@ import lustre/element
 import lustre/element/html
 import lustre/server_component
 import mist.{type Connection, type ResponseData}
-import scale_test/world.{type WorldMsg, type WorldSnapshot}
+import scale_test/protocol
+import scale_test/cmd_forwarder
+import scale_test/scheduler
+import scale_test/world.{
+  type WorldMsg, type WorldSnapshot, SetScheduler,
+}
 import scale_test/ecosystem as ecosystem
 
 // MAIN ------------------------------------------------------------------------
 
 pub fn main() {
+  // Read config from env vars
+  let base_url =
+    result.unwrap(envoy.get("OPENAI_COMPAT_BASE_URL"), "http://localhost:11434/v1")
+  let api_key =
+    result.unwrap(envoy.get("OPENAI_COMPAT_API_KEY"), "ollama")
+  let model =
+    result.unwrap(envoy.get("OPENAI_COMPAT_MODEL"), "gemopuse4b")
+
   // Start the group registry for pub/sub between world and Lustre runtimes.
-  // The registry carries WorldSnapshot messages.
   let name = process.new_name("ecosystem-registry")
   let assert Ok(actor.Started(data: registry, ..)) = group_registry.start(name)
 
-  // Start the world actor. It receives the registry so it can broadcast
-  // snapshots to connected clients after each simulation tick.
+  // Start the world actor.
   let assert Ok(actor.Started(data: world, ..)) =
     world.start(registry)
+
+  // Start the scheduler for LLM-driven decisions.
+  let assert Ok(actor.Started(data: scheduler_subject, ..)) =
+    scheduler.start(
+      8,
+      base_url:,
+      api_key:,
+      model:,
+    )
+
+  // Wire scheduler to world:
+  // - World gets the scheduler subject to send re-think requests
+  // - Scheduler gets a WorldCmd subject that forwards to the world
+  process.send(world, SetScheduler(scheduler_subject, model_name: model))
+
+  // Start a simple forwarder actor: receives WorldCmd, sends WorldMsg
+  let assert Ok(actor.Started(data: cmd_subject, ..)) =
+    cmd_forwarder.start(world)
+  process.send(scheduler_subject, protocol.SetWorld(cmd_subject))
 
   let assert Ok(_) =
     fn(request: Request(Connection)) -> Response(ResponseData) {
@@ -49,6 +81,11 @@ pub fn main() {
 
   process.sleep_forever()
 }
+
+// CMD FORWARDER ---------------------------------------------------------------
+// A tiny actor that forwards WorldCmd -> WorldMsg to break the import cycle.
+
+// (defined in separate module cmd_forwarder.gleam)
 
 // HTML ------------------------------------------------------------------------
 
@@ -161,8 +198,6 @@ fn loop_socket(
     mist.Custom(client_message) -> {
       let encoded =
         server_component.client_message_to_json(client_message)
-      // Gracefully handle send failure (e.g. connection already closed)
-      // instead of crashing with let assert.
       case mist.send_text_frame(connection, json.to_string(encoded)) {
         Ok(_) -> Nil
         Error(_) -> Nil
@@ -174,12 +209,10 @@ fn loop_socket(
 }
 
 fn close_socket(state: SocketState) -> Nil {
-  // Leave the group registry to prevent stale member entries.
   case subject_owner(state.self) {
     Ok(pid) -> group_registry.leave(state.registry, "ecosystem", [pid])
     Error(Nil) -> Nil
   }
-  // Shut down the Lustre component runtime to avoid a zombie process.
   lustre.shutdown()
   |> lustre.send(to: state.component)
 }

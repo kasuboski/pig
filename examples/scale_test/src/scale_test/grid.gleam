@@ -25,7 +25,7 @@ pub type Organism {
 pub type Grid =
   Dict(Position, Organism)
 
-const grid_size = 100
+const grid_size = 50
 
 /// Create a new empty grid
 pub fn new() -> Grid {
@@ -56,9 +56,23 @@ pub fn remove(grid: Grid, pos: Position) -> Grid {
 pub fn move(grid: Grid, from_pos: Position, to_pos: Position) -> Grid {
   case dict.get(grid, from_pos) {
     Ok(organism) -> {
-      case dict.has_key(grid, to_pos) {
-        True -> grid
-        False -> {
+      case dict.get(grid, to_pos) {
+        // Target has a plant — animal walks through, plant displaced to old position
+        Ok(target_org) -> {
+          case target_org.otype {
+            Plant -> {
+              let displaced_plant = Organism(..target_org, pos: from_pos)
+              let moved_animal = Organism(..organism, pos: to_pos)
+              grid
+              |> dict.insert(from_pos, displaced_plant)
+              |> dict.insert(to_pos, moved_animal)
+            }
+            // Blocked by another animal (shouldn't reach here if can_move_to is used)
+            _ -> grid
+          }
+        }
+        // Empty cell — simple move
+        Error(Nil) -> {
           let updated_organism = Organism(..organism, pos: to_pos)
           grid
           |> dict.delete(from_pos)
@@ -88,7 +102,7 @@ pub fn adjacent_positions(pos: Position) -> List(Position) {
   list.filter(neighbors, in_bounds)
 }
 
-/// Wrap a position around the edges of the 100×100 grid using modulo
+/// Wrap a position around the edges of the 50×50 grid using modulo
 pub fn wrap_position(pos: Position) -> Position {
   let #(x, y) = pos
   #(

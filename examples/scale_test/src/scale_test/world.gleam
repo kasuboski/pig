@@ -1,14 +1,21 @@
 //// World actor — owns the grid state, ticks the simulation,
 //// broadcasts state snapshots to connected Lustre runtimes via group_registry.
 
+import gleam/dict
 import gleam/erlang/process.{
   type Subject, type Timer, cancel_timer, send_after,
 }
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import group_registry.{type GroupRegistry}
 import scale_test/grid.{
-  type Grid, Herbivore, Plant, Predator, count_by_type, to_list,
+  type Grid, Herbivore, Organism, Plant, Predator, count_by_type, get,
+  to_list,
+}
+import scale_test/intent.{type Intent}
+import scale_test/protocol.{
+  type SchedulerMsg, Enqueue, SetConcurrency,
 }
 import scale_test/sim.{
   TickResult, apply_random_intents, populate, tick,
@@ -39,6 +46,16 @@ pub type WorldMsg {
   SetTickSpeed(TickSpeed)
   /// Reset with given population counts
   Reset(plant_count: Int, herb_count: Int, pred_count: Int)
+  /// Update an organism's intent (from scheduler/LLM)
+  UpdateIntent(pos: #(Int, Int), intent: Intent)
+  /// Update LLM stats from scheduler
+  UpdateLLMStats(llm_calls: Int, llm_errors: Int, llm_queue: Int, llm_in_flight: Int)
+  /// Set the scheduler subject for sending re-think requests
+  SetScheduler(Subject(SchedulerMsg), model_name: String)
+  /// Change LLM concurrency
+  SetLLMConcurrency(Int)
+  /// Subscribe to snapshot broadcasts
+  Subscribe(Subject(WorldSnapshot))
 }
 
 /// Lightweight snapshot for sending to the UI.
@@ -50,6 +67,12 @@ pub type WorldSnapshot {
     stats: Stats,
     paused: Bool,
     tick_speed: Int,
+    llm_calls: Int,
+    llm_errors: Int,
+    llm_queue: Int,
+    llm_in_flight: Int,
+    llm_max_concurrency: Int,
+    llm_model: String,
   )
 }
 
@@ -66,6 +89,17 @@ pub type WorldModel {
     /// Cumulative birth/death counters.
     total_births: Int,
     total_deaths: Int,
+    /// Optional scheduler for LLM-driven decisions.
+    scheduler: option.Option(Subject(SchedulerMsg)),
+    /// Cached LLM stats from scheduler
+    llm_calls: Int,
+    llm_errors: Int,
+    llm_queue: Int,
+    llm_in_flight: Int,
+    llm_max_concurrency: Int,
+    llm_model: String,
+    /// Direct subscribers for snapshot broadcasts
+    subscribers: List(Subject(WorldSnapshot)),
   )
 }
 
@@ -90,6 +124,14 @@ pub fn start(
         tick_timer:,
         total_births: 0,
         total_deaths: 0,
+        scheduler: None,
+        llm_calls: 0,
+        llm_errors: 0,
+        llm_queue: 0,
+        llm_in_flight: 0,
+        llm_max_concurrency: 8,
+        llm_model: "",
+        subscribers: [],
       )
       // Broadcast initial state
       broadcast_snapshot(model)
@@ -122,7 +164,16 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
         False -> {
           let TickResult(grid, rethinks, births, deaths) =
             tick(model.grid)
-          let grid = apply_random_intents(grid, rethinks)
+          // Send rethinks to scheduler if available, otherwise use random intents
+          // Also apply random intents immediately for all rethinks so organisms
+          // don't sit idle while waiting for LLM responses
+          let grid = case model.scheduler {
+            Some(scheduler) -> {
+              send_to_scheduler(scheduler, model.grid, rethinks)
+              apply_random_intents(grid, rethinks)
+            }
+            None -> apply_random_intents(grid, rethinks)
+          }
           let new_tick = model.stats.tick + 1
           let total_births = model.total_births + births
           let total_deaths = model.total_deaths + deaths
@@ -143,7 +194,9 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
     }
 
     SetTickSpeed(speed) -> {
-      actor.continue(WorldModel(..model, tick_speed: speed.ms))
+      let model = WorldModel(..model, tick_speed: speed.ms)
+      let model = schedule_tick(model)
+      actor.continue(model)
     }
 
     Reset(plant_count, herb_count, pred_count) -> {
@@ -161,15 +214,58 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
       broadcast_snapshot(model)
       actor.continue(model)
     }
+
+    UpdateIntent(pos, intent) -> {
+      case get(model.grid, pos) {
+        Ok(organism) -> {
+          let updated = Organism(..organism, intent:)
+          let grid = dict.insert(model.grid, pos, updated)
+          let model = WorldModel(..model, grid:)
+          actor.continue(model)
+        }
+        Error(_) -> actor.continue(model)
+      }
+    }
+
+    UpdateLLMStats(llm_calls:, llm_errors:, llm_queue:, llm_in_flight:) -> {
+      let model = WorldModel(..model, llm_calls:, llm_errors:, llm_queue:, llm_in_flight:)
+      actor.continue(model)
+    }
+
+    SetScheduler(scheduler, model_name:) -> {
+      let model = WorldModel(
+        ..model,
+        scheduler: Some(scheduler),
+        llm_model: model_name,
+      )
+      actor.continue(model)
+    }
+
+    SetLLMConcurrency(n) -> {
+      case model.scheduler {
+        Some(scheduler) ->
+          process.send(scheduler, SetConcurrency(n))
+        None -> Nil
+      }
+      let model = WorldModel(..model, llm_max_concurrency: n)
+      actor.continue(model)
+    }
+
+    Subscribe(sub) -> {
+      let model = WorldModel(..model, subscribers: [sub, ..model.subscribers])
+      // Send current snapshot immediately
+      process.send(sub, make_snapshot(model))
+      actor.continue(model)
+    }
   }
 }
 
 /// Broadcast the current state as a WorldSnapshot to all connected clients.
 fn broadcast_snapshot(model: WorldModel) -> Nil {
   let snapshot = make_snapshot(model)
-  let members = group_registry.members(model.registry, "ecosystem")
-  use member <- list.each(members)
-  process.send(member, snapshot)
+  // Send to direct subscribers
+  use sub <- list.each(model.subscribers)
+  process.send(sub, snapshot)
 }
 
 fn make_snapshot(model: WorldModel) -> WorldSnapshot {
@@ -185,6 +281,12 @@ fn make_snapshot(model: WorldModel) -> WorldSnapshot {
     stats: model.stats,
     paused: model.paused,
     tick_speed: model.tick_speed,
+    llm_calls: model.llm_calls,
+    llm_errors: model.llm_errors,
+    llm_queue: model.llm_queue,
+    llm_in_flight: model.llm_in_flight,
+    llm_max_concurrency: model.llm_max_concurrency,
+    llm_model: model.llm_model,
   )
 }
 
@@ -192,3 +294,24 @@ fn compute_stats(tick: Int, grid: Grid, births: Int, deaths: Int) -> Stats {
   let #(plants, herbivores, predators) = count_by_type(grid)
   Stats(tick:, plants:, herbivores:, predators:, births:, deaths:)
 }
+
+/// Send re-think requests to the scheduler for each position.
+fn send_to_scheduler(
+  scheduler: Subject(SchedulerMsg),
+  grid: Grid,
+  rethinks: List(#(Int, Int)),
+) -> Nil {
+  let decisions =
+    rethinks
+    |> list.filter_map(fn(pos) {
+      case get(grid, pos) {
+        Ok(organism) -> Ok(#(pos, organism))
+        Error(_) -> Error(Nil)
+      }
+    })
+  case decisions {
+    [] -> Nil
+    _ -> process.send(scheduler, Enqueue(decisions, grid:))
+  }
+}
+

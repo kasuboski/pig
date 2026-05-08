@@ -61,8 +61,8 @@ fn populate_type(grid: Grid, otype: OrganismType, count: Int) -> Grid {
       False -> {
         let energy = case otype {
           Plant -> 20
-          Herbivore -> 25
-          Predator -> 30
+          Herbivore -> 100
+          Predator -> 120
         }
         let organism = Organism(
           otype:,
@@ -79,7 +79,7 @@ fn populate_type(grid: Grid, otype: OrganismType, count: Int) -> Grid {
 }
 
 fn random_position() -> Position {
-  #(int.random(100), int.random(100))
+  #(int.random(50), int.random(50))
 }
 
 // --- Step 1: Execute intents ---
@@ -127,9 +127,9 @@ fn execute_agent_intent(
   case organism.intent {
     Move(dir) -> {
       let target = wrap_position(direction_offset(organism.pos, dir))
-      case dict.has_key(grid, target) {
-        True -> #(grid, True, births)
-        False -> #(move(grid, organism.pos, target), False, births)
+      case can_move_to(grid, target) {
+        True -> #(move(grid, organism.pos, target), False, births)
+        False -> #(grid, True, births)
       }
     }
     Eat -> {
@@ -148,9 +148,22 @@ fn execute_agent_intent(
     Wander -> {
       let dir = random_direction()
       let target = wrap_position(direction_offset(organism.pos, dir))
-      case dict.has_key(grid, target) {
-        True -> #(grid, True, births)
-        False -> #(move(grid, organism.pos, target), False, births)
+      case can_move_to(grid, target) {
+        True -> #(move(grid, organism.pos, target), False, births)
+        False -> #(grid, True, births)
+      }
+    }
+  }
+}
+
+/// Animals can walk through plants but not through other animals.
+fn can_move_to(grid: Grid, target: Position) -> Bool {
+  case dict.get(grid, target) {
+    Error(Nil) -> True // empty cell
+    Ok(organism) -> {
+      case organism.otype {
+        Plant -> True // animals walk through plants
+        _ -> False // blocked by another animal
       }
     }
   }
@@ -161,7 +174,7 @@ fn execute_eat(grid: Grid, organism: Organism) -> #(Grid, Bool) {
   let food_type = case organism.otype {
     Herbivore -> Plant
     Predator -> Herbivore
-    Plant -> Plant
+    Plant -> Plant // unreachable: plants never eat
   }
 
   case find_food(grid, neighbors, food_type) {
@@ -170,7 +183,7 @@ fn execute_eat(grid: Grid, organism: Organism) -> #(Grid, Bool) {
       let energy_gain = case organism.otype {
         Herbivore -> 10
         Predator -> 20
-        Plant -> 0
+        Plant -> 0 // unreachable: plants never eat
       }
       let fed = Organism(
         ..organism,
@@ -254,16 +267,31 @@ fn energy_decay(grid: Grid) -> #(Grid, Int) {
     #(new(), 0),
     fn(acc, _pos, organism) {
       let #(g, dead) = acc
-      let new_energy = organism.energy - 1
-      case new_energy <= 0 {
-        True -> #(g, dead + 1)
-        False -> {
-          let aged = Organism(
-            ..organism,
-            energy: new_energy,
-            age: organism.age + 1,
-          )
-          #(dict.insert(g, organism.pos, aged), dead)
+      case organism.otype {
+        // Plants decay very slowly — they die of old age eventually
+        Plant -> {
+          let new_energy = organism.energy - 1
+          case new_energy <= 0 {
+            True -> #(g, dead + 1)
+            False -> {
+              let aged = Organism(..organism, energy: new_energy, age: organism.age + 1)
+              #(dict.insert(g, organism.pos, aged), dead)
+            }
+          }
+        }
+        _ -> {
+          let new_energy = organism.energy - 1
+          case new_energy <= 0 {
+            True -> #(g, dead + 1)
+            False -> {
+              let aged = Organism(
+                ..organism,
+                energy: new_energy,
+                age: organism.age + 1,
+              )
+              #(dict.insert(g, organism.pos, aged), dead)
+            }
+          }
         }
       }
     },

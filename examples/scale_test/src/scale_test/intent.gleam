@@ -56,14 +56,14 @@ pub fn random() -> Intent {
 /// Any unrecognized response defaults to Wander.
 pub fn parse(word: String) -> Intent {
   case string.lowercase(string.trim(word)) {
-    "north" | "n" -> Move(North)
-    "south" | "s" -> Move(South)
-    "east" | "e" -> Move(East)
-    "west" | "w" -> Move(West)
-    "eat" -> Eat
-    "reproduce" -> Reproduce
-    "rest" -> Rest
-    "wander" -> Wander
+    "north" | "n" | "up" -> Move(North)
+    "south" | "s" | "down" -> Move(South)
+    "east" | "e" | "right" -> Move(East)
+    "west" | "w" | "left" -> Move(West)
+    "eat" | "feed" | "hunt" | "graze" | "consume" | "forage" -> Eat
+    "reproduce" | "breed" | "mate" | "spawn" -> Reproduce
+    "rest" | "sleep" | "wait" | "stay" | "idle" | "live" -> Rest
+    "wander" | "move" | "walk" | "roam" | "explore" | "travel" | "go" -> Wander
     _ -> Wander
   }
 }
