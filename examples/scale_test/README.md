@@ -37,10 +37,6 @@ main()
  │   ├── Runs up to 8 concurrent LLM calls (configurable)
  │   ├── Provides food hints: [food:2NW], [prey:1S]
  │   └── Falls back to random intent on LLM failure
- │
- ├── CMD Forwarder — WorldCmd → WorldMsg bridge
- │   └── Breaks import cycle between modules
- │
  └── Mist HTTP + WebSocket
      ├── Serves static assets and initial HTML
      ├── Handles WebSocket connections
@@ -239,10 +235,8 @@ src/
     ├── sim.gleam                 # Pure simulation tick logic
     ├── world.gleam               # World actor (grid owner, ticker, broadcaster)
     ├── scheduler.gleam           # LLM decision queue + batching
-    ├── agent_registry.gleam      # Pig agent lifecycle (one-shot, currently unused)
-    ├── prompt.gleam              # LLM prompt builder (single + batch)
+    ├── prompt.gleam                # LLM prompt builder (single + batch)
     ├── intent.gleam              # Intent types + response parser
-    ├── cmd_forwarder.gleam       # WorldCmd → WorldMsg bridge
     └── protocol.gleam            # Shared types (breaks import cycle)
 ```
 

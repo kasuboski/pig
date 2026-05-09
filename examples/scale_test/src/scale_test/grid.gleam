@@ -89,7 +89,7 @@ pub fn organisms(grid: Grid) -> List(Organism) {
   dict.values(grid)
 }
 
-/// Check if a position is within bounds (0..99 for both x and y)
+/// Check if a position is within bounds (0..49 for both x and y)
 pub fn in_bounds(pos: Position) -> Bool {
   let #(x, y) = pos
   x >= 0 && x < grid_size && y >= 0 && y < grid_size

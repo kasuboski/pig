@@ -230,50 +230,82 @@ fn maybe_spawn_calls(model: SchedulerModel) -> SchedulerModel {
       case batch {
         [] -> model
         _ -> {
-          // Build the batch prompt
-          let batch_entries =
-            list.map(batch, fn(d) { #(d.organism, d.nearby, d.food_hint) })
-          let prompt_text = prompt.build_batch(batch_entries)
-
-          // Collect positions and organisms
-          let positions = list.map(batch, fn(d) { d.pos })
+          // Filter to homogeneous batch (same organism type as first item)
           let otype = case batch {
             [first, ..] -> first.organism.otype
             [] -> Plant
           }
+          let matching = list.filter(batch, fn(d) { d.organism.otype == otype })
+          let non_matching =
+            list.filter(batch, fn(d) { d.organism.otype != otype })
+          let rest = list.append(rest, non_matching)
 
-          let self = model.self
-          let base_url = model.base_url
-          let api_key = model.api_key
-          let model_name = model.model
+          case matching {
+            [] -> SchedulerModel(..model, queue: rest)
+            _ -> {
+              // Build the batch prompt
+              let batch_entries =
+                list.map(matching, fn(d) {
+                  #(d.organism, d.nearby, d.food_hint)
+                })
+              let prompt_text = prompt.build_batch(batch_entries)
 
-          let _ =
-            process.spawn_unlinked(fn() {
-              let result =
-                run_llm_call(prompt_text, base_url, api_key, model_name, otype)
-              // Parse batch result into individual responses
-              let results = case result {
-                Ok(response) -> {
-                  let parsed = prompt.parse_batch(response, list.length(batch))
-                  list.zip(positions, list.map(parsed, fn(s) { Ok(s) }))
-                }
-                Error(_) -> list.map(positions, fn(pos) { #(pos, Error(Nil)) })
-              }
-              process.send(self, LlmCompleted(positions, results))
-            })
+              // Collect positions
+              let positions = list.map(matching, fn(d) { d.pos })
 
-          let processing =
-            list.fold(batch, model.processing, fn(proc, d) {
-              dict.insert(proc, d.pos, d.organism)
-            })
-          let model =
-            SchedulerModel(
-              ..model,
-              queue: rest,
-              in_flight: model.in_flight + 1,
-              processing:,
-            )
-          maybe_spawn_calls(model)
+              let self = model.self
+              let base_url = model.base_url
+              let api_key = model.api_key
+              let model_name = model.model
+
+              let _ =
+                process.spawn_unlinked(fn() {
+                  let result =
+                    run_llm_call(
+                      prompt_text,
+                      base_url,
+                      api_key,
+                      model_name,
+                      otype,
+                    )
+                  // Parse batch result into individual responses
+                  let results = case result {
+                    Ok(response) -> {
+                      let parsed =
+                        prompt.parse_batch(response, list.length(matching))
+                      let parsed_results = list.map(parsed, fn(s) { Ok(s) })
+                      let missing =
+                        int.max(
+                          0,
+                          list.length(positions) - list.length(parsed_results),
+                        )
+                      let padded =
+                        list.append(
+                          parsed_results,
+                          list.repeat(Error(Nil), missing),
+                        )
+                      list.zip(positions, padded)
+                    }
+                    Error(_) ->
+                      list.map(positions, fn(pos) { #(pos, Error(Nil)) })
+                  }
+                  process.send(self, LlmCompleted(positions, results))
+                })
+
+              let processing =
+                list.fold(matching, model.processing, fn(proc, d) {
+                  dict.insert(proc, d.pos, d.organism)
+                })
+              let model =
+                SchedulerModel(
+                  ..model,
+                  queue: rest,
+                  in_flight: model.in_flight + 1,
+                  processing:,
+                )
+              maybe_spawn_calls(model)
+            }
+          }
         }
       }
     }

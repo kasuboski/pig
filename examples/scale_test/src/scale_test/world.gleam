@@ -263,7 +263,7 @@ fn handle_message(
           // Send rethinks to scheduler if available, otherwise use random intents
           let grid = case model.scheduler {
             Some(scheduler) -> {
-              send_to_scheduler(scheduler, model.grid, rethinks)
+              send_to_scheduler(scheduler, grid, rethinks)
               apply_random_intents(grid, rethinks)
             }
             None -> apply_random_intents(grid, rethinks)
@@ -493,6 +493,22 @@ fn record_events(
   // First birth
   let events = case !model.had_first_birth && births > 0 {
     True -> [FirstBirth(tick:), ..events]
+    False -> events
+  }
+
+  // First herbivore born
+  let events = case
+    !model.had_first_herb_born && stats.herbivores > model.prev_herbivores
+  {
+    True -> [FirstHerbBorn(tick:), ..events]
+    False -> events
+  }
+
+  // First predator born
+  let events = case
+    !model.had_first_pred_born && stats.predators > model.prev_predators
+  {
+    True -> [FirstPredBorn(tick:), ..events]
     False -> events
   }
 
