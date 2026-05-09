@@ -5,7 +5,6 @@
 
 import gleam/dict
 import gleam/erlang/process.{type Subject}
-import gleam/io
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -167,16 +166,6 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
         total_errors: new_errors,
       )
       let model = maybe_spawn_calls(model)
-
-      // Log batch results
-      let ok_count = list.length(results) - list.length(errors)
-      io.println(
-        "LLM batch: "
-        <> int.to_string(ok_count)
-        <> "/"
-        <> int.to_string(list.length(results))
-        <> " ok",
-      )
 
       // Push stats
       case model.world {

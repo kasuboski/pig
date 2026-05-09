@@ -1,5 +1,5 @@
 //// World actor — owns the grid state, ticks the simulation,
-//// broadcasts state snapshots to connected Lustre runtimes via group_registry.
+//// broadcasts state snapshots to connected Lustre runtimes via direct subscriptions.
 
 import gleam/dict
 import gleam/erlang/process.{
@@ -8,7 +8,6 @@ import gleam/erlang/process.{
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
-import group_registry.{type GroupRegistry}
 import scale_test/grid.{
   type Grid, Herbivore, Organism, Plant, Predator, count_by_type, get,
   to_list,
@@ -83,7 +82,6 @@ pub type WorldModel {
     paused: Bool,
     tick_speed: Int,
     self_subject: Subject(WorldMsg),
-    registry: GroupRegistry(WorldSnapshot),
     /// Handle for the pending tick timer, so we can cancel before rescheduling.
     tick_timer: Timer,
     /// Cumulative birth/death counters.
@@ -103,11 +101,8 @@ pub type WorldModel {
   )
 }
 
-/// Start the world actor. Pass a group_registry so the world can broadcast
-/// snapshots to connected Lustre runtimes after each tick.
-pub fn start(
-  registry: GroupRegistry(WorldSnapshot),
-) -> actor.StartResult(Subject(WorldMsg)) {
+/// Start the world actor.
+pub fn start() -> actor.StartResult(Subject(WorldMsg)) {
   actor.new_with_initialiser(
     5000,
     fn(subject) {
@@ -120,7 +115,6 @@ pub fn start(
         paused: False,
         tick_speed: 200,
         self_subject: subject,
-        registry:,
         tick_timer:,
         total_births: 0,
         total_deaths: 0,

@@ -3,7 +3,7 @@
 
 import gleam/bytes_tree
 import gleam/erlang/application
-import gleam/erlang/process.{type Selector, type Subject, subject_owner}
+import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
@@ -11,7 +11,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import envoy
-import group_registry.{type GroupRegistry}
 import lustre
 import lustre/attribute
 import lustre/element
@@ -22,7 +21,7 @@ import scale_test/protocol
 import scale_test/cmd_forwarder
 import scale_test/scheduler
 import scale_test/world.{
-  type WorldMsg, type WorldSnapshot, SetScheduler,
+  type WorldMsg, SetScheduler,
 }
 import scale_test/ecosystem as ecosystem
 
@@ -37,13 +36,9 @@ pub fn main() {
   let model =
     result.unwrap(envoy.get("OPENAI_COMPAT_MODEL"), "gemopuse4b")
 
-  // Start the group registry for pub/sub between world and Lustre runtimes.
-  let name = process.new_name("ecosystem-registry")
-  let assert Ok(actor.Started(data: registry, ..)) = group_registry.start(name)
-
   // Start the world actor.
   let assert Ok(actor.Started(data: world, ..)) =
-    world.start(registry)
+    world.start()
 
   // Start the scheduler for LLM-driven decisions.
   let assert Ok(actor.Started(data: scheduler_subject, ..)) =
@@ -69,7 +64,7 @@ pub fn main() {
       case request.path_segments(request) {
         [] -> serve_html()
         ["lustre", "runtime.mjs"] -> serve_runtime()
-        ["ws"] -> serve_ecosystem(request, registry, world)
+        ["ws"] -> serve_ecosystem(request, world)
         _ ->
           response.set_body(response.new(404), mist.Bytes(bytes_tree.new()))
       }
@@ -138,12 +133,11 @@ fn serve_runtime() -> Response(ResponseData) {
 
 fn serve_ecosystem(
   request: Request(Connection),
-  registry: GroupRegistry(WorldSnapshot),
   world: Subject(WorldMsg),
 ) -> Response(ResponseData) {
   mist.websocket(
     request:,
-    on_init: init_socket(_, registry, world),
+    on_init: init_socket(_, world),
     handler: loop_socket,
     on_close: close_socket,
   )
@@ -153,30 +147,37 @@ type SocketState {
   SocketState(
     component: lustre.Runtime(ecosystem.Message),
     self: Subject(server_component.ClientMessage(ecosystem.Message)),
-    registry: GroupRegistry(WorldSnapshot),
   )
 }
 
-type SocketMessage =
-  server_component.ClientMessage(ecosystem.Message)
+type SocketMessage {
+  ClientMsg(server_component.ClientMessage(ecosystem.Message))
+  SnapshotMsg(world.WorldSnapshot)
+}
 
 fn init_socket(
   _conn: mist.WebsocketConnection,
-  registry: GroupRegistry(WorldSnapshot),
   world: Subject(WorldMsg),
 ) -> #(SocketState, Option(Selector(SocketMessage))) {
-  let env = ecosystem.Env(registry:, world:)
+  let env = ecosystem.Env(world:)
   let eco = ecosystem.component()
   let assert Ok(component) = lustre.start_server_component(eco, env)
 
   let self = process.new_subject()
-  let selector = process.new_selector() |> process.select(self)
+  // Subscribe to world snapshots directly
+  let snapshot_sub = process.new_subject()
+  process.send(world, world.Subscribe(snapshot_sub))
+
+  let selector =
+    process.new_selector()
+    |> process.select_map(self, ClientMsg)
+    |> process.select_map(snapshot_sub, SnapshotMsg)
 
   server_component.register_subject(self)
   |> lustre.send(to: component)
 
   #(
-    SocketState(component:, self:, registry:),
+    SocketState(component:, self:),
     Some(selector),
   )
 }
@@ -196,11 +197,22 @@ fn loop_socket(
     }
     mist.Binary(_) -> mist.continue(state)
     mist.Custom(client_message) -> {
-      let encoded =
-        server_component.client_message_to_json(client_message)
-      case mist.send_text_frame(connection, json.to_string(encoded)) {
-        Ok(_) -> Nil
-        Error(_) -> Nil
+      case client_message {
+        ClientMsg(msg) -> {
+          let encoded =
+            server_component.client_message_to_json(msg)
+          case mist.send_text_frame(connection, json.to_string(encoded)) {
+            Ok(_) -> Nil
+            Error(_) -> Nil
+          }
+        }
+        SnapshotMsg(snapshot) -> {
+          // Forward snapshot to Lustre component as a runtime message
+          lustre.send(
+            state.component,
+            lustre.dispatch(ecosystem.SnapshotReceived(snapshot)),
+          )
+        }
       }
       mist.continue(state)
     }
@@ -209,10 +221,6 @@ fn loop_socket(
 }
 
 fn close_socket(state: SocketState) -> Nil {
-  case subject_owner(state.self) {
-    Ok(pid) -> group_registry.leave(state.registry, "ecosystem", [pid])
-    Error(Nil) -> Nil
-  }
   lustre.shutdown()
   |> lustre.send(to: state.component)
 }

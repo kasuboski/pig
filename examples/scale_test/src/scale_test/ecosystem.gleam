@@ -5,7 +5,6 @@ import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import group_registry.{type GroupRegistry}
 import lustre
 import lustre/attribute.{attribute}
 import lustre/effect.{type Effect}
@@ -23,7 +22,7 @@ import scale_test/world.{
 
 /// Environment passed to the component when started.
 pub type Env {
-  Env(registry: GroupRegistry(WorldSnapshot), world: Subject(WorldMsg))
+  Env(world: Subject(WorldMsg))
 }
 
 // COMPONENT -------------------------------------------------------------------
@@ -37,7 +36,6 @@ pub fn component() -> lustre.App(Env, Model, Message) {
 pub type Model {
   Model(
     organisms: WorldSnapshot,
-    registry: GroupRegistry(WorldSnapshot),
     world: Subject(WorldMsg),
   )
 }
@@ -60,26 +58,14 @@ fn init(env: Env) -> #(Model, Effect(Message)) {
       llm_max_concurrency: 8,
       llm_model: "",
     ),
-    registry: env.registry,
     world: env.world,
   )
-  // Subscribe directly via world actor
-  let sub = process.new_subject()
-  let _ = process.send(env.world, world.Subscribe(sub))
-  #(model, subscribe_direct(sub))
-}
-
-fn subscribe_direct(subject: Subject(WorldSnapshot)) -> Effect(Message) {
-  use _, _ <- server_component.select
-  let selector =
-    process.new_selector()
-    |> process.select_map(subject, SnapshotReceived)
-  selector
+  #(model, effect.none())
 }
 
 // MESSAGES --------------------------------------------------------------------
 
-pub opaque type Message {
+pub type Message {
   SnapshotReceived(WorldSnapshot)
   UserClickedPause
   UserClickedReset
