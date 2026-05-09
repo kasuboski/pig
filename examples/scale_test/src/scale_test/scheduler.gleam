@@ -18,9 +18,12 @@ import scale_test/grid.{
 }
 import scale_test/intent
 import scale_test/protocol.{
-  type SchedulerMsg, type WorldCmd, Enqueue, GetStats,
-  LlmCompleted, ProcessQueue, SchedulerStats, SetConcurrency, SetWorld,
-  UpdateIntent, UpdateLLMStats,
+  type SchedulerMsg, Enqueue, GetStats,
+  LlmCompleted, ProcessQueue, SchedulerStats, SetConcurrency,
+}
+import scale_test/world.{
+  type WorldMsg, UpdateIntent as UpdateWorldIntent,
+  UpdateLLMStats as UpdateWorldLLMStats,
 }
 import scale_test/prompt
 
@@ -42,7 +45,7 @@ pub opaque type SchedulerModel {
     queue: List(Decision),
     in_flight: Int,
     max_concurrency: Int,
-    world: Option(Subject(WorldCmd)),
+    world: Option(Subject(WorldMsg)),
     base_url: String,
     api_key: String,
     model: String,
@@ -58,6 +61,7 @@ pub opaque type SchedulerModel {
 /// Start the scheduler actor.
 pub fn start(
   concurrency: Int,
+  world world: Subject(WorldMsg),
   base_url base_url: String,
   api_key api_key: String,
   model model: String,
@@ -67,7 +71,7 @@ pub fn start(
       queue: [],
       in_flight: 0,
       max_concurrency: concurrency,
-      world: None,
+      world: Some(world),
       base_url:,
       api_key:,
       model:,
@@ -109,7 +113,7 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
         Some(world) ->
           process.send(
             world,
-            UpdateLLMStats(
+            UpdateWorldLLMStats(
               llm_calls: model.total_calls,
               llm_errors: model.total_errors,
               llm_queue: list.length(model.queue),
@@ -145,7 +149,7 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
               Ok(response) -> intent.parse(response)
               Error(_) -> intent.random()
             }
-            process.send(world, UpdateIntent(pos, intent))
+            process.send(world, UpdateWorldIntent(pos, intent))
           })
         }
         None -> Nil
@@ -172,7 +176,7 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
         Some(world) ->
           process.send(
             world,
-            UpdateLLMStats(
+            UpdateWorldLLMStats(
               llm_calls: model.total_calls,
               llm_errors: model.total_errors,
               llm_queue: list.length(model.queue),
@@ -193,10 +197,6 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
     ProcessQueue -> {
       let model = maybe_spawn_calls(model)
       actor.continue(model)
-    }
-
-    SetWorld(world) -> {
-      actor.continue(SchedulerModel(..model, world: Some(world)))
     }
 
     GetStats(reply_to) -> {

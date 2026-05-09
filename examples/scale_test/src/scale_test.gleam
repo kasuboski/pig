@@ -17,8 +17,6 @@ import lustre/element
 import lustre/element/html
 import lustre/server_component
 import mist.{type Connection, type ResponseData}
-import scale_test/protocol
-import scale_test/cmd_forwarder
 import scale_test/scheduler
 import scale_test/world.{
   type WorldMsg, SetScheduler,
@@ -44,6 +42,7 @@ pub fn main() {
   let assert Ok(actor.Started(data: scheduler_subject, ..)) =
     scheduler.start(
       8,
+      world: world,
       base_url:,
       api_key:,
       model:,
@@ -51,13 +50,8 @@ pub fn main() {
 
   // Wire scheduler to world:
   // - World gets the scheduler subject to send re-think requests
-  // - Scheduler gets a WorldCmd subject that forwards to the world
+  // - Scheduler gets the world subject directly (no forwarder needed)
   process.send(world, SetScheduler(scheduler_subject, model_name: model))
-
-  // Start a simple forwarder actor: receives WorldCmd, sends WorldMsg
-  let assert Ok(actor.Started(data: cmd_subject, ..)) =
-    cmd_forwarder.start(world)
-  process.send(scheduler_subject, protocol.SetWorld(cmd_subject))
 
   let assert Ok(_) =
     fn(request: Request(Connection)) -> Response(ResponseData) {
