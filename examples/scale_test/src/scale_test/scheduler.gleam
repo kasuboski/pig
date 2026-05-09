@@ -299,10 +299,11 @@ fn run_llm_call(
   case pig.start(cfg) {
     Ok(agent) -> {
       let result =
-        case pig.run_with_timeout(agent, prompt_text, 10_000) {
-          Ok(message.Assistant(content:, ..)) -> Ok(content)
-          Ok(_) -> Error(Nil)
-          Error(_) -> Error(Nil)
+        case pig.try_run_with_timeout(agent, prompt_text, 10_000) {
+          Ok(Ok(message.Assistant(content:, ..))) -> Ok(content)
+          Ok(Ok(_)) -> Error(Nil)
+          Ok(Error(_)) -> Error(Nil)
+          Error(Nil) -> Error(Nil)
         }
       pig.stop(agent)
       result
