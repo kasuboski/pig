@@ -247,8 +247,6 @@ src/
 ### LLM Timeouts
 If you see frequent LLM failures, try:
 - Reducing the **LLM Concurrency** slider
-- Using a faster model (e.g., `gemma2:2b` instead of `llama3.2`)
-- Checking ollama is running: `curl http://localhost:11434/api/tags`
 
 ### No Organisms Appearing
 - Check browser console for WebSocket errors
