@@ -248,6 +248,18 @@ pub fn run_with_timeout(
   agent_actor.run(agent.subject, prompt, timeout_ms)
 }
 
+/// Run a prompt against the agent with an explicit timeout in milliseconds.
+///
+/// Returns `Error(Nil)` if the call times out or the agent crashes,
+/// instead of panicking. Use this when you need resilience over panic-on-timeout.
+pub fn try_run_with_timeout(
+  agent: Agent,
+  prompt: String,
+  timeout_ms: Int,
+) -> Result(Result(Message, AiError), Nil) {
+  agent_actor.try_run(agent.subject, prompt, timeout_ms)
+}
+
 /// Stop the agent actor.
 pub fn stop(agent: Agent) -> Nil {
   agent_actor.stop(agent.subject)

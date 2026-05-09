@@ -57,6 +57,25 @@ pub fn run(
   actor.call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
 }
 
+/// Send a prompt to the agent and wait synchronously for a response.
+///
+/// Returns `Ok(result)` on success, `Error(Nil)` if the call times out
+/// or the agent crashes. Unlike `run`, this never panics.
+pub fn try_run(
+  subject: Subject(AgentMessage),
+  prompt: String,
+  timeout: Int,
+) -> Result(Result(Message, AiError), Nil) {
+  try_call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
+}
+
+@external(erlang, "pig_agent_try_call_ffi", "try_call")
+fn try_call(
+  subject: Subject(AgentMessage),
+  timeout: Int,
+  make_msg: fn(Subject(Result(Message, AiError))) -> AgentMessage,
+) -> Result(Result(Message, AiError), Nil)
+
 /// Send a stop message to the agent actor.
 pub fn stop(subject: Subject(AgentMessage)) -> Nil {
   actor.send(subject, Stop)
