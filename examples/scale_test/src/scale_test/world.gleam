@@ -12,6 +12,7 @@ import scale_test/grid.{
 }
 import scale_test/intent.{type Intent}
 import scale_test/protocol.{type SchedulerMsg, Enqueue, SetConcurrency}
+import scale_test/runtime_stats
 import scale_test/sim.{TickResult, apply_random_intents, populate, tick}
 
 pub type TickSpeed {
@@ -106,6 +107,13 @@ pub type WorldSnapshot {
     peak_plants: Int,
     peak_herbivores: Int,
     peak_predators: Int,
+    /// Runtime scale metrics (sampled at extinction)
+    beam_processes: Int,
+    total_memory_bytes: Int,
+    run_queue: Int,
+    wall_clock_elapsed_ms: Int,
+    peak_llm_queue: Int,
+    peak_llm_in_flight: Int,
   )
 }
 
@@ -150,6 +158,16 @@ pub type WorldModel {
     /// Previous tick herbivore/predator counts (for extinction detection)
     prev_herbivores: Int,
     prev_predators: Int,
+    /// Start time for wall-clock elapsed (monotonic ms)
+    start_time_ms: Int,
+    /// Runtime metrics sampled at extinction
+    final_beam_processes: Int,
+    final_total_memory_bytes: Int,
+    final_run_queue: Int,
+    final_wall_clock_ms: Int,
+    /// Peak LLM scheduler metrics
+    peak_llm_queue: Int,
+    peak_llm_in_flight: Int,
   )
 }
 
@@ -199,6 +217,13 @@ pub fn start() -> actor.StartResult(Subject(WorldMsg)) {
         had_first_pred_born: False,
         prev_herbivores: initial_stats.herbivores,
         prev_predators: initial_stats.predators,
+        start_time_ms: runtime_stats.monotonic_ms(),
+        final_beam_processes: 0,
+        final_total_memory_bytes: 0,
+        final_run_queue: 0,
+        final_wall_clock_ms: 0,
+        peak_llm_queue: 0,
+        peak_llm_in_flight: 0,
       )
     // Broadcast initial state
     broadcast_snapshot(model)
@@ -277,6 +302,27 @@ fn handle_message(
             False -> events
           }
 
+          // Sample runtime metrics on extinction
+          let #(final_beam, final_mem, final_rq, final_elapsed) = case
+            finished
+          {
+            True -> {
+              let m = runtime_stats.sample()
+              #(
+                m.beam_processes,
+                m.total_memory_bytes,
+                m.run_queue,
+                m.monotonic_ms - model.start_time_ms,
+              )
+            }
+            False -> #(
+              model.final_beam_processes,
+              model.final_total_memory_bytes,
+              model.final_run_queue,
+              model.final_wall_clock_ms,
+            )
+          }
+
           let model =
             WorldModel(
               ..model,
@@ -300,6 +346,10 @@ fn handle_message(
                 && stats.predators > model.prev_predators,
               prev_herbivores: stats.herbivores,
               prev_predators: stats.predators,
+              final_beam_processes: final_beam,
+              final_total_memory_bytes: final_mem,
+              final_run_queue: final_rq,
+              final_wall_clock_ms: final_elapsed,
             )
 
           let model = case finished {
@@ -359,6 +409,13 @@ fn handle_message(
           had_first_pred_born: False,
           prev_herbivores: stats.herbivores,
           prev_predators: stats.predators,
+          start_time_ms: runtime_stats.monotonic_ms(),
+          final_beam_processes: 0,
+          final_total_memory_bytes: 0,
+          final_run_queue: 0,
+          final_wall_clock_ms: 0,
+          peak_llm_queue: 0,
+          peak_llm_in_flight: 0,
         )
       let model = schedule_tick(model)
       broadcast_snapshot(model)
@@ -378,8 +435,18 @@ fn handle_message(
     }
 
     UpdateLLMStats(llm_calls:, llm_errors:, llm_queue:, llm_in_flight:) -> {
+      let peak_llm_queue = int.max(model.peak_llm_queue, llm_queue)
+      let peak_llm_in_flight = int.max(model.peak_llm_in_flight, llm_in_flight)
       let model =
-        WorldModel(..model, llm_calls:, llm_errors:, llm_queue:, llm_in_flight:)
+        WorldModel(
+          ..model,
+          llm_calls:,
+          llm_errors:,
+          llm_queue:,
+          llm_in_flight:,
+          peak_llm_queue:,
+          peak_llm_in_flight:,
+        )
       actor.continue(model)
     }
 
@@ -500,6 +567,12 @@ fn make_snapshot(model: WorldModel) -> WorldSnapshot {
     peak_plants: model.peak_plants,
     peak_herbivores: model.peak_herbivores,
     peak_predators: model.peak_predators,
+    beam_processes: model.final_beam_processes,
+    total_memory_bytes: model.final_total_memory_bytes,
+    run_queue: model.final_run_queue,
+    wall_clock_elapsed_ms: model.final_wall_clock_ms,
+    peak_llm_queue: model.peak_llm_queue,
+    peak_llm_in_flight: model.peak_llm_in_flight,
   )
 }
 

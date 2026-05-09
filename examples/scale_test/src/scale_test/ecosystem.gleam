@@ -71,6 +71,12 @@ fn init(env: Env) -> #(Model, Effect(Message)) {
         peak_plants: 0,
         peak_herbivores: 0,
         peak_predators: 0,
+        beam_processes: 0,
+        total_memory_bytes: 0,
+        run_queue: 0,
+        wall_clock_elapsed_ms: 0,
+        peak_llm_queue: 0,
+        peak_llm_in_flight: 0,
       ),
       world: env.world,
     )
@@ -321,6 +327,42 @@ fn render_stats_overlay(snapshot: WorldSnapshot) -> Element(Message) {
         ),
       ]),
 
+      // Scale & runtime metrics
+      html.div([attribute.class("overlay-section")], [
+        html.h3([], [html.text("\u{1F4CA} Scale & Runtime Metrics")]),
+        html.div([attribute.class("overlay-grid")], [
+          render_stat_card(
+            "\u{1F5A5}\u{FE0F} BEAM Processes",
+            int.to_string(snapshot.beam_processes),
+          ),
+          render_stat_card(
+            "\u{1F4BE} Memory",
+            format_bytes(snapshot.total_memory_bytes),
+          ),
+          render_stat_card(
+            "\u{23F1}\u{FE0F} Wall Clock",
+            format_duration(snapshot.wall_clock_elapsed_ms),
+          ),
+          render_stat_card(
+            "\u{1F9E0} LLM Throughput",
+            format_throughput(
+              snapshot.llm_calls,
+              snapshot.wall_clock_elapsed_ms,
+            ),
+          ),
+          render_stat_card(
+            "\u{1F4CA} Peak Queue Depth",
+            int.to_string(snapshot.peak_llm_queue),
+          ),
+          render_stat_card(
+            "\u{1F504} Peak Concurrency",
+            int.to_string(snapshot.peak_llm_in_flight)
+              <> "/"
+              <> int.to_string(snapshot.llm_max_concurrency),
+          ),
+        ]),
+      ]),
+
       // Population sparkline
       html.div([attribute.class("overlay-section")], [
         html.h3([], [html.text("Population Over Time")]),
@@ -569,6 +611,41 @@ fn make_sparkline_points(
     }
     #(x, y)
   })
+}
+
+fn format_bytes(bytes: Int) -> String {
+  let mb = int.to_float(bytes) /. 1_048_576.0
+  let scaled = float.round(mb *. 10.0)
+  let rounded = int.to_float(scaled) /. 10.0
+  float.to_string(rounded) <> " MB"
+}
+
+fn format_duration(ms: Int) -> String {
+  let seconds = ms / 1000
+  case seconds >= 60 {
+    True -> {
+      let minutes = seconds / 60
+      let remaining = seconds % 60
+      int.to_string(minutes) <> "m " <> int.to_string(remaining) <> "s"
+    }
+    False -> {
+      let scaled = float.round(int.to_float(ms) /. 100.0)
+      let secs = int.to_float(scaled) /. 10.0
+      float.to_string(secs) <> "s"
+    }
+  }
+}
+
+fn format_throughput(calls: Int, elapsed_ms: Int) -> String {
+  case elapsed_ms > 0 {
+    True -> {
+      let per_sec = int.to_float(calls) /. int.to_float(elapsed_ms) *. 1000.0
+      let scaled = float.round(per_sec *. 10.0)
+      let rounded = int.to_float(scaled) /. 10.0
+      float.to_string(rounded) <> " calls/s"
+    }
+    False -> "\u{2014}"
+  }
 }
 
 fn css() -> String {
