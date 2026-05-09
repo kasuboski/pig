@@ -2,24 +2,17 @@
 //// broadcasts state snapshots to connected Lustre runtimes via direct subscriptions.
 
 import gleam/dict
-import gleam/erlang/process.{
-  type Subject, type Timer, cancel_timer, send_after,
-}
+import gleam/erlang/process.{type Subject, type Timer, cancel_timer, send_after}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import scale_test/grid.{
-  type Grid, Herbivore, Organism, Plant, Predator, count_by_type, get,
-  to_list,
+  type Grid, Herbivore, Organism, Plant, Predator, count_by_type, get, to_list,
 }
 import scale_test/intent.{type Intent}
-import scale_test/protocol.{
-  type SchedulerMsg, Enqueue, SetConcurrency,
-}
-import scale_test/sim.{
-  TickResult, apply_random_intents, populate, tick,
-}
+import scale_test/protocol.{type SchedulerMsg, Enqueue, SetConcurrency}
+import scale_test/sim.{TickResult, apply_random_intents, populate, tick}
 
 pub type TickSpeed {
   TickSpeed(ms: Int)
@@ -74,7 +67,12 @@ pub type WorldMsg {
   /// Update an organism's intent (from scheduler/LLM)
   UpdateIntent(pos: #(Int, Int), intent: Intent)
   /// Update LLM stats from scheduler
-  UpdateLLMStats(llm_calls: Int, llm_errors: Int, llm_queue: Int, llm_in_flight: Int)
+  UpdateLLMStats(
+    llm_calls: Int,
+    llm_errors: Int,
+    llm_queue: Int,
+    llm_in_flight: Int,
+  )
   /// Set the scheduler subject for sending re-think requests
   SetScheduler(Subject(SchedulerMsg), model_name: String)
   /// Change LLM concurrency
@@ -160,19 +158,19 @@ const pop_sample_interval = 5
 
 /// Start the world actor.
 pub fn start() -> actor.StartResult(Subject(WorldMsg)) {
-  actor.new_with_initialiser(
-    5000,
-    fn(subject) {
-      let initial_grid = populate(300, 20, 10)
-      let initial_stats = compute_stats(0, initial_grid, 0, 0)
-      let tick_timer = send_after(subject, 200, Tick)
-      let initial_sample = PopSample(
+  actor.new_with_initialiser(5000, fn(subject) {
+    let initial_grid = populate(300, 20, 10)
+    let initial_stats = compute_stats(0, initial_grid, 0, 0)
+    let tick_timer = send_after(subject, 200, Tick)
+    let initial_sample =
+      PopSample(
         tick: 0,
         plants: initial_stats.plants,
         herbivores: initial_stats.herbivores,
         predators: initial_stats.predators,
       )
-      let model = WorldModel(
+    let model =
+      WorldModel(
         grid: initial_grid,
         stats: initial_stats,
         paused: False,
@@ -202,13 +200,12 @@ pub fn start() -> actor.StartResult(Subject(WorldMsg)) {
         prev_herbivores: initial_stats.herbivores,
         prev_predators: initial_stats.predators,
       )
-      // Broadcast initial state
-      broadcast_snapshot(model)
-      actor.initialised(model)
-        |> actor.returning(subject)
-        |> Ok
-    },
-  )
+    // Broadcast initial state
+    broadcast_snapshot(model)
+    actor.initialised(model)
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(handle_message)
   |> actor.start
 }
@@ -222,8 +219,10 @@ fn schedule_tick(model: WorldModel) -> WorldModel {
   )
 }
 
-fn handle_message(model: WorldModel, msg: WorldMsg) ->
-    actor.Next(WorldModel, WorldMsg) {
+fn handle_message(
+  model: WorldModel,
+  msg: WorldMsg,
+) -> actor.Next(WorldModel, WorldMsg) {
   case msg {
     Tick -> {
       case model.paused || model.finished {
@@ -235,8 +234,7 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
           }
         }
         False -> {
-          let TickResult(grid, rethinks, births, deaths) =
-            tick(model.grid)
+          let TickResult(grid, rethinks, births, deaths) = tick(model.grid)
           // Send rethinks to scheduler if available, otherwise use random intents
           let grid = case model.scheduler {
             Some(scheduler) -> {
@@ -267,7 +265,7 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
                 herbivores: stats.herbivores,
                 predators: stats.predators,
               ),
-              ..model.pop_history,
+              ..model.pop_history
             ]
             False -> model.pop_history
           }
@@ -294,12 +292,12 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
               finished:,
               had_first_death: model.had_first_death || deaths > 0,
               had_first_birth: model.had_first_birth || births > 0,
-              had_first_herb_born:
-                model.had_first_herb_born
-                || births > 0 && stats.herbivores > model.prev_herbivores,
-              had_first_pred_born:
-                model.had_first_pred_born
-                || births > 0 && stats.predators > model.prev_predators,
+              had_first_herb_born: model.had_first_herb_born
+                || births > 0
+                && stats.herbivores > model.prev_herbivores,
+              had_first_pred_born: model.had_first_pred_born
+                || births > 0
+                && stats.predators > model.prev_predators,
               prev_herbivores: stats.herbivores,
               prev_predators: stats.predators,
             )
@@ -334,32 +332,34 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
     Reset(plant_count, herb_count, pred_count) -> {
       let grid = populate(plant_count, herb_count, pred_count)
       let stats = compute_stats(0, grid, 0, 0)
-      let initial_sample = PopSample(
-        tick: 0,
-        plants: stats.plants,
-        herbivores: stats.herbivores,
-        predators: stats.predators,
-      )
-      let model = WorldModel(
-        ..model,
-        grid:,
-        stats:,
-        paused: False,
-        total_births: 0,
-        total_deaths: 0,
-        finished: False,
-        events: [],
-        pop_history: [initial_sample],
-        peak_plants: stats.plants,
-        peak_herbivores: stats.herbivores,
-        peak_predators: stats.predators,
-        had_first_death: False,
-        had_first_birth: False,
-        had_first_herb_born: False,
-        had_first_pred_born: False,
-        prev_herbivores: stats.herbivores,
-        prev_predators: stats.predators,
-      )
+      let initial_sample =
+        PopSample(
+          tick: 0,
+          plants: stats.plants,
+          herbivores: stats.herbivores,
+          predators: stats.predators,
+        )
+      let model =
+        WorldModel(
+          ..model,
+          grid:,
+          stats:,
+          paused: False,
+          total_births: 0,
+          total_deaths: 0,
+          finished: False,
+          events: [],
+          pop_history: [initial_sample],
+          peak_plants: stats.plants,
+          peak_herbivores: stats.herbivores,
+          peak_predators: stats.predators,
+          had_first_death: False,
+          had_first_birth: False,
+          had_first_herb_born: False,
+          had_first_pred_born: False,
+          prev_herbivores: stats.herbivores,
+          prev_predators: stats.predators,
+        )
       let model = schedule_tick(model)
       broadcast_snapshot(model)
       actor.continue(model)
@@ -378,23 +378,20 @@ fn handle_message(model: WorldModel, msg: WorldMsg) ->
     }
 
     UpdateLLMStats(llm_calls:, llm_errors:, llm_queue:, llm_in_flight:) -> {
-      let model = WorldModel(..model, llm_calls:, llm_errors:, llm_queue:, llm_in_flight:)
+      let model =
+        WorldModel(..model, llm_calls:, llm_errors:, llm_queue:, llm_in_flight:)
       actor.continue(model)
     }
 
     SetScheduler(scheduler, model_name:) -> {
-      let model = WorldModel(
-        ..model,
-        scheduler: Some(scheduler),
-        llm_model: model_name,
-      )
+      let model =
+        WorldModel(..model, scheduler: Some(scheduler), llm_model: model_name)
       actor.continue(model)
     }
 
     SetLLMConcurrency(n) -> {
       case model.scheduler {
-        Some(scheduler) ->
-          process.send(scheduler, SetConcurrency(n))
+        Some(scheduler) -> process.send(scheduler, SetConcurrency(n))
         None -> Nil
       }
       let model = WorldModel(..model, llm_max_concurrency: n)
@@ -436,21 +433,21 @@ fn record_events(
   let events = case stats.plants > model.peak_plants {
     True -> [
       PeakPopulation(tick:, label: "plants", count: stats.plants),
-      ..events,
+      ..events
     ]
     False -> events
   }
   let events = case stats.herbivores > model.peak_herbivores {
     True -> [
       PeakPopulation(tick:, label: "herbivores", count: stats.herbivores),
-      ..events,
+      ..events
     ]
     False -> events
   }
   let events = case stats.predators > model.peak_predators {
     True -> [
       PeakPopulation(tick:, label: "predators", count: stats.predators),
-      ..events,
+      ..events
     ]
     False -> events
   }

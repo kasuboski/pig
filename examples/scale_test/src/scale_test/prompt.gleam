@@ -26,21 +26,21 @@ pub fn build(
   let #(x, y) = organism.pos
 
   "You are a "
-    <> role
-    <> " at ("
-    <> int.to_string(x)
-    <> ","
-    <> int.to_string(y)
-    <> ") energy:"
-    <> int.to_string(organism.energy)
-    <> "/30.\n"
-    <> "Nearby: "
-    <> nearby_str
-    <> ".\n"
-    <> "Current plan: "
-    <> current_plan
-    <> ".\n"
-    <> "Respond with ONE word: north/south/east/west/eat/reproduce/rest/wander"
+  <> role
+  <> " at ("
+  <> int.to_string(x)
+  <> ","
+  <> int.to_string(y)
+  <> ") energy:"
+  <> int.to_string(organism.energy)
+  <> "/30.\n"
+  <> "Nearby: "
+  <> nearby_str
+  <> ".\n"
+  <> "Current plan: "
+  <> current_plan
+  <> ".\n"
+  <> "Respond with ONE word: north/south/east/west/eat/reproduce/rest/wander"
 }
 
 /// Build a batch prompt for multiple organisms.
@@ -61,30 +61,30 @@ pub fn build_batch(
       let nearby_str = describe_nearby(nearby)
       let #(x, y) = organism.pos
       int.to_string(i + 1)
-        <> ". "
-        <> role
-        <> " ("
-        <> int.to_string(x)
-        <> ","
-        <> int.to_string(y)
-        <> ") e="
-        <> int.to_string(organism.energy)
-        <> " "
-        <> nearby_str
-        <> case food_hint {
-          "" -> ""
-          hint -> " [" <> hint <> "]"
-        }
+      <> ". "
+      <> role
+      <> " ("
+      <> int.to_string(x)
+      <> ","
+      <> int.to_string(y)
+      <> ") e="
+      <> int.to_string(organism.energy)
+      <> " "
+      <> nearby_str
+      <> case food_hint {
+        "" -> ""
+        hint -> " [" <> hint <> "]"
+      }
     })
     |> string.join("\n")
 
   let count = list.length(decisions)
   "Decide the next action for each organism. "
-    <> "Actions: north/south/east/west/eat/reproduce/rest/wander\n"
-    <> "H=herbivore P=predator. Respond with "
-    <> int.to_string(count)
-    <> " words, one per line:\n\n"
-    <> entries
+  <> "Actions: north/south/east/west/eat/reproduce/rest/wander\n"
+  <> "H=herbivore P=predator. Respond with "
+  <> int.to_string(count)
+  <> " words, one per line:\n\n"
+  <> entries
 }
 
 /// Parse a batch response into individual action strings.
@@ -95,8 +95,8 @@ pub fn parse_batch(response: String, expected_count: Int) -> List(String) {
     |> string.split("\n")
     |> list.map(fn(line) {
       line
-        |> string.trim()
-        |> string.lowercase()
+      |> string.trim()
+      |> string.lowercase()
     })
     |> list.filter(fn(line) { line != "" })
 
@@ -119,7 +119,9 @@ pub fn parse_batch(response: String, expected_count: Int) -> List(String) {
 }
 
 /// Describe nearby cells as "N=plant S=empty E=predator W=empty"
-pub fn describe_nearby(nearby: List(#(String, Option(OrganismType)))) -> String {
+pub fn describe_nearby(
+  nearby: List(#(String, Option(OrganismType))),
+) -> String {
   case nearby {
     [] -> "nothing"
     _ ->

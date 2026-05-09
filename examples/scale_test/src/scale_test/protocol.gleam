@@ -28,6 +28,6 @@ pub type SchedulerStats {
     queue_depth: Int,
     in_flight: Int,
     max_concurrency: Int,
-  model: String,
+    model: String,
   )
 }

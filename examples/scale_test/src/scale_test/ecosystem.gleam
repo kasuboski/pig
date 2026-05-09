@@ -17,12 +17,10 @@ import lustre/element/svg
 import lustre/event
 import lustre/server_component
 import scale_test/world.{
-  type WorldMsg, type WorldSnapshot, WorldSnapshot, Stats, TogglePause,
-  Reset as WorldReset, SetLLMConcurrency,
-  type Event, type PopSample,
-  Extinction, FirstBirth, FirstDeath, LastHerbDied, LastPredDied,
-  FirstHerbBorn, FirstPredBorn,
-  PeakPopulation,
+  type Event, type PopSample, type WorldMsg, type WorldSnapshot, Extinction,
+  FirstBirth, FirstDeath, FirstHerbBorn, FirstPredBorn, LastHerbDied,
+  LastPredDied, PeakPopulation, Reset as WorldReset, SetLLMConcurrency, Stats,
+  TogglePause, WorldSnapshot,
 }
 
 // ENV --------------------------------------------------------------------------
@@ -41,38 +39,41 @@ pub fn component() -> lustre.App(Env, Model, Message) {
 // MODEL -----------------------------------------------------------------------
 
 pub type Model {
-  Model(
-    organisms: WorldSnapshot,
-    world: Subject(WorldMsg),
-  )
+  Model(organisms: WorldSnapshot, world: Subject(WorldMsg))
 }
 
 fn init(env: Env) -> #(Model, Effect(Message)) {
-  let model = Model(
-    organisms: WorldSnapshot(
-      plants: [],
-      herbivores: [],
-      predators: [],
-      stats: Stats(
-        tick: 0, plants: 0, herbivores: 0, predators: 0, births: 0, deaths: 0,
+  let model =
+    Model(
+      organisms: WorldSnapshot(
+        plants: [],
+        herbivores: [],
+        predators: [],
+        stats: Stats(
+          tick: 0,
+          plants: 0,
+          herbivores: 0,
+          predators: 0,
+          births: 0,
+          deaths: 0,
+        ),
+        paused: False,
+        tick_speed: 200,
+        llm_calls: 0,
+        llm_errors: 0,
+        llm_queue: 0,
+        llm_in_flight: 0,
+        llm_max_concurrency: 8,
+        llm_model: "",
+        finished: False,
+        events: [],
+        pop_history: [],
+        peak_plants: 0,
+        peak_herbivores: 0,
+        peak_predators: 0,
       ),
-      paused: False,
-      tick_speed: 200,
-      llm_calls: 0,
-      llm_errors: 0,
-      llm_queue: 0,
-      llm_in_flight: 0,
-      llm_max_concurrency: 8,
-      llm_model: "",
-      finished: False,
-      events: [],
-      pop_history: [],
-      peak_plants: 0,
-      peak_herbivores: 0,
-      peak_predators: 0,
-    ),
-    world: env.world,
-  )
+      world: env.world,
+    )
   #(model, effect.none())
 }
 
@@ -117,7 +118,12 @@ fn view(model: Model) -> Element(Message) {
       render_stats(model.organisms),
       render_controls(model.organisms),
       html.div(
-        [attribute.style("position", "relative"), attribute.style("width", "100%"), attribute.style("display", "flex"), attribute.style("justify-content", "center")],
+        [
+          attribute.style("position", "relative"),
+          attribute.style("width", "100%"),
+          attribute.style("display", "flex"),
+          attribute.style("justify-content", "center"),
+        ],
         [
           render_grid(model.organisms),
           case model.organisms.finished {
@@ -149,14 +155,27 @@ fn render_stats(snapshot: WorldSnapshot) -> Element(Message) {
       html.span([attribute.style("color", "#ef4444")], [
         html.text(int.to_string(s.predators)),
       ]),
-      html.text("  |  Births: " <> int.to_string(s.births) <> "  Deaths: " <> int.to_string(s.deaths)),
+      html.text(
+        "  |  Births: "
+        <> int.to_string(s.births)
+        <> "  Deaths: "
+        <> int.to_string(s.deaths),
+      ),
     ]),
     html.div([attribute.style("margin-top", "0.25rem")], [
       html.text(
-        "\u{1F9E0} " <> snapshot.llm_model <> "  |  "
-        <> "Calls: " <> int.to_string(snapshot.llm_calls) <> "  "
-        <> "Errors: " <> int.to_string(snapshot.llm_errors) <> "  |  "
-        <> "Queue: " <> int.to_string(snapshot.llm_queue) <> "  "
+        "\u{1F9E0} "
+        <> snapshot.llm_model
+        <> "  |  "
+        <> "Calls: "
+        <> int.to_string(snapshot.llm_calls)
+        <> "  "
+        <> "Errors: "
+        <> int.to_string(snapshot.llm_errors)
+        <> "  |  "
+        <> "Queue: "
+        <> int.to_string(snapshot.llm_queue)
+        <> "  "
         <> "In-flight: "
         <> int.to_string(snapshot.llm_in_flight)
         <> "/"
@@ -196,7 +215,7 @@ fn render_controls(snapshot: WorldSnapshot) -> Element(Message) {
             })
           }),
         )
-        |> server_component.include(["target.value"]),
+          |> server_component.include(["target.value"]),
       ]),
     ]),
   ])
@@ -251,17 +270,13 @@ fn render_grid(snapshot: WorldSnapshot) -> Element(Message) {
       ])
     })
 
-  let all_cells =
-    list.append(list.append(plant_cells, herb_cells), pred_cells)
+  let all_cells = list.append(list.append(plant_cells, herb_cells), pred_cells)
 
   html.svg(
     [
       attribute(
         "viewBox",
-        "0 0 "
-        <> int.to_string(view_size)
-        <> " "
-        <> int.to_string(view_size),
+        "0 0 " <> int.to_string(view_size) <> " " <> int.to_string(view_size),
       ),
       attribute("width", "100%"),
       attribute("height", "100%"),
@@ -284,9 +299,7 @@ fn render_stats_overlay(snapshot: WorldSnapshot) -> Element(Message) {
     html.div([attribute.class("overlay-panel")], [
       html.h2([], [html.text("\u{2620}\u{FE0F} Extinction Event")]),
       html.p([attribute.class("overlay-subtitle")], [
-        html.text(
-          "All animals perished at tick " <> int.to_string(s.tick),
-        ),
+        html.text("All animals perished at tick " <> int.to_string(s.tick)),
       ]),
 
       // Summary grid
@@ -355,17 +368,43 @@ fn render_event_list(events: List(Event)) -> List(Element(Message)) {
 
 fn event_display(event: Event) -> #(String, String) {
   case event {
-    Extinction(tick:) -> #("\u{2620}\u{FE0F}", "Extinction at tick " <> int.to_string(tick))
-    LastHerbDied(tick:) -> #("\u{1F430}", "Last herbivore died at tick " <> int.to_string(tick))
-    LastPredDied(tick:) -> #("\u{1F43A}", "Last predator died at tick " <> int.to_string(tick))
-    FirstDeath(tick:) -> #("\u{1F480}", "First death at tick " <> int.to_string(tick))
-    FirstBirth(tick:) -> #("\u{1F423}", "First birth at tick " <> int.to_string(tick))
+    Extinction(tick:) -> #(
+      "\u{2620}\u{FE0F}",
+      "Extinction at tick " <> int.to_string(tick),
+    )
+    LastHerbDied(tick:) -> #(
+      "\u{1F430}",
+      "Last herbivore died at tick " <> int.to_string(tick),
+    )
+    LastPredDied(tick:) -> #(
+      "\u{1F43A}",
+      "Last predator died at tick " <> int.to_string(tick),
+    )
+    FirstDeath(tick:) -> #(
+      "\u{1F480}",
+      "First death at tick " <> int.to_string(tick),
+    )
+    FirstBirth(tick:) -> #(
+      "\u{1F423}",
+      "First birth at tick " <> int.to_string(tick),
+    )
     PeakPopulation(tick:, label:, count:) -> #(
       "\u{1F4C8}",
-      "Peak " <> label <> ": " <> int.to_string(count) <> " at tick " <> int.to_string(tick),
+      "Peak "
+        <> label
+        <> ": "
+        <> int.to_string(count)
+        <> " at tick "
+        <> int.to_string(tick),
     )
-    FirstHerbBorn(tick:) -> #("\u{1F430}", "First herbivore born at tick " <> int.to_string(tick))
-    FirstPredBorn(tick:) -> #("\u{1F43A}", "First predator born at tick " <> int.to_string(tick))
+    FirstHerbBorn(tick:) -> #(
+      "\u{1F430}",
+      "First herbivore born at tick " <> int.to_string(tick),
+    )
+    FirstPredBorn(tick:) -> #(
+      "\u{1F43A}",
+      "First predator born at tick " <> int.to_string(tick),
+    )
   }
 }
 
@@ -381,15 +420,33 @@ fn render_sparkline(history: List(PopSample)) -> Element(Message) {
     True -> {
       let total_samples = list.length(history)
       // Build polyline points for each population type
-      let plant_points = make_sparkline_points(
-        history, fn(s) { s.plants }, total_samples, width, height, max_pop,
-      )
-      let herb_points = make_sparkline_points(
-        history, fn(s) { s.herbivores }, total_samples, width, height, max_pop,
-      )
-      let pred_points = make_sparkline_points(
-        history, fn(s) { s.predators }, total_samples, width, height, max_pop,
-      )
+      let plant_points =
+        make_sparkline_points(
+          history,
+          fn(s) { s.plants },
+          total_samples,
+          width,
+          height,
+          max_pop,
+        )
+      let herb_points =
+        make_sparkline_points(
+          history,
+          fn(s) { s.herbivores },
+          total_samples,
+          width,
+          height,
+          max_pop,
+        )
+      let pred_points =
+        make_sparkline_points(
+          history,
+          fn(s) { s.predators },
+          total_samples,
+          width,
+          height,
+          max_pop,
+        )
 
       let points_to_string = fn(points: List(#(Int, Int))) -> String {
         points
@@ -402,7 +459,10 @@ fn render_sparkline(history: List(PopSample)) -> Element(Message) {
 
       html.svg(
         [
-          attribute("viewBox", "0 0 " <> int.to_string(width) <> " " <> int.to_string(height)),
+          attribute(
+            "viewBox",
+            "0 0 " <> int.to_string(width) <> " " <> int.to_string(height),
+          ),
           attribute("width", "100%"),
           attribute("height", "120"),
           attribute("xmlns", "http://www.w3.org/2000/svg"),
@@ -431,24 +491,33 @@ fn render_sparkline(history: List(PopSample)) -> Element(Message) {
             attribute("points", points_to_string(pred_points)),
           ]),
           // Legend
-          svg.text([
-            attribute("x", "10"),
-            attribute("y", "15"),
-            attribute("fill", "#22c55e"),
-            attribute("font-size", "10"),
-          ], "\u{1F33F} Plants"),
-          svg.text([
-            attribute("x", "90"),
-            attribute("y", "15"),
-            attribute("fill", "#3b82f6"),
-            attribute("font-size", "10"),
-          ], "\u{1F430} Herbs"),
-          svg.text([
-            attribute("x", "160"),
-            attribute("y", "15"),
-            attribute("fill", "#ef4444"),
-            attribute("font-size", "10"),
-          ], "\u{1F43A} Preds"),
+          svg.text(
+            [
+              attribute("x", "10"),
+              attribute("y", "15"),
+              attribute("fill", "#22c55e"),
+              attribute("font-size", "10"),
+            ],
+            "\u{1F33F} Plants",
+          ),
+          svg.text(
+            [
+              attribute("x", "90"),
+              attribute("y", "15"),
+              attribute("fill", "#3b82f6"),
+              attribute("font-size", "10"),
+            ],
+            "\u{1F430} Herbs",
+          ),
+          svg.text(
+            [
+              attribute("x", "160"),
+              attribute("y", "15"),
+              attribute("fill", "#ef4444"),
+              attribute("font-size", "10"),
+            ],
+            "\u{1F43A} Preds",
+          ),
         ],
       )
     }
@@ -458,7 +527,10 @@ fn render_sparkline(history: List(PopSample)) -> Element(Message) {
 fn find_max_population(history: List(PopSample)) -> Int {
   history
   |> list.fold(0, fn(max, sample) {
-    int.max(max, int.max(sample.plants, int.max(sample.herbivores, sample.predators)))
+    int.max(
+      max,
+      int.max(sample.plants, int.max(sample.herbivores, sample.predators)),
+    )
   })
 }
 
@@ -490,15 +562,14 @@ fn make_sparkline_points(
       False ->
         float.truncate(
           int.to_float(height - padding)
-          -. int.to_float(val) *. int.to_float(usable_height) /. int.to_float(max_val),
+          -. int.to_float(val)
+          *. int.to_float(usable_height)
+          /. int.to_float(max_val),
         )
     }
     #(x, y)
   })
 }
-
-
-
 
 fn css() -> String {
   "

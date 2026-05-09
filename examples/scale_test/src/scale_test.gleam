@@ -1,6 +1,7 @@
 //// Scale Test — Digital Organism Ecosystem
 //// Main entry point: Mist HTTP + WebSocket server
 
+import envoy
 import gleam/bytes_tree
 import gleam/erlang/application
 import gleam/erlang/process.{type Selector, type Subject}
@@ -10,43 +11,34 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import envoy
 import lustre
 import lustre/attribute
 import lustre/element
 import lustre/element/html
 import lustre/server_component
 import mist.{type Connection, type ResponseData}
+import scale_test/ecosystem
 import scale_test/scheduler
-import scale_test/world.{
-  type WorldMsg, SetScheduler,
-}
-import scale_test/ecosystem as ecosystem
+import scale_test/world.{type WorldMsg, SetScheduler}
 
 // MAIN ------------------------------------------------------------------------
 
 pub fn main() {
   // Read config from env vars
   let base_url =
-    result.unwrap(envoy.get("OPENAI_COMPAT_BASE_URL"), "http://localhost:11434/v1")
-  let api_key =
-    result.unwrap(envoy.get("OPENAI_COMPAT_API_KEY"), "ollama")
-  let model =
-    result.unwrap(envoy.get("OPENAI_COMPAT_MODEL"), "gemopuse4b")
+    result.unwrap(
+      envoy.get("OPENAI_COMPAT_BASE_URL"),
+      "http://localhost:11434/v1",
+    )
+  let api_key = result.unwrap(envoy.get("OPENAI_COMPAT_API_KEY"), "ollama")
+  let model = result.unwrap(envoy.get("OPENAI_COMPAT_MODEL"), "gemopuse4b")
 
   // Start the world actor.
-  let assert Ok(actor.Started(data: world, ..)) =
-    world.start()
+  let assert Ok(actor.Started(data: world, ..)) = world.start()
 
   // Start the scheduler for LLM-driven decisions.
   let assert Ok(actor.Started(data: scheduler_subject, ..)) =
-    scheduler.start(
-      8,
-      world: world,
-      base_url:,
-      api_key:,
-      model:,
-    )
+    scheduler.start(8, world: world, base_url:, api_key:, model:)
 
   // Wire scheduler to world:
   // - World gets the scheduler subject to send re-think requests
@@ -59,8 +51,7 @@ pub fn main() {
         [] -> serve_html()
         ["lustre", "runtime.mjs"] -> serve_runtime()
         ["ws"] -> serve_ecosystem(request, world)
-        _ ->
-          response.set_body(response.new(404), mist.Bytes(bytes_tree.new()))
+        _ -> response.set_body(response.new(404), mist.Bytes(bytes_tree.new()))
       }
     }
     |> mist.new
@@ -70,11 +61,6 @@ pub fn main() {
 
   process.sleep_forever()
 }
-
-// CMD FORWARDER ---------------------------------------------------------------
-// A tiny actor that forwards WorldCmd -> WorldMsg to break the import cycle.
-
-// (defined in separate module cmd_forwarder.gleam)
 
 // HTML ------------------------------------------------------------------------
 
@@ -170,10 +156,7 @@ fn init_socket(
   server_component.register_subject(self)
   |> lustre.send(to: component)
 
-  #(
-    SocketState(component:, self:),
-    Some(selector),
-  )
+  #(SocketState(component:, self:), Some(selector))
 }
 
 fn loop_socket(
@@ -193,8 +176,7 @@ fn loop_socket(
     mist.Custom(client_message) -> {
       case client_message {
         ClientMsg(msg) -> {
-          let encoded =
-            server_component.client_message_to_json(msg)
+          let encoded = server_component.client_message_to_json(msg)
           case mist.send_text_frame(connection, json.to_string(encoded)) {
             Ok(_) -> Nil
             Error(_) -> Nil

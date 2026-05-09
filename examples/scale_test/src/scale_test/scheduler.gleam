@@ -13,19 +13,19 @@ import pig
 import pig/ai/message
 import pig/ai/openai
 import scale_test/grid.{
-  type Grid, type Organism, type OrganismType, type Position, Herbivore,
-  Plant, Predator, get, wrap_position,
+  type Grid, type Organism, type OrganismType, type Position, Herbivore, Plant,
+  Predator, get, wrap_position,
 }
 import scale_test/intent
+import scale_test/prompt
 import scale_test/protocol.{
-  type SchedulerMsg, Enqueue, GetStats,
-  LlmCompleted, ProcessQueue, SchedulerStats, SetConcurrency,
+  type SchedulerMsg, Enqueue, GetStats, LlmCompleted, ProcessQueue,
+  SchedulerStats, SetConcurrency,
 }
 import scale_test/world.{
   type WorldMsg, UpdateIntent as UpdateWorldIntent,
   UpdateLLMStats as UpdateWorldLLMStats,
 }
-import scale_test/prompt
 
 /// How many organisms to pack into a single LLM call.
 const batch_size = 10
@@ -67,29 +67,32 @@ pub fn start(
   model model: String,
 ) -> actor.StartResult(Subject(SchedulerMsg)) {
   actor.new_with_initialiser(5000, fn(self) {
-    let model = SchedulerModel(
-      queue: [],
-      in_flight: 0,
-      max_concurrency: concurrency,
-      world: Some(world),
-      base_url:,
-      api_key:,
-      model:,
-      self:,
-      processing: dict.new(),
-      total_calls: 0,
-      total_errors: 0,
-    )
+    let model =
+      SchedulerModel(
+        queue: [],
+        in_flight: 0,
+        max_concurrency: concurrency,
+        world: Some(world),
+        base_url:,
+        api_key:,
+        model:,
+        self:,
+        processing: dict.new(),
+        total_calls: 0,
+        total_errors: 0,
+      )
     actor.initialised(model)
-      |> actor.returning(self)
-      |> Ok
+    |> actor.returning(self)
+    |> Ok
   })
   |> actor.on_message(handle_message)
   |> actor.start
 }
 
-fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
-    actor.Next(SchedulerModel, SchedulerMsg) {
+fn handle_message(
+  model: SchedulerModel,
+  msg: SchedulerMsg,
+) -> actor.Next(SchedulerModel, SchedulerMsg) {
   case msg {
     Enqueue(decisions, grid) -> {
       let new_items =
@@ -162,13 +165,14 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
         })
 
       let in_flight = model.in_flight - 1
-      let model = SchedulerModel(
-        ..model,
-        in_flight:,
-        processing:,
-        total_calls: new_calls,
-        total_errors: new_errors,
-      )
+      let model =
+        SchedulerModel(
+          ..model,
+          in_flight:,
+          processing:,
+          total_calls: new_calls,
+          total_errors: new_errors,
+        )
       let model = maybe_spawn_calls(model)
 
       // Push stats
@@ -200,14 +204,15 @@ fn handle_message(model: SchedulerModel, msg: SchedulerMsg) ->
     }
 
     GetStats(reply_to) -> {
-      let stats = SchedulerStats(
-        llm_calls: model.total_calls,
-        llm_errors: model.total_errors,
-        queue_depth: list.length(model.queue),
-        in_flight: model.in_flight,
-        max_concurrency: model.max_concurrency,
-        model: model.model,
-      )
+      let stats =
+        SchedulerStats(
+          llm_calls: model.total_calls,
+          llm_errors: model.total_errors,
+          queue_depth: list.length(model.queue),
+          in_flight: model.in_flight,
+          max_concurrency: model.max_concurrency,
+          model: model.model,
+        )
       process.send(reply_to, stats)
       actor.continue(model)
     }
@@ -227,9 +232,7 @@ fn maybe_spawn_calls(model: SchedulerModel) -> SchedulerModel {
         _ -> {
           // Build the batch prompt
           let batch_entries =
-            list.map(batch, fn(d) {
-              #(d.organism, d.nearby, d.food_hint)
-            })
+            list.map(batch, fn(d) { #(d.organism, d.nearby, d.food_hint) })
           let prompt_text = prompt.build_batch(batch_entries)
 
           // Collect positions and organisms
@@ -244,36 +247,32 @@ fn maybe_spawn_calls(model: SchedulerModel) -> SchedulerModel {
           let api_key = model.api_key
           let model_name = model.model
 
-          let _ = process.spawn_unlinked(fn() {
-            let result = run_llm_call(
-              prompt_text,
-              base_url,
-              api_key,
-              model_name,
-              otype,
-            )
-            // Parse batch result into individual responses
-            let results = case result {
-              Ok(response) -> {
-                let parsed = prompt.parse_batch(response, list.length(batch))
-                list.zip(positions, list.map(parsed, fn(s) { Ok(s) }))
+          let _ =
+            process.spawn_unlinked(fn() {
+              let result =
+                run_llm_call(prompt_text, base_url, api_key, model_name, otype)
+              // Parse batch result into individual responses
+              let results = case result {
+                Ok(response) -> {
+                  let parsed = prompt.parse_batch(response, list.length(batch))
+                  list.zip(positions, list.map(parsed, fn(s) { Ok(s) }))
+                }
+                Error(_) -> list.map(positions, fn(pos) { #(pos, Error(Nil)) })
               }
-              Error(_) ->
-                list.map(positions, fn(pos) { #(pos, Error(Nil)) })
-            }
-            process.send(self, LlmCompleted(positions, results))
-          })
+              process.send(self, LlmCompleted(positions, results))
+            })
 
           let processing =
             list.fold(batch, model.processing, fn(proc, d) {
               dict.insert(proc, d.pos, d.organism)
             })
-          let model = SchedulerModel(
-            ..model,
-            queue: rest,
-            in_flight: model.in_flight + 1,
-            processing:,
-          )
+          let model =
+            SchedulerModel(
+              ..model,
+              queue: rest,
+              in_flight: model.in_flight + 1,
+              processing:,
+            )
           maybe_spawn_calls(model)
         }
       }
@@ -289,8 +288,7 @@ fn run_llm_call(
   model_name: String,
   otype: OrganismType,
 ) -> Result(String, Nil) {
-  let provider =
-    openai.provider_with_base_url(api_key, model_name, base_url)
+  let provider = openai.provider_with_base_url(api_key, model_name, base_url)
   let cfg =
     pig.new(provider.call)
     |> pig.with_model(model_name)
@@ -298,13 +296,12 @@ fn run_llm_call(
 
   case pig.start(cfg) {
     Ok(agent) -> {
-      let result =
-        case pig.try_run_with_timeout(agent, prompt_text, 10_000) {
-          Ok(Ok(message.Assistant(content:, ..))) -> Ok(content)
-          Ok(Ok(_)) -> Error(Nil)
-          Ok(Error(_)) -> Error(Nil)
-          Error(Nil) -> Error(Nil)
-        }
+      let result = case pig.try_run_with_timeout(agent, prompt_text, 10_000) {
+        Ok(Ok(message.Assistant(content:, ..))) -> Ok(content)
+        Ok(Ok(_)) -> Error(Nil)
+        Ok(Error(_)) -> Error(Nil)
+        Error(Nil) -> Error(Nil)
+      }
       pig.stop(agent)
       result
     }
@@ -462,17 +459,19 @@ fn check_cell(
 fn direction_label(dx: Int, dy: Int) -> String {
   let ns = case dy < 0 {
     True -> "N"
-    False -> case dy > 0 {
-      True -> "S"
-      False -> ""
-    }
+    False ->
+      case dy > 0 {
+        True -> "S"
+        False -> ""
+      }
   }
   let ew = case dx < 0 {
     True -> "W"
-    False -> case dx > 0 {
-      True -> "E"
-      False -> ""
-    }
+    False ->
+      case dx > 0 {
+        True -> "E"
+        False -> ""
+      }
   }
   ns <> ew
 }
