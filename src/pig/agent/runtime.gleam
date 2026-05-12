@@ -24,6 +24,8 @@ import pig/agent/step_result
 import pig/agent/update
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
+import pig/ai/provider
+import pig/ai/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
@@ -46,9 +48,6 @@ pub type RuntimeConfig {
     max_iterations: Int,
   )
 }
-
-import pig/ai/provider
-import pig/ai/tool_definition
 
 // ── Actor Messages ───────────────────────────────────────────────
 

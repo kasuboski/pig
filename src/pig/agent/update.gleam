@@ -51,16 +51,18 @@ fn handle_provider_responded(
   result: Result(Message, AiError),
 ) -> StepResult(AgentMsg) {
   case result {
-    Ok(message.Assistant(content: _, tool_calls: calls, thinking: _)) ->
+    Ok(
+      message.Assistant(content: _, tool_calls: calls, thinking: _) as assistant_msg,
+    ) ->
       case calls {
         [] -> {
           // Text response — loop terminates
-          let new_st = state.add_message(st, result_or_unwrap(result))
-          step_result.Done(state: new_st, message: result_or_unwrap(result))
+          let new_st = state.add_message(st, assistant_msg)
+          step_result.Done(state: new_st, message: assistant_msg)
         }
         _ -> {
           // Tool calls — need execution
-          let new_st = state.add_message(st, result_or_unwrap(result))
+          let new_st = state.add_message(st, assistant_msg)
           step_result.Continue(state: new_st, effects: [
             effect.ExecuteTools(calls:, on_results: fn(results) {
               msg.ToolResults(results)
@@ -77,11 +79,6 @@ fn handle_provider_responded(
   }
 }
 
-fn result_or_unwrap(result: Result(Message, AiError)) -> Message {
-  let assert Ok(msg) = result
-  msg
-}
-
 // ── ToolResults ──────────────────────────────────────────────────
 
 fn handle_tool_results(
@@ -93,12 +90,11 @@ fn handle_tool_results(
   // increments after tool execution and checks at the top of the next iteration.
   let tool_messages =
     list.map(results, fn(pair) {
-      let #(_call, result) = pair
+      let #(call, result) = pair
       let content = case result {
         Ok(json_val) -> json.to_string(json_val)
         Error(tool_err) -> "Tool error: " <> tool_err.message
       }
-      let #(call, _) = pair
       message.Tool(tool_call_id: call.id, content:)
     })
   let new_st =

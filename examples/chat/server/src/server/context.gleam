@@ -104,7 +104,9 @@ pub fn get_or_create_agent(
   ctx: Context,
   agent_id: AgentId,
 ) -> Result(Agent, Nil) {
-  // TODO: This should timeout if the agent doesn't exist and can't be created
+  // actor.call panics on timeout rather than returning Error,
+  // so this always returns Ok. To propagate timeouts, use
+  // pig.try_run_with_timeout instead of actor.call.
   actor.call(ctx, waiting: timeout, sending: fn(reply_to) {
     GetOrCreateAgent(agent_id, reply_to)
   })

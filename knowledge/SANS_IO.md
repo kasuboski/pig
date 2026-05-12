@@ -34,7 +34,7 @@ Hooks express *policy* — "block this tool," "transform these messages," "this 
 
 ## Architecture Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                        CORE (pure)                      │
 │                                                         │

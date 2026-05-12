@@ -11,6 +11,7 @@ import gleam/list
 import gleam/option
 import gleam/otp/actor.{type StartError}
 import gleam/string
+import logging
 import pig/agent/runtime
 import pig/agent/state
 import pig/ai/error.{type AiError}
@@ -203,7 +204,8 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
 
       case failed {
         Ok(Error(e)) -> {
-          // A consumer failed — return error
+          // A consumer failed — shut down dispatcher
+          process.send(dispatcher_subject, dispatcher.Stop)
           Error(e)
         }
         _ -> {
@@ -231,7 +233,16 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
               let st = state.new(final_config)
               case session.replay(path) {
                 Ok(replayed) -> list.fold(replayed, st, state.add_message)
-                Error(_) -> st
+                Error(err) -> {
+                  logging.log(
+                    logging.Warning,
+                    "Session replay failed for "
+                      <> path
+                      <> ": "
+                      <> string.inspect(err),
+                  )
+                  st
+                }
               }
             }
             option.None -> state.new(final_config)
@@ -240,7 +251,11 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
             runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
           case runtime.start_with_state(runtime_config, rt_state) {
             Ok(subject) -> Ok(Agent(subject))
-            Error(e) -> Error(e)
+            Error(e) -> {
+              // Runtime failed — shut down consumers and dispatcher
+              process.send(dispatcher_subject, dispatcher.Stop)
+              Error(e)
+            }
           }
         }
       }
