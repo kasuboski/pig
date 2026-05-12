@@ -1,6 +1,5 @@
 //// Integration-level scenario tests using the pure `update` function.
 ////
-//// These replace the old `core.run_to_completion` tests with pure folds.
 //// No OTP processes, no dispatcher, no mocks beyond sample data.
 ////
 //// Pure value-in/value-out. The entire agent loop becomes a fold over messages.

@@ -3,11 +3,6 @@
 //// Verifies the sans-IO runtime actor: effect execution, event emission,
 //// hook pipeline, parallelism, state accumulation, resilience.
 ////
-//// This file consolidates tests that previously lived in:
-////   actor_test.gleam        → start/stop/resilience/history
-////   emitter_test.gleam      → session event emission
-////   hooks_integration_test.gleam → hook pipeline + session writer
-////   parallel_tools_test.gleam   → parallel tool execution proof
 
 import gleam/dynamic
 import gleam/dynamic/decode
