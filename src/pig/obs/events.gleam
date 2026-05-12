@@ -5,6 +5,8 @@
 ////
 //// Uses a thin Erlang FFI (`pig_obs_ffi`) that wraps `:telemetry.execute/3`
 //// and converts string-keyed dicts to atom-keyed maps.
+//// All pig telemetry events as typed variants. Construct these directly
+//// and pass to `emit()`.
 
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
@@ -41,8 +43,6 @@ pub fn execute_telemetry(
 }
 
 // ── Event Union Type ─────────────────────────────────────────────────
-//// All pig telemetry events as typed variants. Construct these directly
-//// and pass to `emit()`.
 
 pub type Event {
   InferenceStart(model: String, message_count: Int)
@@ -57,7 +57,12 @@ pub type Event {
   )
   InferenceException(model: String, message_count: Int, error_type: String)
   ToolStart(tool_name: String, tool_call_id: String, arguments_json: String)
-  ToolStop(tool_name: String, tool_call_id: String, duration_ms: Int, result: String)
+  ToolStop(
+    tool_name: String,
+    tool_call_id: String,
+    duration_ms: Int,
+    result: String,
+  )
   ToolException(tool_name: String, tool_call_id: String, arguments_json: String)
 }
 
@@ -218,10 +223,7 @@ pub fn emit(event: Event) -> Nil {
 // For custom events outside the built-in set.
 
 /// Emit a custom start event with auto-populated system_time measurement.
-pub fn emit_start(
-  name: List(String),
-  meta: Dict(String, String),
-) -> Nil {
+pub fn emit_start(name: List(String), meta: Dict(String, String)) -> Nil {
   let measurements = dict.from_list([#("system_time", ffi_system_time())])
   ffi_execute(name, measurements, meta)
 }
@@ -241,10 +243,7 @@ pub fn emit_stop(
 }
 
 /// Emit a custom exception event with auto-populated system_time measurement.
-pub fn emit_exception(
-  name: List(String),
-  meta: Dict(String, String),
-) -> Nil {
+pub fn emit_exception(name: List(String), meta: Dict(String, String)) -> Nil {
   let measurements = dict.from_list([#("system_time", ffi_system_time())])
   ffi_execute(name, measurements, meta)
 }
@@ -274,10 +273,7 @@ fn maybe_insert_string(
   }
 }
 
-fn maybe_get_string(
-  dict: Dict(String, String),
-  key: String,
-) -> Option(String) {
+fn maybe_get_string(dict: Dict(String, String), key: String) -> Option(String) {
   case dict.get(dict, key) {
     Ok(v) -> Some(v)
     Error(Nil) -> None
@@ -412,11 +408,7 @@ pub type SessionEvent {
     input_messages: List(Message),
   )
   ToolStarted(tool_call: ToolCall)
-  ToolExecuted(
-    tool_call: ToolCall,
-    result: String,
-    duration_ms: Int,
-  )
+  ToolExecuted(tool_call: ToolCall, result: String, duration_ms: Int)
   ToolBlocked(tool_call: ToolCall, hook_name: String, reason: String)
   HookActed(hook_name: String, hook_point: HookPoint, action: HookActionDetail)
   InferenceFailed(

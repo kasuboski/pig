@@ -1,7 +1,11 @@
-import pig/ai/provider.{type InferenceMetadata, type InferenceResult, default_metadata, from_message, with_response_id, with_input_tokens, with_response_model, with_finish_reason, with_output_tokens}
-import pig/ai/message.{type Message, Assistant}
 import gleam/option.{type Option, None, Some}
 import gleeunit/should
+import pig/ai/message.{type Message, Assistant}
+import pig/ai/provider.{
+  type InferenceMetadata, type InferenceResult, default_metadata, from_message,
+  with_finish_reason, with_input_tokens, with_output_tokens, with_response_id,
+  with_response_model,
+}
 
 /// Check that from_message preserves the original message
 fn check_result_preserves_message(message: Message) {
@@ -42,7 +46,12 @@ pub fn default_metadata_has_none_fields_test() {
 
 pub fn setter_response_id_applies_test() {
   let meta = default_metadata()
-  check_metadata_setter(meta, with_response_id, fn(m) { m.response_id }, "resp-123")
+  check_metadata_setter(
+    meta,
+    with_response_id,
+    fn(m) { m.response_id },
+    "resp-123",
+  )
 }
 
 pub fn setter_input_tokens_applies_test() {
@@ -52,9 +61,24 @@ pub fn setter_input_tokens_applies_test() {
 
 pub fn all_setters_apply_test() {
   let meta = default_metadata()
-  check_metadata_setter(meta, with_response_id, fn(m) { m.response_id }, "resp-456")
-  check_metadata_setter(meta, with_response_model, fn(m) { m.response_model }, "gpt-4")
-  check_metadata_setter(meta, with_finish_reason, fn(m) { m.finish_reason }, "stop")
+  check_metadata_setter(
+    meta,
+    with_response_id,
+    fn(m) { m.response_id },
+    "resp-456",
+  )
+  check_metadata_setter(
+    meta,
+    with_response_model,
+    fn(m) { m.response_model },
+    "gpt-4",
+  )
+  check_metadata_setter(
+    meta,
+    with_finish_reason,
+    fn(m) { m.finish_reason },
+    "stop",
+  )
   check_metadata_setter(meta, with_input_tokens, fn(m) { m.input_tokens }, 100)
   check_metadata_setter(meta, with_output_tokens, fn(m) { m.output_tokens }, 50)
 }

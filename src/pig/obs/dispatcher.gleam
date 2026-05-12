@@ -12,26 +12,15 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
-import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
+import pig/ai/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
 import pig/obs/events.{
-  type SessionEvent,
-  SessionStarted,
-  InferenceStarted,
-  InferenceCompleted,
-  ToolStarted,
-  ToolExecuted,
-  ToolBlocked,
-  HookActed,
-  InferenceFailed,
-  SessionEnded,
-  inference_start_name,
-  inference_stop_name,
-  inference_exception_name,
-  tool_start_name,
+  type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
+  InferenceStarted, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
+  ToolStarted, execute_telemetry, inference_exception_name, inference_start_name,
+  inference_stop_name, system_time, tool_blocked_name, tool_start_name,
   tool_stop_name,
-  tool_blocked_name,
-  execute_telemetry,
-  system_time,
 }
 
 // ── Public Types ─────────────────────────────────────────────────────
@@ -88,11 +77,10 @@ pub fn supervised(
 fn handle_message(state: State, msg: DispatcherMessage) {
   case msg {
     Event(event) -> {
-      emit_telemetry(event) // Always emit telemetry
+      emit_telemetry(event)
+      // Always emit telemetry
       // Fan out to all registered consumers
-      list.each(state.consumers, fn(consumer) {
-        process.send(consumer, event)
-      })
+      list.each(state.consumers, fn(consumer) { process.send(consumer, event) })
       actor.continue(state)
     }
     RegisterConsumer(subject) -> {
@@ -144,11 +132,10 @@ fn emit_telemetry(event: SessionEvent) {
 
       // Build metadata with optional string fields
       // Use response_model if available, otherwise use a placeholder
-      let model =
-        case response_model {
-          Some(m) -> m
-          None -> "unknown"
-        }
+      let model = case response_model {
+        Some(m) -> m
+        None -> "unknown"
+      }
       let base_metadata = dict.from_list([#("model", model)])
       let metadata =
         base_metadata

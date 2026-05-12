@@ -12,8 +12,8 @@ pub fn skip_unless_enabled() -> Bool {
     Error(_) -> {
       io.println(
         "[SKIP] Integration tests not enabled. Set "
-          <> config.run_env
-          <> "=1 to run.",
+        <> config.run_env
+        <> "=1 to run.",
       )
       True
     }

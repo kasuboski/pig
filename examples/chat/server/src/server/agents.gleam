@@ -69,6 +69,6 @@ fn model() -> String {
 pub fn create_agent_config(persona: AgentPersona) {
   let provider = openai.provider_with_base_url(api_key(), model(), base_url())
   pig.new(provider.call)
-    |> pig.with_system_prompt(persona.system_prompt)
-    |> pig.with_model(model())
+  |> pig.with_system_prompt(persona.system_prompt)
+  |> pig.with_model(model())
 }

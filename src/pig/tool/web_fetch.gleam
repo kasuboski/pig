@@ -31,8 +31,7 @@ pub fn tool() -> tool.Tool {
   tool.Tool(
     definition: tool_definition.ToolDefinition(
       name: "web_fetch",
-      description:
-        "Fetch the contents of a URL via HTTP GET. "
+      description: "Fetch the contents of a URL via HTTP GET. "
         <> "Returns the response status code and body.",
       parameters: schema.object([schema.prop("url", schema.string())]),
     ),
@@ -76,17 +75,18 @@ fn handle_response(
 ) -> Result(json.Json, tool.ToolError) {
   case resp.status {
     s if s >= 200 && s < 300 ->
-      Ok(json.object([
-        #("status", json.int(resp.status)),
-        #("body", json.string(resp.body)),
-      ]))
+      Ok(
+        json.object([
+          #("status", json.int(resp.status)),
+          #("body", json.string(resp.body)),
+        ]),
+      )
     status ->
       Error(tool.ToolError(
-        message:
-          "HTTP "
-          <> int.to_string(status)
-          <> ": "
-          <> string_truncate(resp.body, 500),
+        message: "HTTP "
+        <> int.to_string(status)
+        <> ": "
+        <> string_truncate(resp.body, 500),
       ))
   }
 }

@@ -1,23 +1,14 @@
-import gleeunit
-import gleeunit/should
 import gleam/erlang/process
 import gleam/option.{Some}
+import gleeunit
+import gleeunit/should
 import pig/ai/error.{ApiError}
 import pig/ai/message.{ToolCall, User}
 import pig/obs/dispatcher
 import pig/obs/events.{
-  SessionStarted,
-  InferenceStarted,
-  InferenceCompleted,
-  ToolStarted,
-  ToolExecuted,
-  ToolBlocked,
-  HookActed,
-  InferenceFailed,
-  SessionEnded,
-  BeforeToolCall,
-  HookActionDetail,
-  NormalEnd,
+  BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
+  InferenceFailed, InferenceStarted, NormalEnd, SessionEnded, SessionStarted,
+  ToolBlocked, ToolExecuted, ToolStarted,
 }
 import pig/obs/listener
 
@@ -48,7 +39,10 @@ fn send_and_confirm(
 fn setup() {
   let assert Ok(dispatcher_subject) = dispatcher.start()
   let consumer_subject = process.new_subject()
-  process.send(dispatcher_subject, dispatcher.RegisterConsumer(consumer_subject))
+  process.send(
+    dispatcher_subject,
+    dispatcher.RegisterConsumer(consumer_subject),
+  )
   #(#(dispatcher_subject, consumer_subject), fn() {
     process.send(dispatcher_subject, dispatcher.Stop)
   })
@@ -58,14 +52,14 @@ fn setup_with_listener() {
   let listener_handle = listener.attach()
   let assert Ok(dispatcher_subject) = dispatcher.start()
   let consumer_subject = process.new_subject()
-  process.send(dispatcher_subject, dispatcher.RegisterConsumer(consumer_subject))
-  #(
-    #(dispatcher_subject, consumer_subject, listener_handle),
-    fn() {
-      listener.detach(listener_handle)
-      process.send(dispatcher_subject, dispatcher.Stop)
-    },
+  process.send(
+    dispatcher_subject,
+    dispatcher.RegisterConsumer(consumer_subject),
   )
+  #(#(dispatcher_subject, consumer_subject, listener_handle), fn() {
+    listener.detach(listener_handle)
+    process.send(dispatcher_subject, dispatcher.Stop)
+  })
 }
 
 // ── Telemetry Projection Tests ─────────────────────────────────────────
@@ -115,12 +109,17 @@ pub fn dispatcher_emits_tool_start_telemetry_test() {
   let #(#(disp, consumer, handle), cleanup) = setup_with_listener()
 
   let tool_call =
-    ToolCall(id: "call_123", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
   let event = ToolStarted(tool_call:)
   send_and_confirm(disp, event, consumer)
 
   let captured = listener.get_events(handle)
-  let assert [events.ToolStart(tool_name:, tool_call_id:, arguments_json:)] = captured
+  let assert [events.ToolStart(tool_name:, tool_call_id:, arguments_json:)] =
+    captured
   tool_name |> should.equal("calculator")
   tool_call_id |> should.equal("call_123")
   arguments_json |> should.equal("{\"expr\":\"2+2\"}")
@@ -132,13 +131,18 @@ pub fn dispatcher_emits_tool_stop_telemetry_test() {
   let #(#(disp, consumer, handle), cleanup) = setup_with_listener()
 
   let tool_call =
-    ToolCall(id: "call_123", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
   let event =
     ToolExecuted(tool_call:, result: "{\"result\":4}", duration_ms: 42)
   send_and_confirm(disp, event, consumer)
 
   let captured = listener.get_events(handle)
-  let assert [events.ToolStop(tool_name:, tool_call_id:, duration_ms:, ..)] = captured
+  let assert [events.ToolStop(tool_name:, tool_call_id:, duration_ms:, ..)] =
+    captured
   tool_name |> should.equal("calculator")
   tool_call_id |> should.equal("call_123")
   duration_ms |> should.equal(42)

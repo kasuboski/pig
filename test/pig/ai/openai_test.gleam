@@ -1,4 +1,4 @@
-import gleam/dynamic/decode as decode
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -8,8 +8,8 @@ import gleeunit
 import jscheam/schema
 import pig/ai/error
 import pig/ai/message
-import pig/ai/tool_definition
 import pig/ai/openai
+import pig/ai/tool_definition
 import simplifile
 
 pub fn main() -> Nil {
@@ -27,8 +27,7 @@ fn read_golden(path: String) -> String {
 
 /// Check if a top-level key exists in the JSON body.
 fn body_has_key(body: String, key: String) -> Bool {
-  let decoder =
-    decode.at([key], decode.optional(decode.dynamic))
+  let decoder = decode.at([key], decode.optional(decode.dynamic))
   case json.parse(from: body, using: decoder) {
     Ok(Some(_)) -> True
     _ -> False
@@ -43,10 +42,7 @@ type MsgEntry {
 fn msg_entry_decoder() -> decode.Decoder(MsgEntry) {
   use role <- decode.field("role", decode.string)
   use content <- decode.field("content", decode.optional(decode.string))
-  decode.success(MsgEntry(
-    role:,
-    content: option.unwrap(content, ""),
-  ))
+  decode.success(MsgEntry(role:, content: option.unwrap(content, "")))
 }
 
 fn decode_messages(body: String) -> List(#(String, String)) {
@@ -94,11 +90,8 @@ pub fn parse_text_response_test() {
 pub fn parse_tool_call_response_test() {
   let raw = read_golden("./test_data/providers/openai_tool_call_response.json")
   let assert Ok(result) = openai.parse_response(raw)
-  let assert message.Assistant(
-    content: "",
-    tool_calls: [tc],
-    thinking: None,
-  ) = result.message
+  let assert message.Assistant(content: "", tool_calls: [tc], thinking: None) =
+    result.message
   let assert True =
     tc.id == "call_abc123"
     && tc.name == "calculator"
@@ -139,11 +132,8 @@ pub fn parse_null_content_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_null_content_response.json")
   let assert Ok(result) = openai.parse_response(raw)
-  let assert message.Assistant(
-    content: "",
-    tool_calls: [],
-    thinking: None,
-  ) = result.message
+  let assert message.Assistant(content: "", tool_calls: [], thinking: None) =
+    result.message
   // Verify metadata
   let assert Some("chatcmpl-jkl012") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model
@@ -195,9 +185,7 @@ pub fn parse_missing_choices_returns_invalid_response_test() {
 }
 
 pub fn parse_empty_choices_returns_invalid_response_test() {
-  let result = openai.parse_response(
-    "{\"choices\":[]}",
-  )
+  let result = openai.parse_response("{\"choices\":[]}")
   let assert Error(error.InvalidResponse(detail: _)) = result
 }
 
@@ -225,8 +213,7 @@ pub fn build_request_body_simple_messages_test() {
     json.parse(from: body, using: stream_dec)
     |> result.map_error(fn(_) { Nil })
   let parsed = decode_messages(body)
-  parsed
-    == [#("system", "you are helpful"), #("user", "hello")]
+  parsed == [#("system", "you are helpful"), #("user", "hello")]
 }
 
 pub fn build_request_body_with_tools_test() {
@@ -237,7 +224,7 @@ pub fn build_request_body_with_tools_test() {
       description: "evaluates math",
       parameters: schema.object([
         schema.prop("expression", schema.string())
-          |> schema.description("Math expression to evaluate"),
+        |> schema.description("Math expression to evaluate"),
       ]),
     ),
   ]
@@ -263,9 +250,9 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
 
   // No top-level "tools" — tool calls are in the messages array
   body_has_key(body, "tools") == False
-    && body_has_key(body, "messages")
-    && string.contains(body, "tool_calls")
-    && string.contains(body, "tool_call_id")
+  && body_has_key(body, "messages")
+  && string.contains(body, "tool_calls")
+  && string.contains(body, "tool_call_id")
 }
 
 pub fn build_request_body_no_tools_field_when_empty_test() {
@@ -304,13 +291,11 @@ pub fn build_request_body_tool_parameters_injected_as_json_test() {
 // === provider construction tests ===
 
 pub fn provider_with_default_base_url_test() {
-  let openai.OpenAIProvider(config:, call: _) = openai.provider(
-    "sk-test",
-    "gpt-4o",
-  )
+  let openai.OpenAIProvider(config:, call: _) =
+    openai.provider("sk-test", "gpt-4o")
   config.base_url == "https://api.openai.com/v1"
-    && config.api_key == "sk-test"
-    && config.model == "gpt-4o"
+  && config.api_key == "sk-test"
+  && config.model == "gpt-4o"
 }
 
 pub fn provider_with_custom_base_url_test() {
@@ -320,6 +305,5 @@ pub fn provider_with_custom_base_url_test() {
       "qwen3:0.6b",
       "http://localhost:11434/v1",
     )
-  config.base_url == "http://localhost:11434/v1"
-    && config.model == "qwen3:0.6b"
+  config.base_url == "http://localhost:11434/v1" && config.model == "qwen3:0.6b"
 }

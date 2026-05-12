@@ -30,8 +30,6 @@ pub fn execute_tool(
       }
     }
     Error(Nil) ->
-      Error(tool.ToolError(
-        message: "unknown tool \"" <> call.name <> "\"",
-      ))
+      Error(tool.ToolError(message: "unknown tool \"" <> call.name <> "\""))
   }
 }

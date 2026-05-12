@@ -3,15 +3,15 @@
 //// Builder pattern: `new(provider) |> with_tool(t) |> with_skill(s) |> start`
 //// Then: `run(agent, prompt)` or `run_with_timeout(agent, prompt, ms)`
 ////
-//// Thin public surface. All logic in agent/core, agent/actor.
-
+//// Thin public surface. All logic in agent/update (pure core) +
+//// agent/runtime (impure interpreter).
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option
-import gleam/string
 import gleam/otp/actor.{type StartError}
-import pig/agent/actor as agent_actor
+import gleam/string
+import pig/agent/runtime
 import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
@@ -32,12 +32,13 @@ pub opaque type PigConfig {
     agent_config: state.AgentConfig,
     skills: List(skill.Skill),
     consumer_specs: List(ConsumerSpec),
+    hooks: List(Hooks),
   )
 }
 
 /// Opaque handle to a running agent actor.
 pub opaque type Agent {
-  Agent(subject: Subject(agent_actor.AgentMessage))
+  Agent(subject: Subject(runtime.RuntimeMsg))
 }
 
 /// Create a new PigConfig with a provider and sensible defaults.
@@ -49,13 +50,13 @@ pub fn new(provider: Provider) -> PigConfig {
     agent_config: state.config(provider),
     skills: [],
     consumer_specs: [],
+    hooks: [],
   )
 }
 
 /// Register a tool in the config.
 pub fn with_tool(config: PigConfig, t: tool.Tool) -> PigConfig {
-  let updated_registry =
-    tool.register(config.agent_config.tools, t)
+  let updated_registry = tool.register(config.agent_config.tools, t)
   PigConfig(
     ..config,
     agent_config: state.AgentConfig(
@@ -81,10 +82,7 @@ pub fn with_skill(config: PigConfig, s: skill.Skill) -> PigConfig {
 
 /// Register a hooks set for lifecycle mediation.
 pub fn with_hooks(config: PigConfig, h: Hooks) -> PigConfig {
-  PigConfig(
-    ..config,
-    agent_config: state.with_hooks(config.agent_config, h),
-  )
+  PigConfig(..config, hooks: list.append(config.hooks, [h]))
 }
 
 /// Set the system prompt.
@@ -190,23 +188,18 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
   // Start dispatcher
   case dispatcher.start() {
     Ok(dispatcher_subject) -> {
-      let final_config = state.AgentConfig(
-        ..final_config,
-        dispatcher: option.Some(dispatcher_subject),
-      )
-
       // Try to start all consumers
-      let consumer_results = list.map(config.consumer_specs, fn(entry) {
-        entry.start_fn()
-      })
+      let consumer_results =
+        list.map(config.consumer_specs, fn(entry) { entry.start_fn() })
 
       // Check if any consumer failed to start
-      let failed = list.find(consumer_results, fn(r) {
-        case r {
-          Error(_) -> True
-          Ok(_) -> False
-        }
-      })
+      let failed =
+        list.find(consumer_results, fn(r) {
+          case r {
+            Error(_) -> True
+            Ok(_) -> False
+          }
+        })
 
       case failed {
         Ok(Error(e)) -> {
@@ -223,7 +216,29 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
             )
           })
 
-          case agent_actor.start(final_config) {
+          let runtime_config =
+            runtime.RuntimeConfig(
+              provider: final_config.provider,
+              tools: final_config.tools,
+              hooks: config.hooks,
+              dispatcher: dispatcher_subject,
+              model: final_config.model,
+              max_iterations: final_config.max_iterations,
+            )
+          // Create initial state with system prompt and session replay
+          let agent_st = case final_config.session_path {
+            option.Some(path) -> {
+              let st = state.new(final_config)
+              case session.replay(path) {
+                Ok(replayed) -> list.fold(replayed, st, state.add_message)
+                Error(_) -> st
+              }
+            }
+            option.None -> state.new(final_config)
+          }
+          let rt_state =
+            runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
+          case runtime.start_with_state(runtime_config, rt_state) {
             Ok(subject) -> Ok(Agent(subject))
             Error(e) -> Error(e)
           }
@@ -245,7 +260,7 @@ pub fn run_with_timeout(
   prompt: String,
   timeout_ms: Int,
 ) -> Result(Message, AiError) {
-  agent_actor.run(agent.subject, prompt, timeout_ms)
+  runtime.run(agent.subject, prompt, timeout_ms)
 }
 
 /// Run a prompt against the agent with an explicit timeout in milliseconds.
@@ -257,12 +272,12 @@ pub fn try_run_with_timeout(
   prompt: String,
   timeout_ms: Int,
 ) -> Result(Result(Message, AiError), Nil) {
-  agent_actor.try_run(agent.subject, prompt, timeout_ms)
+  runtime.try_run(agent.subject, prompt, timeout_ms)
 }
 
 /// Stop the agent actor.
 pub fn stop(agent: Agent) -> Nil {
-  agent_actor.stop(agent.subject)
+  runtime.stop(agent.subject)
 }
 
 /// Return a PigConfig with a deterministic mock provider.
@@ -309,8 +324,7 @@ pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
   }
 
   // Compose tool info from registry (includes librarian if added)
-  let tool_prompts =
-    tool.list_tool_prompts(config_with_librarian.tools)
+  let tool_prompts = tool.list_tool_prompts(config_with_librarian.tools)
   let fragments = case tool_prompts {
     [] -> fragments
     prompts -> {
@@ -329,13 +343,11 @@ pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
   case fragments {
     [] -> config_with_librarian
     _ -> {
-      let combined =
-        case config_with_librarian.system_prompt {
-          option.Some(existing) ->
-            existing <> "\n\n" <> string.join(list.reverse(fragments), "\n\n")
-          option.None ->
-            string.join(list.reverse(fragments), "\n\n")
-        }
+      let combined = case config_with_librarian.system_prompt {
+        option.Some(existing) ->
+          existing <> "\n\n" <> string.join(list.reverse(fragments), "\n\n")
+        option.None -> string.join(list.reverse(fragments), "\n\n")
+      }
       state.with_system_prompt(config_with_librarian, combined)
     }
   }

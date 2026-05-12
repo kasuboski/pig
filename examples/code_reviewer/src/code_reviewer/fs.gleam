@@ -1,12 +1,12 @@
 //// Filesystem loading for the code reviewer.
 //// Walks a real directory tree and loads text files into pig's VFS workspace.
 
+import filepath
 import gleam/io
 import gleam/list
 import gleam/set.{type Set}
-import simplifile
-import filepath
 import pig/workspace/vfs
+import simplifile
 import sqlight
 
 /// Default entries (directories and files) to skip when loading a repo.
@@ -41,10 +41,7 @@ pub fn default_ignore_entries() -> Set(String) {
 /// Load all text files from a real directory into the VFS under /repo/.
 /// Skips directories in the ignore set and binary/non-UTF-8 files.
 /// Returns the count of files loaded.
-pub fn load_repo(
-  conn: sqlight.Connection,
-  repo_path: String,
-) -> Int {
+pub fn load_repo(conn: sqlight.Connection, repo_path: String) -> Int {
   // Create /repo directory
   let _ = vfs.mkdir(conn, "/repo")
   load_dir(conn, repo_path, "/repo", default_ignore_entries())
@@ -108,12 +105,18 @@ fn load_file(
       case vfs.write_file(conn, vfs_path, content) {
         Ok(Nil) -> Ok(Nil)
         Error(e) -> {
-          io.println("⚠ VFS write error for " <> vfs_path <> ": " <> describe_vfs_error(e))
+          io.println(
+            "⚠ VFS write error for "
+            <> vfs_path
+            <> ": "
+            <> describe_vfs_error(e),
+          )
           Error(Nil)
         }
       }
     }
-    Error(simplifile.NotUtf8) -> Error(Nil) // skip binary files silently
+    Error(simplifile.NotUtf8) -> Error(Nil)
+    // skip binary files silently
     Error(e) -> {
       io.println("⚠ Could not read file: " <> real_path)
       io.println("  " <> simplifile.describe_error(e))

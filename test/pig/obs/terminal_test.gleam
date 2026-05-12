@@ -1,21 +1,25 @@
-import pig/obs/events.{NormalEnd, MaxIterationsExceeded, HookActionDetail, InferenceStarted, BeforeToolCall}
-import pig/obs/terminal
-import pig/obs/dispatcher
-import pig/ai/error.{ApiError}
-import pig/ai/message.{Assistant, ToolCall}
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import pig/ai/error.{ApiError}
+import pig/ai/message.{Assistant, ToolCall}
+import pig/obs/dispatcher
+import pig/obs/events.{
+  BeforeToolCall, HookActionDetail, InferenceStarted, MaxIterationsExceeded,
+  NormalEnd,
+}
+import pig/obs/terminal
 
 pub fn format_session_started_shows_model_test() {
-  let event = events.SessionStarted(
-    agent_id: Some("agent-123"),
-    agent_name: Some("Math Tutor"),
-    model: "gpt-4",
-    provider_name: Some("openai"),
-    system_prompt: Some("You are a math tutor."),
-  )
+  let event =
+    events.SessionStarted(
+      agent_id: Some("agent-123"),
+      agent_name: Some("Math Tutor"),
+      model: "gpt-4",
+      provider_name: Some("openai"),
+      system_prompt: Some("You are a math tutor."),
+    )
 
   let result = terminal.format_event(event)
 
@@ -25,16 +29,17 @@ pub fn format_session_started_shows_model_test() {
 }
 
 pub fn format_inference_completed_shows_duration_test() {
-  let event = events.InferenceCompleted(
-    message: Assistant("hi", [], None),
-    response_id: None,
-    response_model: None,
-    finish_reason: None,
-    input_tokens: None,
-    output_tokens: None,
-    duration_ms: 150,
-    input_messages: [],
-  )
+  let event =
+    events.InferenceCompleted(
+      message: Assistant("hi", [], None),
+      response_id: None,
+      response_model: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 150,
+      input_messages: [],
+    )
 
   let result = terminal.format_event(event)
 
@@ -44,16 +49,17 @@ pub fn format_inference_completed_shows_duration_test() {
 }
 
 pub fn format_inference_completed_shows_token_counts_test() {
-  let event = events.InferenceCompleted(
-    message: Assistant("hi", [], None),
-    response_id: None,
-    response_model: None,
-    finish_reason: Some("stop"),
-    input_tokens: Some(52),
-    output_tokens: Some(15),
-    duration_ms: 150,
-    input_messages: [],
-  )
+  let event =
+    events.InferenceCompleted(
+      message: Assistant("hi", [], None),
+      response_id: None,
+      response_model: None,
+      finish_reason: Some("stop"),
+      input_tokens: Some(52),
+      output_tokens: Some(15),
+      duration_ms: 150,
+      input_messages: [],
+    )
 
   let result = terminal.format_event(event)
 
@@ -65,16 +71,17 @@ pub fn format_inference_completed_shows_token_counts_test() {
 }
 
 pub fn format_inference_completed_without_tokens_test() {
-  let event = events.InferenceCompleted(
-    message: Assistant("hi", [], None),
-    response_id: None,
-    response_model: None,
-    finish_reason: None,
-    input_tokens: None,
-    output_tokens: None,
-    duration_ms: 200,
-    input_messages: [],
-  )
+  let event =
+    events.InferenceCompleted(
+      message: Assistant("hi", [], None),
+      response_id: None,
+      response_model: None,
+      finish_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 200,
+      input_messages: [],
+    )
 
   let result = terminal.format_event(event)
 
@@ -86,11 +93,8 @@ pub fn format_inference_completed_without_tokens_test() {
 
 pub fn format_tool_executed_shows_tool_name_test() {
   let tool_call = ToolCall(id: "c1", name: "calculator", arguments_json: "{}")
-  let event = events.ToolExecuted(
-    tool_call: tool_call,
-    result: "4",
-    duration_ms: 3,
-  )
+  let event =
+    events.ToolExecuted(tool_call: tool_call, result: "4", duration_ms: 3)
 
   let result = terminal.format_event(event)
 
@@ -100,11 +104,12 @@ pub fn format_tool_executed_shows_tool_name_test() {
 }
 
 pub fn format_inference_failed_shows_error_test() {
-  let event = events.InferenceFailed(
-    error: ApiError("rate limited"),
-    duration_ms: 100,
-    input_messages: [],
-  )
+  let event =
+    events.InferenceFailed(
+      error: ApiError("rate limited"),
+      duration_ms: 100,
+      input_messages: [],
+    )
 
   let result = terminal.format_event(event)
 
@@ -147,7 +152,8 @@ pub fn format_inference_started_shows_model_test() {
 }
 
 pub fn format_tool_started_shows_tool_name_test() {
-  let tool_call = ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
+  let tool_call =
+    ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
   let event = events.ToolStarted(tool_call: tool_call)
 
   let result = terminal.format_event(event)
@@ -158,7 +164,12 @@ pub fn format_tool_started_shows_tool_name_test() {
 }
 
 pub fn format_tool_blocked_shows_info_test() {
-  let tool_call = ToolCall(id: "c2", name: "risky_tool", arguments_json: "{\"cmd\":\"rm -rf\"}")
+  let tool_call =
+    ToolCall(
+      id: "c2",
+      name: "risky_tool",
+      arguments_json: "{\"cmd\":\"rm -rf\"}",
+    )
   let event =
     events.ToolBlocked(
       tool_call: tool_call,
@@ -213,25 +224,25 @@ pub fn terminal_supervised_creates_spec_test() {
 /// Uses the process.receive pattern with a second sync consumer.
 pub fn terminal_consumer_receives_events_via_dispatcher_test() {
   let assert Ok(disp) = dispatcher.start()
-  
+
   // Start a sync consumer to verify dispatcher processed the message
   let sync_consumer = process.new_subject()
   process.send(disp, dispatcher.RegisterConsumer(sync_consumer))
-  
+
   // Start terminal consumer actor
   let assert Ok(terminal_consumer) = terminal.start_consumer()
   process.send(disp, dispatcher.RegisterConsumer(terminal_consumer))
-  
+
   // Send event through dispatcher
   let event = InferenceStarted(model: "gpt-4", message_count: 3)
   process.send(disp, dispatcher.Event(event))
-  
+
   // Wait for sync consumer to receive (confirms dispatcher processed the message)
   let assert Ok(received) = process.receive(sync_consumer, 2000)
   let assert InferenceStarted(model:, message_count:) = received
   model |> should.equal("gpt-4")
   message_count |> should.equal(3)
-  
+
   // Cleanup
   process.send(disp, dispatcher.Stop)
 }

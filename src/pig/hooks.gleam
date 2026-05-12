@@ -16,10 +16,7 @@ import pig/ai/message.{type Message}
 
 /// Before the provider is called. Handlers can modify the messages sent.
 pub type BeforeInferenceEvent {
-  BeforeInferenceEvent(
-    model: String,
-    messages: List(Message),
-  )
+  BeforeInferenceEvent(model: String, messages: List(Message))
 }
 
 /// What a before_inference handler returns.
@@ -30,20 +27,12 @@ pub type BeforeInferenceAction {
 
 /// After the provider responds.
 pub type AfterInferenceEvent {
-  AfterInferenceEvent(
-    model: String,
-    message: Message,
-    duration_ms: Int,
-  )
+  AfterInferenceEvent(model: String, message: Message, duration_ms: Int)
 }
 
 /// Before a tool executes. Handlers can block it.
 pub type ToolCallEvent {
-  ToolCallEvent(
-    tool_name: String,
-    tool_call_id: String,
-    arguments_json: String,
-  )
+  ToolCallEvent(tool_name: String, tool_call_id: String, arguments_json: String)
 }
 
 /// What a tool_call handler returns.
@@ -71,19 +60,12 @@ pub type ToolResultAction {
 
 /// An error occurred during inference.
 pub type ErrorEvent {
-  ErrorEvent(
-    model: String,
-    error: AiError,
-  )
+  ErrorEvent(model: String, error: AiError)
 }
 
 /// The agent loop completed with a final message.
 pub type CompleteEvent {
-  CompleteEvent(
-    model: String,
-    message: Message,
-    total_iterations: Int,
-  )
+  CompleteEvent(model: String, message: Message, total_iterations: Int)
 }
 
 /// Fired when a session starts (after replay if applicable).
@@ -181,18 +163,12 @@ pub fn on_tool_result(
 }
 
 /// Sets the error handler.
-pub fn on_error(
-  h: Hooks,
-  handler: fn(ErrorEvent) -> Nil,
-) -> Hooks {
+pub fn on_error(h: Hooks, handler: fn(ErrorEvent) -> Nil) -> Hooks {
   Hooks(..h, on_error: handler)
 }
 
 /// Sets the complete handler.
-pub fn on_complete(
-  h: Hooks,
-  handler: fn(CompleteEvent) -> Nil,
-) -> Hooks {
+pub fn on_complete(h: Hooks, handler: fn(CompleteEvent) -> Nil) -> Hooks {
   Hooks(..h, on_complete: handler)
 }
 
@@ -240,19 +216,13 @@ pub type ToolCallDecision {
 /// Decision from tool_result hooks. Carries attribution for observability.
 pub type ToolResultDecision {
   ResultUnchanged(original_event: ToolResultEvent)
-  ResultTransformed(
-    final_event: ToolResultEvent,
-    transformers: List(String),
-  )
+  ResultTransformed(final_event: ToolResultEvent, transformers: List(String))
 }
 
 /// Decision from before_inference hooks. Carries attribution for observability.
 pub type MessagesDecision {
   MessagesUnchanged(original: List(Message))
-  MessagesReplaced(
-    final_messages: List(Message),
-    transformers: List(String),
-  )
+  MessagesReplaced(final_messages: List(Message), transformers: List(String))
 }
 
 // ── Decision Composition Functions ──────────────────────────────────
@@ -293,17 +263,16 @@ pub fn decide_tool_result(
       let action = h.on_tool_result(ev)
       case action {
         KeepResult -> #(ev, names)
-        ReplaceResult(content, is_error) ->
-          #(
-            ToolResultEvent(
-              tool_name: ev.tool_name,
-              tool_call_id: ev.tool_call_id,
-              result: content,
-              is_error: is_error,
-              duration_ms: ev.duration_ms,
-            ),
-            list.append(names, [h.name]),
-          )
+        ReplaceResult(content, is_error) -> #(
+          ToolResultEvent(
+            tool_name: ev.tool_name,
+            tool_call_id: ev.tool_call_id,
+            result: content,
+            is_error: is_error,
+            duration_ms: ev.duration_ms,
+          ),
+          list.append(names, [h.name]),
+        )
       }
     })
   case transformers {
@@ -324,11 +293,10 @@ pub fn decide_messages(
       let action = h.on_before_inference(ev)
       case action {
         KeepMessages -> #(ev, names)
-        ReplaceMessages(messages) ->
-          #(
-            BeforeInferenceEvent(model: ev.model, messages:),
-            list.append(names, [h.name]),
-          )
+        ReplaceMessages(messages) -> #(
+          BeforeInferenceEvent(model: ev.model, messages:),
+          list.append(names, [h.name]),
+        )
       }
     })
   case transformers {
@@ -344,31 +312,19 @@ pub fn notify_after_inference(
   hooks_list: List(Hooks),
   event: AfterInferenceEvent,
 ) -> Nil {
-  let _ = list.map(hooks_list, fn(h) {
-    h.on_after_inference(event)
-  })
+  let _ = list.map(hooks_list, fn(h) { h.on_after_inference(event) })
   Nil
 }
 
 /// Run all error handlers (fire-and-forget).
-pub fn notify_error(
-  hooks_list: List(Hooks),
-  event: ErrorEvent,
-) -> Nil {
-  let _ = list.map(hooks_list, fn(h) {
-    h.on_error(event)
-  })
+pub fn notify_error(hooks_list: List(Hooks), event: ErrorEvent) -> Nil {
+  let _ = list.map(hooks_list, fn(h) { h.on_error(event) })
   Nil
 }
 
 /// Run all complete handlers (fire-and-forget).
-pub fn notify_complete(
-  hooks_list: List(Hooks),
-  event: CompleteEvent,
-) -> Nil {
-  let _ = list.map(hooks_list, fn(h) {
-    h.on_complete(event)
-  })
+pub fn notify_complete(hooks_list: List(Hooks), event: CompleteEvent) -> Nil {
+  let _ = list.map(hooks_list, fn(h) { h.on_complete(event) })
   Nil
 }
 
@@ -377,9 +333,7 @@ pub fn notify_session_start(
   hooks_list: List(Hooks),
   event: SessionStartEvent,
 ) -> Nil {
-  let _ = list.map(hooks_list, fn(h) {
-    h.on_session_start(event)
-  })
+  let _ = list.map(hooks_list, fn(h) { h.on_session_start(event) })
   Nil
 }
 
@@ -388,8 +342,6 @@ pub fn notify_session_shutdown(
   hooks_list: List(Hooks),
   event: SessionShutdownEvent,
 ) -> Nil {
-  let _ = list.map(hooks_list, fn(h) {
-    h.on_session_shutdown(event)
-  })
+  let _ = list.map(hooks_list, fn(h) { h.on_session_shutdown(event) })
   Nil
 }

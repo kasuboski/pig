@@ -5,17 +5,29 @@
 ////   - `record()` — fire-and-forget, never blocks the agent.
 ////   - `record_sync()` — synchronous call, blocks until written. For testing.
 
-import gleam/erlang/process.{type Subject, type Name}
+import gleam/dynamic/decode as dynamic_decode
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
 import gleam/string
-import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
-import pig/ai/message.{type Message, type Thinking, type ToolCall, User, System, Assistant, Tool, Thinking, ToolCall}
-import pig/obs/events.{type SessionEndReason, type SessionEvent, type HookPoint, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted, SessionStarted, InferenceStarted, InferenceCompleted, ToolStarted, ToolExecuted, ToolBlocked, HookActed, InferenceFailed, SessionEnded, BeforeToolCall, AfterToolCall, BeforeInference, AfterInference, OnError, OnComplete, OnSessionStart, OnSessionShutdown}
-import gleam/dynamic/decode as dynamic_decode
+import pig/ai/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
+import pig/ai/message.{
+  type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
+  ToolCall, User,
+}
+import pig/obs/events.{
+  type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
+  AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
+  InferenceCompleted, InferenceFailed, InferenceStarted, Interrupted,
+  MaxIterationsExceeded, NormalEnd, OnComplete, OnError, OnSessionShutdown,
+  OnSessionStart, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
+  ToolStarted,
+}
 import simplifile
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
@@ -112,9 +124,7 @@ pub fn replay(path: String) -> Result(List(Message), ReplayError) {
 }
 
 /// Replay from a list of JSONL lines.
-fn replay_lines(
-  lines: List(String),
-) -> Result(List(Message), ReplayError) {
+fn replay_lines(lines: List(String)) -> Result(List(Message), ReplayError) {
   // Find the last InferenceCompleted event
   let last_inference = find_last_inference_completed(lines)
   case last_inference {
@@ -185,26 +195,20 @@ fn parse_inference_messages(
 
   case json.parse(from: line, using: input_decoder) {
     Ok(input_msgs) -> {
-      let msg_decoder =
-        dynamic_decode.at(["message"], decode_message())
+      let msg_decoder = dynamic_decode.at(["message"], decode_message())
       case json.parse(from: line, using: msg_decoder) {
-        Ok(response_msg) ->
-          Ok(list.append(input_msgs, [response_msg]))
-        Error(_) ->
-          Error(ParseError("Failed to parse message: " <> line))
+        Ok(response_msg) -> Ok(list.append(input_msgs, [response_msg]))
+        Error(_) -> Error(ParseError("Failed to parse message: " <> line))
       }
     }
-    Error(_) ->
-      Error(ParseError("Failed to parse input_messages: " <> line))
+    Error(_) -> Error(ParseError("Failed to parse input_messages: " <> line))
   }
 }
 
 /// Parse a Tool message from a ToolExecuted JSON line.
 fn parse_tool_message(line: String) -> Result(Message, Nil) {
-  let id_decoder =
-    dynamic_decode.at(["tool_call", "id"], dynamic_decode.string)
-  let result_decoder =
-    dynamic_decode.at(["result"], dynamic_decode.string)
+  let id_decoder = dynamic_decode.at(["tool_call", "id"], dynamic_decode.string)
+  let result_decoder = dynamic_decode.at(["result"], dynamic_decode.string)
 
   case json.parse(from: line, using: id_decoder) {
     Ok(id) -> {
@@ -219,18 +223,22 @@ fn parse_tool_message(line: String) -> Result(Message, Nil) {
 
 /// Parse a Tool message from a ToolBlocked JSON line.
 fn parse_blocked_tool_message(line: String) -> Result(Message, Nil) {
-  let id_decoder =
-    dynamic_decode.at(["tool_call", "id"], dynamic_decode.string)
+  let id_decoder = dynamic_decode.at(["tool_call", "id"], dynamic_decode.string)
   let hook_name_decoder =
     dynamic_decode.at(["hook_name"], dynamic_decode.string)
-  let reason_decoder =
-    dynamic_decode.at(["reason"], dynamic_decode.string)
+  let reason_decoder = dynamic_decode.at(["reason"], dynamic_decode.string)
 
   case json.parse(from: line, using: id_decoder) {
     Ok(id) -> {
-      case json.parse(from: line, using: hook_name_decoder), json.parse(from: line, using: reason_decoder) {
+      case
+        json.parse(from: line, using: hook_name_decoder),
+        json.parse(from: line, using: reason_decoder)
+      {
         Ok(hook_name), Ok(reason) ->
-          Ok(Tool(tool_call_id: id, content: "Tool blocked by '" <> hook_name <> "': " <> reason))
+          Ok(Tool(
+            tool_call_id: id,
+            content: "Tool blocked by '" <> hook_name <> "': " <> reason,
+          ))
         _, _ -> Error(Nil)
       }
     }
@@ -251,7 +259,10 @@ pub fn decode_message() -> dynamic_decode.Decoder(Message) {
       dynamic_decode.success(System(content:))
     }
     "tool" -> {
-      use tool_call_id <- dynamic_decode.field("tool_call_id", dynamic_decode.string)
+      use tool_call_id <- dynamic_decode.field(
+        "tool_call_id",
+        dynamic_decode.string,
+      )
       use content <- dynamic_decode.field("content", dynamic_decode.string)
       dynamic_decode.success(Tool(tool_call_id:, content:))
     }
@@ -286,10 +297,7 @@ fn decode_thinking() -> dynamic_decode.Decoder(option.Option(Thinking)) {
 pub fn decode_tool_call() -> dynamic_decode.Decoder(ToolCall) {
   use id <- dynamic_decode.field("id", dynamic_decode.string)
   use name <- dynamic_decode.field("name", dynamic_decode.string)
-  use arguments_json <- dynamic_decode.field(
-    "arguments",
-    dynamic_decode.string,
-  )
+  use arguments_json <- dynamic_decode.field("arguments", dynamic_decode.string)
   dynamic_decode.success(ToolCall(id:, name:, arguments_json:))
 }
 
@@ -297,7 +305,9 @@ pub fn decode_tool_call() -> dynamic_decode.Decoder(ToolCall) {
 /// Used by the dispatcher to fan out events. Returns the Subject for registration.
 /// This is the consumer version of the actor — it receives SessionEvent directly,
 /// not WriterMessage wrappers. Fire-and-forget: does not block.
-pub fn start_consumer(path: String) -> Result(Subject(SessionEvent), StartError) {
+pub fn start_consumer(
+  path: String,
+) -> Result(Subject(SessionEvent), StartError) {
   let builder =
     actor.new(State(path: path))
     |> actor.on_message(handle_consumer_message)
@@ -337,32 +347,29 @@ pub fn format_event(event: SessionEvent) -> String {
       provider_name:,
       system_prompt:,
     ) -> {
-      let fields =
-        [
-          #("ts", json.string(ts)),
-          #("event", json.string("session_started")),
-          #("model", json.string(model)),
-        ]
-      let with_agent_id =
-        case agent_id {
-          Some(v) -> list.append(fields, [#("agent_id", json.string(v))])
-          None -> fields
-        }
-      let with_agent_name =
-        case agent_name {
-          Some(v) -> list.append(with_agent_id, [#("agent_name", json.string(v))])
-          None -> with_agent_id
-        }
-      let with_provider =
-        case provider_name {
-          Some(v) -> list.append(with_agent_name, [#("provider_name", json.string(v))])
-          None -> with_agent_name
-        }
-      let with_system =
-        case system_prompt {
-          Some(v) -> list.append(with_provider, [#("system_prompt", json.string(v))])
-          None -> with_provider
-        }
+      let fields = [
+        #("ts", json.string(ts)),
+        #("event", json.string("session_started")),
+        #("model", json.string(model)),
+      ]
+      let with_agent_id = case agent_id {
+        Some(v) -> list.append(fields, [#("agent_id", json.string(v))])
+        None -> fields
+      }
+      let with_agent_name = case agent_name {
+        Some(v) -> list.append(with_agent_id, [#("agent_name", json.string(v))])
+        None -> with_agent_id
+      }
+      let with_provider = case provider_name {
+        Some(v) ->
+          list.append(with_agent_name, [#("provider_name", json.string(v))])
+        None -> with_agent_name
+      }
+      let with_system = case system_prompt {
+        Some(v) ->
+          list.append(with_provider, [#("system_prompt", json.string(v))])
+        None -> with_provider
+      }
 
       json.object(with_system) |> json.to_string()
     }
@@ -387,39 +394,37 @@ pub fn format_event(event: SessionEvent) -> String {
       duration_ms:,
       input_messages:,
     ) -> {
-      let fields =
-        [
-          #("ts", json.string(ts)),
-          #("event", json.string("inference_completed")),
-          #("duration_ms", json.int(duration_ms)),
-          #("message", message_to_json(message)),
-          #("input_messages", json.array(input_messages, message_to_json)),
-        ]
-      let with_response_id =
-        case response_id {
-          Some(v) -> list.append(fields, [#("response_id", json.string(v))])
-          None -> fields
-        }
-      let with_response_model =
-        case response_model {
-          Some(v) -> list.append(with_response_id, [#("response_model", json.string(v))])
-          None -> with_response_id
-        }
-      let with_finish_reason =
-        case finish_reason {
-          Some(v) -> list.append(with_response_model, [#("finish_reason", json.string(v))])
-          None -> with_response_model
-        }
-      let with_input_tokens =
-        case input_tokens {
-          Some(v) -> list.append(with_finish_reason, [#("input_tokens", json.int(v))])
-          None -> with_finish_reason
-        }
-      let with_output_tokens =
-        case output_tokens {
-          Some(v) -> list.append(with_input_tokens, [#("output_tokens", json.int(v))])
-          None -> with_input_tokens
-        }
+      let fields = [
+        #("ts", json.string(ts)),
+        #("event", json.string("inference_completed")),
+        #("duration_ms", json.int(duration_ms)),
+        #("message", message_to_json(message)),
+        #("input_messages", json.array(input_messages, message_to_json)),
+      ]
+      let with_response_id = case response_id {
+        Some(v) -> list.append(fields, [#("response_id", json.string(v))])
+        None -> fields
+      }
+      let with_response_model = case response_model {
+        Some(v) ->
+          list.append(with_response_id, [#("response_model", json.string(v))])
+        None -> with_response_id
+      }
+      let with_finish_reason = case finish_reason {
+        Some(v) ->
+          list.append(with_response_model, [#("finish_reason", json.string(v))])
+        None -> with_response_model
+      }
+      let with_input_tokens = case input_tokens {
+        Some(v) ->
+          list.append(with_finish_reason, [#("input_tokens", json.int(v))])
+        None -> with_finish_reason
+      }
+      let with_output_tokens = case output_tokens {
+        Some(v) ->
+          list.append(with_input_tokens, [#("output_tokens", json.int(v))])
+        None -> with_input_tokens
+      }
 
       json.object(with_output_tokens) |> json.to_string()
     }
@@ -461,10 +466,13 @@ pub fn format_event(event: SessionEvent) -> String {
         #("event", json.string("hook_acted")),
         #("hook_name", json.string(hook_name)),
         #("hook_point", json.string(hook_to_string(hook_point))),
-        #("action", json.object([
-          #("action_type", json.string(action.action_type)),
-          #("description", json.string(action.description)),
-        ])),
+        #(
+          "action",
+          json.object([
+            #("action_type", json.string(action.action_type)),
+            #("description", json.string(action.description)),
+          ]),
+        ),
       ])
       |> json.to_string()
     }
@@ -517,7 +525,10 @@ fn handle_message(
 
 /// Handle consumer messages (SessionEvent directly, not wrapped in WriterMessage).
 /// Used by the supervised consumer actor that receives events from the dispatcher.
-fn handle_consumer_message(state: State, event: SessionEvent) -> actor.Next(State, SessionEvent) {
+fn handle_consumer_message(
+  state: State,
+  event: SessionEvent,
+) -> actor.Next(State, SessionEvent) {
   let json_str = format_event(event)
   case simplifile.append(state.path, json_str <> "\n") {
     Ok(_) -> actor.continue(state)
@@ -546,25 +557,23 @@ fn message_to_json(msg: Message) -> json.Json {
       ])
     }
     Assistant(content:, tool_calls:, thinking:) -> {
-      let base_fields =
-        [
-          #("role", json.string("assistant")),
-          #("content", json.string(content)),
-          #("tool_calls", json.array(tool_calls, tool_call_to_json)),
-        ]
-      let fields =
-        case thinking {
-          Some(t) -> {
-            case t {
-              Thinking(content:) -> {
-                list.append(base_fields, [
-                  #("thinking", json.object([#("content", json.string(content))]))
-                ])
-              }
+      let base_fields = [
+        #("role", json.string("assistant")),
+        #("content", json.string(content)),
+        #("tool_calls", json.array(tool_calls, tool_call_to_json)),
+      ]
+      let fields = case thinking {
+        Some(t) -> {
+          case t {
+            Thinking(content:) -> {
+              list.append(base_fields, [
+                #("thinking", json.object([#("content", json.string(content))])),
+              ])
             }
           }
-          None -> base_fields
         }
+        None -> base_fields
+      }
 
       json.object(fields)
     }
@@ -615,7 +624,10 @@ fn reason_to_json(reason: SessionEndReason) -> json.Json {
       json.object([#("type", json.string("normal_end"))])
     }
     ErrorEnd(e) -> {
-      json.object([#("type", json.string("error")), #("error", error_to_json(e))])
+      json.object([
+        #("type", json.string("error")),
+        #("error", error_to_json(e)),
+      ])
     }
     MaxIterationsExceeded(n) -> {
       json.object([

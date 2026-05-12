@@ -17,9 +17,7 @@ fn ffi_attach(event_names: List(List(String))) -> ListenerHandle
 fn ffi_get_captured_names(handle: ListenerHandle) -> List(List(String))
 
 @external(erlang, "pig_obs_ffi", "get_captured_events")
-fn ffi_get_captured_events(
-  handle: ListenerHandle,
-) -> List(RawCapturedEvent)
+fn ffi_get_captured_events(handle: ListenerHandle) -> List(RawCapturedEvent)
 
 @external(erlang, "pig_obs_ffi", "get_captured_count")
 fn ffi_get_captured_count(handle: ListenerHandle) -> Int

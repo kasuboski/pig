@@ -1,15 +1,18 @@
 //// Git operations for the code reviewer.
 //// Runs git commands via the shell and writes results into the pig VFS.
 
-import gleam/string
 import code_reviewer/shell
+import gleam/string
 import pig/workspace/vfs
 import sqlight
 
 /// Extract the git diff, selecting a single strategy to avoid overlapping hunks.
 /// If the repo has a `main` branch, returns only the diff against main.
 /// Otherwise falls back to unstaged + staged combined diff.
-pub fn get_diff(conn: sqlight.Connection, repo_path: String) -> Result(String, String) {
+pub fn get_diff(
+  conn: sqlight.Connection,
+  repo_path: String,
+) -> Result(String, String) {
   // Create /diffs directory
   let _ = vfs.mkdir(conn, "/diffs")
 
@@ -37,8 +40,7 @@ pub fn get_diff(conn: sqlight.Connection, repo_path: String) -> Result(String, S
 
   let trimmed = string.trim(diff)
   case trimmed {
-    "" ->
-      Error("No diff found. Make sure you have changes or a main branch.")
+    "" -> Error("No diff found. Make sure you have changes or a main branch.")
     _ -> {
       let _ = vfs.write_file(conn, "/diffs/full.diff", trimmed)
       Ok(trimmed)
@@ -61,16 +63,16 @@ pub fn get_diff_stat(
 
   let stat = case vs_main {
     "" -> {
-      let unstaged =
-        case shell.run("git diff --stat 2>/dev/null", repo_path) {
-          Ok(o) -> string.trim(o)
-          Error(_) -> ""
-        }
-      let staged =
-        case shell.run("git diff --cached --stat 2>/dev/null", repo_path) {
-          Ok(o) -> string.trim(o)
-          Error(_) -> ""
-        }
+      let unstaged = case shell.run("git diff --stat 2>/dev/null", repo_path) {
+        Ok(o) -> string.trim(o)
+        Error(_) -> ""
+      }
+      let staged = case
+        shell.run("git diff --cached --stat 2>/dev/null", repo_path)
+      {
+        Ok(o) -> string.trim(o)
+        Error(_) -> ""
+      }
       unstaged <> "\n" <> staged
     }
     s -> s

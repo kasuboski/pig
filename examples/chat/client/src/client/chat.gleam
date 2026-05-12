@@ -17,7 +17,10 @@ import plinth/browser/document
 import plinth/browser/element as plinth_element
 
 import client/agents
-import shared.{type AgentId, type AgentInfo, AgentInfo, type ChatMessage, type ClientMessage, type ServerMessage}
+import shared.{
+  type AgentId, type AgentInfo, type ChatMessage, type ClientMessage,
+  type ServerMessage, AgentInfo,
+}
 
 // MAIN ------------------------------------------------------------------------
 
@@ -126,11 +129,18 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
       case model.current_agent {
         None -> #(model, effect.none())
         Some(agent_id) -> {
-          let chat_msg = shared.new_chat_msg(model.draft_content, shared.Sending)
+          let chat_msg =
+            shared.new_chat_msg(model.draft_content, shared.Sending)
           #(
-            Model(..model, draft_content: "", messages: dict.insert(model.messages, chat_msg.id, chat_msg)),
+            Model(
+              ..model,
+              draft_content: "",
+              messages: dict.insert(model.messages, chat_msg.id, chat_msg),
+            ),
             effect.from(fn(dispatch) {
-              dispatch(ClientMessage(shared.UserSendChatMessage(agent_id, chat_msg)))
+              dispatch(
+                ClientMessage(shared.UserSendChatMessage(agent_id, chat_msg)),
+              )
               dispatch(UserScrollToLatest)
             }),
           )
@@ -152,7 +162,9 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
       let messages =
         model.messages
         // Omnimessage shines when you're OK with server being source of truth
-        |> dict.merge(dict.from_list(server_messages |> list.map(fn(m) { #(m.id, m) })))
+        |> dict.merge(dict.from_list(
+          server_messages |> list.map(fn(m) { #(m.id, m) }),
+        ))
 
       #(Model(..model, messages:), effect.none())
     }
@@ -211,10 +223,8 @@ fn chat_message_element(chat_msg: ChatMessage) {
   }
 
   let bubble_class = case chat_msg.is_ai {
-    True ->
-      "bg-gray-200 text-gray-800 rounded-2xl rounded-tl-sm"
-    False ->
-      "bg-blue-600 text-white rounded-2xl rounded-tr-sm"
+    True -> "bg-gray-200 text-gray-800 rounded-2xl rounded-tl-sm"
+    False -> "bg-blue-600 text-white rounded-2xl rounded-tr-sm"
   }
 
   let status_indicator = case chat_msg.status {
@@ -228,14 +238,12 @@ fn chat_message_element(chat_msg: ChatMessage) {
   |> attribute.class("flex w-full " <> alignment)
   |> element.children([
     html.div()
-      |> attribute.class(
-        "max-w-[80%] p-3 " <> bubble_class,
-      )
-      |> element.children([
-        html.p()
-          |> attribute.class("break-words")
-          |> element.text_content(chat_msg.content <> status_indicator),
-      ]),
+    |> attribute.class("max-w-[80%] p-3 " <> bubble_class)
+    |> element.children([
+      html.p()
+      |> attribute.class("break-words")
+      |> element.text_content(chat_msg.content <> status_indicator),
+    ]),
   ])
 }
 
@@ -251,11 +259,11 @@ fn view(model: Model) -> element.Element(Msg) {
       |> attribute.class("h-full w-full bg-gray-50")
       |> element.children([
         agents.agent_selection_view(model.agents)
-          |> element.map(fn(msg) {
-            case msg {
-              agents.UserSelectAgent(agent_id) -> UserSelectAgent(agent_id)
-            }
-          }),
+        |> element.map(fn(msg) {
+          case msg {
+            agents.UserSelectAgent(agent_id) -> UserSelectAgent(agent_id)
+          }
+        }),
       ])
     }
     Some(agent_id) -> {
@@ -274,7 +282,9 @@ fn view(model: Model) -> element.Element(Msg) {
       |> element.children([
         // Header with back button
         html.div()
-          |> attribute.class("flex items-center gap-3 p-4 bg-white border-b border-gray-200 shadow-sm")
+          |> attribute.class(
+            "flex items-center gap-3 p-4 bg-white border-b border-gray-200 shadow-sm",
+          )
           |> element.children([
             html.button()
               |> attribute.class(
@@ -283,20 +293,18 @@ fn view(model: Model) -> element.Element(Msg) {
               |> event.on_click(UserGoBack)
               |> element.children([
                 html.span()
-                  |> attribute.class("text-xl")
-                  |> element.text_content("←"),
+                |> attribute.class("text-xl")
+                |> element.text_content("←"),
               ]),
             html.div()
               |> attribute.class("flex items-center gap-2")
               |> element.children([
                 html.div()
                   |> attribute.class("w-2 h-2 rounded-full")
-                  |> attribute.class(
-                    case model.connected {
-                      True -> "bg-green-500"
-                      False -> "bg-red-500"
-                    },
-                  )
+                  |> attribute.class(case model.connected {
+                    True -> "bg-green-500"
+                    False -> "bg-red-500"
+                  })
                   |> element.empty(),
                 html.h1()
                   |> attribute.class("text-lg font-semibold text-gray-800")
@@ -306,9 +314,7 @@ fn view(model: Model) -> element.Element(Msg) {
         // Messages container
         html.div()
           |> attribute.id(msgs_container_id)
-          |> attribute.class(
-            "flex-1 overflow-y-auto p-4 space-y-3",
-          )
+          |> attribute.class("flex-1 overflow-y-auto p-4 space-y-3")
           |> element.keyed({
             use chat_msg <- list.map(sorted_chat_msgs)
             #(chat_msg.id, chat_message_element(chat_msg))
@@ -329,7 +335,10 @@ fn view(model: Model) -> element.Element(Msg) {
               |> element.empty(),
             html.button()
               |> attribute.type_("submit")
-              |> attribute.disabled(string.trim(model.draft_content) == "" || model.connected == False)
+              |> attribute.disabled(
+                string.trim(model.draft_content) == ""
+                || model.connected == False,
+              )
               |> attribute.class(
                 "px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed",
               )

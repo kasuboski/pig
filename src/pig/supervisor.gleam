@@ -3,15 +3,12 @@
 //// The easy path: `start_supervised(config)` gives you an agent
 //// managed by a OneForOne supervisor. Advanced users can still
 //// use `pig.start(config)` for standalone agents.
-////
-
 
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
-import gleam/option
 import gleam/otp/actor as otp_actor
 import gleam/otp/static_supervisor
-import pig/agent/actor
+import pig/agent/runtime
 import pig/agent/state
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
@@ -24,10 +21,7 @@ import pig/obs/dispatcher
 /// Use `run`/`run_with_timeout` to send prompts, `stop` to
 /// tear down the supervision tree.
 pub type SupervisedAgent {
-  SupervisedAgent(
-    subject: Subject(actor.AgentMessage),
-    sup_pid: Pid,
-  )
+  SupervisedAgent(subject: Subject(runtime.RuntimeMsg), sup_pid: Pid)
 }
 
 /// Start a supervised agent from an AgentConfig and consumer specs.
@@ -45,16 +39,9 @@ pub fn start_supervised(
   let dispatcher_name = process.new_name("pig_event_dispatcher")
   let agent_name = process.new_name("pig_agent")
 
-  // Wire dispatcher name into agent config
-  let agent_config = state.AgentConfig(
-    ..agent_config,
-    dispatcher_name: option.Some(dispatcher_name),
-  )
-
   // Build event subtree: dispatcher + consumers
   // OneForAll ensures that if the dispatcher restarts, consumers restart too
-  // and re-register via their init logic. With OneForOne, a dispatcher restart
-  // would leave consumers alive but unregistered (silent event loss).
+  // and re-register via their init logic.
   let event_tree =
     static_supervisor.new(static_supervisor.OneForAll)
     |> static_supervisor.add(dispatcher.supervised(dispatcher_name))
@@ -66,7 +53,11 @@ pub fn start_supervised(
   let app_tree =
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(static_supervisor.supervised(event_tree))
-    |> static_supervisor.add(actor.supervised(agent_config, agent_name))
+    |> static_supervisor.add(runtime.supervised(
+      agent_config,
+      dispatcher_name,
+      agent_name,
+    ))
 
   case static_supervisor.start(app_tree) {
     Ok(started) -> {
@@ -89,10 +80,7 @@ pub fn start_supervised(
 }
 
 /// Run a prompt against the supervised agent with a 30-second timeout.
-pub fn run(
-  sup: SupervisedAgent,
-  prompt: String,
-) -> Result(Message, AiError) {
+pub fn run(sup: SupervisedAgent, prompt: String) -> Result(Message, AiError) {
   run_with_timeout(sup, prompt, 30_000)
 }
 
@@ -102,7 +90,7 @@ pub fn run_with_timeout(
   prompt: String,
   timeout_ms: Int,
 ) -> Result(Message, AiError) {
-  actor.run(sup.subject, prompt, timeout_ms)
+  runtime.run(sup.subject, prompt, timeout_ms)
 }
 
 /// Stop the supervised agent.

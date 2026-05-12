@@ -4,25 +4,24 @@
 //// Actor tests use `record_sync` for deterministic writes — no sleep hacks.
 //// Per TESTING_STRATEGY §pig/obs: "Do not use sleep() or timeout hacks."
 
+import gleam/dynamic/decode as dynamic_decode
+import gleam/erlang/process
+import gleam/json
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
 import gleeunit
 import gleeunit/should
-import gleam/dynamic/decode as dynamic_decode
-import gleam/json
-import gleam/result
-import gleam/list
-import gleam/option.{Some, None}
-import gleam/string
-import gleam/erlang/process
 import pig/ai/error.{ApiError}
-import pig/ai/message.{User, Assistant, ToolCall}
+import pig/ai/message.{Assistant, ToolCall, User}
+import pig/obs/dispatcher
 import pig/obs/events.{
-  SessionStarted, InferenceCompleted, ToolExecuted, InferenceFailed,
-  SessionEnded, NormalEnd, MaxIterationsExceeded,
-  InferenceStarted, ToolStarted, ToolBlocked, HookActed,
-  BeforeToolCall, HookActionDetail,
+  BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
+  InferenceFailed, InferenceStarted, MaxIterationsExceeded, NormalEnd,
+  SessionEnded, SessionStarted, ToolBlocked, ToolExecuted, ToolStarted,
 }
 import pig/obs/session
-import pig/obs/dispatcher
 import simplifile
 import temporary
 
@@ -49,10 +48,7 @@ fn read_jsonl_lines(path: String) -> List(String) {
 }
 
 /// Run a test with a temporary file. Auto-cleaned after the callback returns.
-fn with_temp_file(
-  name: String,
-  run test_fn: fn(String) -> a,
-) -> a {
+fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
   let tmp =
     temporary.file()
     |> temporary.with_prefix("pig_session_" <> name <> "_")
@@ -88,7 +84,10 @@ pub fn format_session_started_produces_valid_json_with_fields_test() {
 
   // Decode the "agent_name" field
   let name_decoder =
-    dynamic_decode.at(["agent_name"], dynamic_decode.optional(dynamic_decode.string))
+    dynamic_decode.at(
+      ["agent_name"],
+      dynamic_decode.optional(dynamic_decode.string),
+    )
   let assert Ok(Some("Math Tutor")) =
     json.parse(from: json_str, using: name_decoder)
     |> result.map_error(fn(_) { Nil })
@@ -158,13 +157,9 @@ pub fn format_inference_completed_includes_fields_test() {
 }
 
 pub fn format_tool_executed_includes_fields_test() {
-  let tool_call = ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
-  let event =
-    ToolExecuted(
-      tool_call: tool_call,
-      result: "4",
-      duration_ms: 3,
-    )
+  let tool_call =
+    ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
+  let event = ToolExecuted(tool_call: tool_call, result: "4", duration_ms: 3)
 
   let json_str = session.format_event(event)
 
@@ -186,7 +181,8 @@ pub fn format_tool_executed_includes_fields_test() {
     json.parse(from: json_str, using: decoder)
     |> result.map_error(fn(_) { Nil })
 
-  let decoder = dynamic_decode.at(["tool_call", "arguments"], dynamic_decode.string)
+  let decoder =
+    dynamic_decode.at(["tool_call", "arguments"], dynamic_decode.string)
   let assert Ok("{\"expr\":\"2+2\"}") =
     json.parse(from: json_str, using: decoder)
     |> result.map_error(fn(_) { Nil })
@@ -243,8 +239,7 @@ pub fn format_session_ended_max_iterations_test() {
   decode_event_type(json_str)
   |> should.equal("session_ended")
 
-  let decoder =
-    dynamic_decode.at(["reason", "type"], dynamic_decode.string)
+  let decoder = dynamic_decode.at(["reason", "type"], dynamic_decode.string)
   let assert Ok("max_iterations_exceeded") =
     json.parse(from: json_str, using: decoder)
     |> result.map_error(fn(_) { Nil })
@@ -391,7 +386,8 @@ pub fn format_inference_started_produces_valid_json_test() {
 }
 
 pub fn format_tool_started_produces_valid_json_test() {
-  let tool_call = ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
+  let tool_call =
+    ToolCall(id: "c1", name: "calculator", arguments_json: "{\"expr\":\"2+2\"}")
   let event = ToolStarted(tool_call: tool_call)
 
   let json_str = session.format_event(event)
@@ -401,7 +397,8 @@ pub fn format_tool_started_produces_valid_json_test() {
   |> should.equal("tool_started")
 
   // Decode the tool_call fields
-  let name_decoder = dynamic_decode.at(["tool_call", "name"], dynamic_decode.string)
+  let name_decoder =
+    dynamic_decode.at(["tool_call", "name"], dynamic_decode.string)
   let assert Ok("calculator") =
     json.parse(from: json_str, using: name_decoder)
     |> result.map_error(fn(_) { Nil })
@@ -411,14 +408,20 @@ pub fn format_tool_started_produces_valid_json_test() {
     json.parse(from: json_str, using: id_decoder)
     |> result.map_error(fn(_) { Nil })
 
-  let args_decoder = dynamic_decode.at(["tool_call", "arguments"], dynamic_decode.string)
+  let args_decoder =
+    dynamic_decode.at(["tool_call", "arguments"], dynamic_decode.string)
   let assert Ok("{\"expr\":\"2+2\"}") =
     json.parse(from: json_str, using: args_decoder)
     |> result.map_error(fn(_) { Nil })
 }
 
 pub fn format_tool_blocked_produces_valid_json_test() {
-  let tool_call = ToolCall(id: "c2", name: "risky_tool", arguments_json: "{\"cmd\":\"rm -rf\"}")
+  let tool_call =
+    ToolCall(
+      id: "c2",
+      name: "risky_tool",
+      arguments_json: "{\"cmd\":\"rm -rf\"}",
+    )
   let event =
     ToolBlocked(
       tool_call: tool_call,
@@ -433,7 +436,8 @@ pub fn format_tool_blocked_produces_valid_json_test() {
   |> should.equal("tool_blocked")
 
   // Decode the tool_call fields
-  let name_decoder = dynamic_decode.at(["tool_call", "name"], dynamic_decode.string)
+  let name_decoder =
+    dynamic_decode.at(["tool_call", "name"], dynamic_decode.string)
   let assert Ok("risky_tool") =
     json.parse(from: json_str, using: name_decoder)
     |> result.map_error(fn(_) { Nil })
@@ -471,24 +475,28 @@ pub fn format_hook_acted_produces_valid_json_test() {
   |> should.equal("hook_acted")
 
   // Decode hook_name
-  let hook_name_decoder = dynamic_decode.at(["hook_name"], dynamic_decode.string)
+  let hook_name_decoder =
+    dynamic_decode.at(["hook_name"], dynamic_decode.string)
   let assert Ok("safety_guard") =
     json.parse(from: json_str, using: hook_name_decoder)
     |> result.map_error(fn(_) { Nil })
 
   // Decode hook_point
-  let hook_point_decoder = dynamic_decode.at(["hook_point"], dynamic_decode.string)
+  let hook_point_decoder =
+    dynamic_decode.at(["hook_point"], dynamic_decode.string)
   let assert Ok("before_tool_call") =
     json.parse(from: json_str, using: hook_point_decoder)
     |> result.map_error(fn(_) { Nil })
 
   // Decode action fields
-  let action_type_decoder = dynamic_decode.at(["action", "action_type"], dynamic_decode.string)
+  let action_type_decoder =
+    dynamic_decode.at(["action", "action_type"], dynamic_decode.string)
   let assert Ok("modify_args") =
     json.parse(from: json_str, using: action_type_decoder)
     |> result.map_error(fn(_) { Nil })
 
-  let description_decoder = dynamic_decode.at(["action", "description"], dynamic_decode.string)
+  let description_decoder =
+    dynamic_decode.at(["action", "description"], dynamic_decode.string)
   let assert Ok("Changed expression format") =
     json.parse(from: json_str, using: description_decoder)
     |> result.map_error(fn(_) { Nil })
@@ -515,15 +523,15 @@ pub fn session_supervised_creates_spec_test() {
 pub fn session_consumer_receives_events_via_dispatcher_test() {
   use path <- with_temp_file("dispatcher_consumer")
   let assert Ok(disp) = dispatcher.start()
-  
+
   // Start a test consumer as sync mechanism
   let sync_consumer = process.new_subject()
   process.send(disp, dispatcher.RegisterConsumer(sync_consumer))
-  
+
   // Start session consumer actor with the consumer handler
   let assert Ok(session_consumer) = session.start_consumer(path)
   process.send(disp, dispatcher.RegisterConsumer(session_consumer))
-  
+
   // Send events through dispatcher and verify sync consumer receives them
   // This confirms the dispatcher is processing messages and sending to consumers
   let event1 = InferenceStarted(model: "gpt-4", message_count: 3)
@@ -532,19 +540,20 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
   let assert InferenceStarted(model:, message_count:) = received1
   model |> should.equal("gpt-4")
   message_count |> should.equal(3)
-  
-  let event2 = SessionStarted(
-    agent_id: Some("agent-123"),
-    agent_name: None,
-    model: "gpt-4",
-    provider_name: None,
-    system_prompt: None,
-  )
+
+  let event2 =
+    SessionStarted(
+      agent_id: Some("agent-123"),
+      agent_name: None,
+      model: "gpt-4",
+      provider_name: None,
+      system_prompt: None,
+    )
   process.send(disp, dispatcher.Event(event2))
   let assert Ok(received2) = process.receive(sync_consumer, 2000)
   let assert SessionStarted(model:, ..) = received2
   model |> should.equal("gpt-4")
-  
+
   // Cleanup
   process.send(disp, dispatcher.Stop)
 }
@@ -553,17 +562,17 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 pub fn start_consumer_creates_valid_subject_test() {
   use path <- with_temp_file("consumer_subject")
   let assert Ok(consumer) = session.start_consumer(path)
-  
+
   // Can send an event directly to the subject
   let event = InferenceStarted(model: "gpt-4", message_count: 5)
   process.send(consumer, event)
-  
+
   // Send a second event to ensure first is processed
   let event2 = SessionEnded(NormalEnd)
   process.send(consumer, event2)
-  
+
   // Fire-and-forget doesn't crash
   let _ = process.send(consumer, event)
-  
+
   True
 }

@@ -229,12 +229,18 @@ fn server_message_decoder() -> dyn_decode.Decoder(ServerMessage) {
   case id {
     0 -> {
       use agent_id <- dyn_decode.field(1, dyn_decode.string)
-      use messages <- dyn_decode.field(2, dyn_decode.list(chat_message_decoder()))
+      use messages <- dyn_decode.field(
+        2,
+        dyn_decode.list(chat_message_decoder()),
+      )
       dyn_decode.success(AgentSelected(agent_id, messages))
     }
     1 -> {
       use agent_id <- dyn_decode.field(1, dyn_decode.string)
-      use messages <- dyn_decode.field(2, dyn_decode.list(chat_message_decoder()))
+      use messages <- dyn_decode.field(
+        2,
+        dyn_decode.list(chat_message_decoder()),
+      )
       dyn_decode.success(ServerUpsertChatMessages(agent_id, messages))
     }
     2 -> {

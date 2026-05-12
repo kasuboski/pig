@@ -6,20 +6,9 @@ import gleeunit
 import gleeunit/should
 import pig/ai/message.{ToolCall}
 import pig/obs/events.{
-  HookActionDetail,
-  InferenceStarted,
-  ToolStarted,
-  ToolBlocked,
-  HookActed,
-  BeforeToolCall,
-  AfterToolCall,
-  BeforeInference,
-  AfterInference,
-  OnError,
-  OnComplete,
-  OnSessionStart,
-  OnSessionShutdown,
-  tool_blocked_name,
+  AfterInference, AfterToolCall, BeforeInference, BeforeToolCall, HookActed,
+  HookActionDetail, InferenceStarted, OnComplete, OnError, OnSessionShutdown,
+  OnSessionStart, ToolBlocked, ToolStarted, tool_blocked_name,
 }
 
 pub fn main() {
@@ -75,10 +64,11 @@ pub fn hook_point_variants_construct_test() {
 // ── HookActionDetail Type Tests ───────────────────────────────────
 
 pub fn hook_action_detail_constructs_test() {
-  let detail = HookActionDetail(
-    action_type: "modify_args",
-    description: "Changed expression format",
-  )
+  let detail =
+    HookActionDetail(
+      action_type: "modify_args",
+      description: "Changed expression format",
+    )
 
   detail.action_type
   |> should.equal("modify_args")
@@ -87,19 +77,18 @@ pub fn hook_action_detail_constructs_test() {
   |> should.equal("Changed expression format")
 
   // Verify structural equality
-  let detail2 = HookActionDetail(
-    action_type: "modify_args",
-    description: "Changed expression format",
-  )
+  let detail2 =
+    HookActionDetail(
+      action_type: "modify_args",
+      description: "Changed expression format",
+    )
 
   detail
   |> should.equal(detail2)
 
   // Verify different details are not equal
-  let detail3 = HookActionDetail(
-    action_type: "block",
-    description: "Blocked for safety",
-  )
+  let detail3 =
+    HookActionDetail(action_type: "block", description: "Blocked for safety")
 
   detail
   |> should.not_equal(detail3)
@@ -130,11 +119,12 @@ pub fn inference_started_constructs_test() {
 // ── ToolStarted Variant Tests ─────────────────────────────────────────
 
 pub fn tool_started_constructs_test() {
-  let tool_call = ToolCall(
-    id: "call_123",
-    name: "calculator",
-    arguments_json: "{\"expr\":\"2+2\"}",
-  )
+  let tool_call =
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
 
   let event = ToolStarted(tool_call: tool_call)
 
@@ -148,21 +138,23 @@ pub fn tool_started_constructs_test() {
   |> should.equal("{\"expr\":\"2+2\"}")
 
   // Verify structural equality
-  let tool_call2 = ToolCall(
-    id: "call_123",
-    name: "calculator",
-    arguments_json: "{\"expr\":\"2+2\"}",
-  )
+  let tool_call2 =
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
   let event2 = ToolStarted(tool_call: tool_call2)
   event
   |> should.equal(event2)
 
   // Verify different events are not equal
-  let tool_call3 = ToolCall(
-    id: "call_456",
-    name: "weather",
-    arguments_json: "{\"city\":\"NYC\"}",
-  )
+  let tool_call3 =
+    ToolCall(
+      id: "call_456",
+      name: "weather",
+      arguments_json: "{\"city\":\"NYC\"}",
+    )
   let event3 = ToolStarted(tool_call: tool_call3)
   event
   |> should.not_equal(event3)
@@ -171,11 +163,12 @@ pub fn tool_started_constructs_test() {
 // ── ToolBlocked Variant Tests ─────────────────────────────────────────
 
 pub fn tool_blocked_constructs_test() {
-  let tool_call = ToolCall(
-    id: "call_123",
-    name: "calculator",
-    arguments_json: "{\"expr\":\"2+2\"}",
-  )
+  let tool_call =
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
 
   let event =
     ToolBlocked(
@@ -197,11 +190,12 @@ pub fn tool_blocked_constructs_test() {
   |> should.equal("Expression contains disallowed characters")
 
   // Verify structural equality
-  let tool_call2 = ToolCall(
-    id: "call_123",
-    name: "calculator",
-    arguments_json: "{\"expr\":\"2+2\"}",
-  )
+  let tool_call2 =
+    ToolCall(
+      id: "call_123",
+      name: "calculator",
+      arguments_json: "{\"expr\":\"2+2\"}",
+    )
   let event2 =
     ToolBlocked(
       tool_call: tool_call2,

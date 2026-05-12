@@ -13,7 +13,9 @@ pub type Msg {
 
 pub fn agent_selection_view(agents: List(AgentInfo)) -> element.Element(Msg) {
   html.div()
-  |> attribute.class("h-full flex flex-col items-center justify-center gap-8 p-8")
+  |> attribute.class(
+    "h-full flex flex-col items-center justify-center gap-8 p-8",
+  )
   |> element.children([
     html.h1()
       |> attribute.class("text-3xl font-bold text-gray-800")
@@ -22,10 +24,10 @@ pub fn agent_selection_view(agents: List(AgentInfo)) -> element.Element(Msg) {
       |> attribute.class("text-gray-500")
       |> element.text_content("Select an AI agent to start chatting"),
     html.div()
-      |> attribute.class("grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl w-full")
-      |> element.children(
-        agents |> list.map(agent_card),
-      ),
+      |> attribute.class(
+        "grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl w-full",
+      )
+      |> element.children(agents |> list.map(agent_card)),
   ])
 }
 

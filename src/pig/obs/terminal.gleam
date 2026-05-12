@@ -3,14 +3,19 @@
 //// OTP actor that receives SessionEvents and prints formatted output.
 //// Pure `format_event` function for testing without side effects.
 
-import gleam/erlang/process.{type Subject, type Name}
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
+import gleam/io
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
-import pig/ai/error.{type AiError, ApiError, RateLimited, Timeout, InvalidResponse}
-import pig/obs/events.{type SessionEvent, type SessionEndReason, type HookPoint, NormalEnd, ErrorEnd, MaxIterationsExceeded, Interrupted}
-import gleam/io
+import pig/ai/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
+import pig/obs/events.{
+  type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
+  Interrupted, MaxIterationsExceeded, NormalEnd,
+}
 
 // ── State ─────────────────────────────────────────────────────────────
 
@@ -40,7 +45,10 @@ pub fn format_event(event: SessionEvent) -> String {
     }
 
     events.InferenceStarted(model:, message_count:) -> {
-      "[INF] Started | model: " <> model <> " | messages: " <> int.to_string(message_count)
+      "[INF] Started | model: "
+      <> model
+      <> " | messages: "
+      <> int.to_string(message_count)
     }
 
     events.InferenceCompleted(
@@ -56,8 +64,7 @@ pub fn format_event(event: SessionEvent) -> String {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let token_part = case input_tokens, output_tokens {
         Some(input), Some(output) -> {
-          " | tokens: " <> int.to_string(input) <> "→"
-          <> int.to_string(output)
+          " | tokens: " <> int.to_string(input) <> "→" <> int.to_string(output)
         }
         _, _ -> ""
       }
@@ -78,18 +85,24 @@ pub fn format_event(event: SessionEvent) -> String {
     }
 
     events.ToolBlocked(tool_call:, hook_name:, reason:) -> {
-      "[TOOL] Blocked | " <> tool_call.name <> " | " <> hook_name <> " | " <> reason
+      "[TOOL] Blocked | "
+      <> tool_call.name
+      <> " | "
+      <> hook_name
+      <> " | "
+      <> reason
     }
 
     events.HookActed(hook_name:, hook_point:, action:) -> {
-      "[HOOK] " <> hook_name <> " | " <> hook_to_string(hook_point) <> " | " <> action.action_type
+      "[HOOK] "
+      <> hook_name
+      <> " | "
+      <> hook_to_string(hook_point)
+      <> " | "
+      <> action.action_type
     }
 
-    events.InferenceFailed(
-      error:,
-      duration_ms:,
-      input_messages: _,
-    ) -> {
+    events.InferenceFailed(error:, duration_ms:, input_messages: _) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let error_str = format_error(error)
       "[ERR] Inference failed | " <> duration_str <> " | " <> error_str

@@ -35,15 +35,14 @@ pub fn librarian_tool_has_description_test() {
 
 /// Executing read_skill with a known skill name returns its content.
 pub fn read_known_skill_test() {
-  let skills =
-    [
-      skill.Skill(
-        name: "gleam-expert",
-        description: "Expert Gleam advice.",
-        path: "./test_data/skills/gleam-expert",
-        files: [],
-      ),
-    ]
+  let skills = [
+    skill.Skill(
+      name: "gleam-expert",
+      description: "Expert Gleam advice.",
+      path: "./test_data/skills/gleam-expert",
+      files: [],
+    ),
+  ]
   let t = librarian.librarian_tool(skills)
   let args = json.object([#("name", json.string("gleam-expert"))])
   let args_json = json.to_string(args)
@@ -56,15 +55,14 @@ pub fn read_known_skill_test() {
 
 /// Executing read_skill with an unknown name returns an error.
 pub fn read_unknown_skill_returns_error_test() {
-  let skills =
-    [
-      skill.Skill(
-        name: "gleam-expert",
-        description: "Expert Gleam advice.",
-        path: "./test_data/skills/gleam-expert",
-        files: [],
-      ),
-    ]
+  let skills = [
+    skill.Skill(
+      name: "gleam-expert",
+      description: "Expert Gleam advice.",
+      path: "./test_data/skills/gleam-expert",
+      files: [],
+    ),
+  ]
   let t = librarian.librarian_tool(skills)
   let args = json.object([#("name", json.string("nonexistent"))])
   let args_json = json.to_string(args)

@@ -37,10 +37,11 @@ fn handle_message(state: ContextState, message: Message) {
     AddMessage(agent_id, msg) -> {
       let existing = dict.get(state.messages, agent_id) |> result.unwrap([])
       let new_msgs = [msg, ..existing]
-      let new_state = ContextState(
-        ..state,
-        messages: dict.insert(state.messages, agent_id, new_msgs),
-      )
+      let new_state =
+        ContextState(
+          ..state,
+          messages: dict.insert(state.messages, agent_id, new_msgs),
+        )
       actor.continue(new_state)
     }
 
@@ -57,10 +58,11 @@ fn handle_message(state: ContextState, message: Message) {
               let config = agents.create_agent_config(persona)
               case pig.start(config) {
                 Ok(agent) -> {
-                  let new_state = ContextState(
-                    ..state,
-                    agents: dict.insert(state.agents, agent_id, agent),
-                  )
+                  let new_state =
+                    ContextState(
+                      ..state,
+                      agents: dict.insert(state.agents, agent_id, agent),
+                    )
                   process.send(reply_to, agent)
                   actor.continue(new_state)
                 }
@@ -89,15 +91,22 @@ pub fn new() {
 const timeout = 5000
 
 pub fn get_messages(ctx: Context, agent_id: AgentId) -> List(ChatMessage) {
-  actor.call(ctx, waiting: timeout, sending: fn(reply_to) { GetMessages(agent_id, reply_to) })
+  actor.call(ctx, waiting: timeout, sending: fn(reply_to) {
+    GetMessages(agent_id, reply_to)
+  })
 }
 
 pub fn add_message(ctx: Context, agent_id: AgentId, msg: ChatMessage) {
   process.send(ctx, AddMessage(agent_id, msg))
 }
 
-pub fn get_or_create_agent(ctx: Context, agent_id: AgentId) -> Result(Agent, Nil) {
+pub fn get_or_create_agent(
+  ctx: Context,
+  agent_id: AgentId,
+) -> Result(Agent, Nil) {
   // TODO: This should timeout if the agent doesn't exist and can't be created
-  actor.call(ctx, waiting: timeout, sending: fn(reply_to) { GetOrCreateAgent(agent_id, reply_to) })
+  actor.call(ctx, waiting: timeout, sending: fn(reply_to) {
+    GetOrCreateAgent(agent_id, reply_to)
+  })
   |> Ok
 }

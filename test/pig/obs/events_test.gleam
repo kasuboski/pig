@@ -1,13 +1,13 @@
-import gleeunit
-import gleeunit/should
-import gleam/erlang/process
-import pig/obs/events.{InferenceStarted, SessionStarted, SessionEnded, NormalEnd}
-import pig/obs/dispatcher
-import pig/obs/emit
-import pig/obs/listener
 import gleam/dict
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleeunit
+import gleeunit/should
+import pig/obs/dispatcher
+import pig/obs/emit
+import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}
+import pig/obs/listener
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -53,27 +53,29 @@ pub fn all_event_names_unique_test() {
 /// event_name() returns the same value as the corresponding name function.
 pub fn event_name_matches_inference_start_test() {
   events.event_name(events.InferenceStart(model: "x", message_count: 0))
-    == events.inference_start_name()
+  == events.inference_start_name()
 }
 
 pub fn event_name_matches_inference_stop_test() {
-  events.event_name(
-    events.InferenceStop(
-      model: "x",
-      message_count: 0,
-      duration_ms: 0,
-      response_id: None,
-      finish_reason: None,
-      input_tokens: None,
-      output_tokens: None,
-    ),
-  )
-    == events.inference_stop_name()
+  events.event_name(events.InferenceStop(
+    model: "x",
+    message_count: 0,
+    duration_ms: 0,
+    response_id: None,
+    finish_reason: None,
+    input_tokens: None,
+    output_tokens: None,
+  ))
+  == events.inference_stop_name()
 }
 
 pub fn event_name_matches_tool_start_test() {
-  events.event_name(events.ToolStart(tool_name: "x", tool_call_id: "y", arguments_json: "{}"))
-    == events.tool_start_name()
+  events.event_name(events.ToolStart(
+    tool_name: "x",
+    tool_call_id: "y",
+    arguments_json: "{}",
+  ))
+  == events.tool_start_name()
 }
 
 // ── name_to_string ───────────────────────────────────────────────────
@@ -110,7 +112,8 @@ pub fn different_fields_not_equal_test() {
 
 pub fn different_variants_not_equal_test() {
   let e1 = events.InferenceStart(model: "a", message_count: 1)
-  let e2 = events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
+  let e2 =
+    events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
   e1 != e2
 }
 
@@ -119,28 +122,36 @@ pub fn different_variants_not_equal_test() {
 
 pub fn emit_all_variants_test() {
   events.emit(events.InferenceStart(model: "gpt-4", message_count: 5))
-  events.emit(
-    events.InferenceStop(
-      model: "gpt-4",
-      message_count: 5,
-      duration_ms: 150,
-      response_id: None,
-      finish_reason: None,
-      input_tokens: None,
-      output_tokens: None,
-    ),
-  )
-  events.emit(events.InferenceException(model: "gpt-4", message_count: 3, error_type: "test_error"))
-  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123", arguments_json: "{}"))
-  events.emit(
-    events.ToolStop(
-      tool_name: "read_file",
-      tool_call_id: "call_123",
-      duration_ms: 42,
-      result: "{\"files\":[]}",
-    ),
-  )
-  events.emit(events.ToolException(tool_name: "bash", tool_call_id: "call_456", arguments_json: "{}"))
+  events.emit(events.InferenceStop(
+    model: "gpt-4",
+    message_count: 5,
+    duration_ms: 150,
+    response_id: None,
+    finish_reason: None,
+    input_tokens: None,
+    output_tokens: None,
+  ))
+  events.emit(events.InferenceException(
+    model: "gpt-4",
+    message_count: 3,
+    error_type: "test_error",
+  ))
+  events.emit(events.ToolStart(
+    tool_name: "read_file",
+    tool_call_id: "call_123",
+    arguments_json: "{}",
+  ))
+  events.emit(events.ToolStop(
+    tool_name: "read_file",
+    tool_call_id: "call_123",
+    duration_ms: 42,
+    result: "{\"files\":[]}",
+  ))
+  events.emit(events.ToolException(
+    tool_name: "bash",
+    tool_call_id: "call_456",
+    arguments_json: "{}",
+  ))
   True
 }
 
@@ -170,25 +181,30 @@ pub fn generic_emit_exception_does_not_crash_test() {
 // We verify field preservation, not exact struct equality.
 
 pub fn decode_preserves_inference_start_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_start_name(),
-    measurements: dict.from_list([#("system_time", 123), #("message_count", 5)]),
-    metadata: dict.from_list([#("model", "gpt-4")]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_start_name(),
+      measurements: dict.from_list([
+        #("system_time", 123),
+        #("message_count", 5),
+      ]),
+      metadata: dict.from_list([#("model", "gpt-4")]),
+    )
   let assert events.InferenceStart(model:, message_count:) = events.decode(raw)
   model == "gpt-4" && message_count == 5
 }
 
 pub fn decode_preserves_inference_stop_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_stop_name(),
-    measurements: dict.from_list([
-      #("system_time", 456),
-      #("message_count", 2),
-      #("duration", 150),
-    ]),
-    metadata: dict.from_list([#("model", "gpt-4")]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_stop_name(),
+      measurements: dict.from_list([
+        #("system_time", 456),
+        #("message_count", 2),
+        #("duration", 150),
+      ]),
+      metadata: dict.from_list([#("model", "gpt-4")]),
+    )
   let assert events.InferenceStop(
     model:,
     message_count:,
@@ -199,66 +215,79 @@ pub fn decode_preserves_inference_stop_test() {
     output_tokens:,
   ) = events.decode(raw)
   model == "gpt-4"
-    && message_count == 2
-    && duration_ms == 150
-    && response_id == None
-    && finish_reason == None
-    && input_tokens == None
-    && output_tokens == None
+  && message_count == 2
+  && duration_ms == 150
+  && response_id == None
+  && finish_reason == None
+  && input_tokens == None
+  && output_tokens == None
 }
 
 pub fn decode_preserves_tool_start_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.tool_start_name(),
-    measurements: dict.from_list([#("system_time", 789)]),
-    metadata: dict.from_list([
-      #("tool_name", "bash"),
-      #("tool_call_id", "c1"),
-      #("arguments_json", "{\"foo\":\"bar\"}"),
-    ]),
-  )
-  let assert events.ToolStart(tool_name:, tool_call_id:, arguments_json:) = events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1" && arguments_json == "{\"foo\":\"bar\"}"
+  let raw =
+    events.RawCapturedEvent(
+      name: events.tool_start_name(),
+      measurements: dict.from_list([#("system_time", 789)]),
+      metadata: dict.from_list([
+        #("tool_name", "bash"),
+        #("tool_call_id", "c1"),
+        #("arguments_json", "{\"foo\":\"bar\"}"),
+      ]),
+    )
+  let assert events.ToolStart(tool_name:, tool_call_id:, arguments_json:) =
+    events.decode(raw)
+  tool_name == "bash"
+  && tool_call_id == "c1"
+  && arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_stop_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.tool_stop_name(),
-    measurements: dict.from_list([#("system_time", 999), #("duration", 42)]),
-    metadata: dict.from_list([
-      #("tool_name", "bash"),
-      #("tool_call_id", "c1"),
-      #("result", "{\"foo\":\"bar\"}"),
-    ]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.tool_stop_name(),
+      measurements: dict.from_list([#("system_time", 999), #("duration", 42)]),
+      metadata: dict.from_list([
+        #("tool_name", "bash"),
+        #("tool_call_id", "c1"),
+        #("result", "{\"foo\":\"bar\"}"),
+      ]),
+    )
   let assert events.ToolStop(tool_name:, tool_call_id:, duration_ms:, result:) =
     events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1" && duration_ms == 42 && result == "{\"foo\":\"bar\"}"
+  tool_name == "bash"
+  && tool_call_id == "c1"
+  && duration_ms == 42
+  && result == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_exception_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.tool_exception_name(),
-    measurements: dict.from_list([#("system_time", 999)]),
-    metadata: dict.from_list([
-      #("tool_name", "bash"),
-      #("tool_call_id", "c1"),
-      #("arguments_json", "{\"foo\":\"bar\"}"),
-    ]),
-  )
-  let assert events.ToolException(tool_name:, tool_call_id:, arguments_json:) = events.decode(raw)
-  tool_name == "bash" && tool_call_id == "c1" && arguments_json == "{\"foo\":\"bar\"}"
+  let raw =
+    events.RawCapturedEvent(
+      name: events.tool_exception_name(),
+      measurements: dict.from_list([#("system_time", 999)]),
+      metadata: dict.from_list([
+        #("tool_name", "bash"),
+        #("tool_call_id", "c1"),
+        #("arguments_json", "{\"foo\":\"bar\"}"),
+      ]),
+    )
+  let assert events.ToolException(tool_name:, tool_call_id:, arguments_json:) =
+    events.decode(raw)
+  tool_name == "bash"
+  && tool_call_id == "c1"
+  && arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_inference_exception_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_exception_name(),
-    measurements: dict.from_list([
-      #("system_time", 999),
-      #("message_count", 7),
-    ]),
-    metadata: dict.from_list([#("model", "llama"), #("error_type", "timeout")]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_exception_name(),
+      measurements: dict.from_list([
+        #("system_time", 999),
+        #("message_count", 7),
+      ]),
+      metadata: dict.from_list([#("model", "llama"), #("error_type", "timeout")]),
+    )
   let assert events.InferenceException(model:, message_count:, error_type:) =
     events.decode(raw)
   model == "llama" && message_count == 7 && error_type == "timeout"
@@ -268,38 +297,36 @@ pub fn decode_preserves_inference_exception_test() {
 
 /// Emit InferenceStop with all new fields populated — should not crash.
 pub fn emit_enriched_inference_stop_does_not_crash_test() {
-  events.emit(
-    events.InferenceStop(
-      model: "gpt-4",
-      message_count: 5,
-      duration_ms: 150,
-      response_id: Some("resp-123"),
-      finish_reason: Some("stop"),
-      input_tokens: Some(100),
-      output_tokens: Some(50),
-    ),
-  )
+  events.emit(events.InferenceStop(
+    model: "gpt-4",
+    message_count: 5,
+    duration_ms: 150,
+    response_id: Some("resp-123"),
+    finish_reason: Some("stop"),
+    input_tokens: Some(100),
+    output_tokens: Some(50),
+  ))
   True
 }
 
 /// Decode InferenceStop with all new fields in the raw data.
 pub fn decode_preserves_enriched_inference_stop_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_stop_name(),
-    measurements: dict.from_list([
-      #("system_time", 456),
-      #("message_count", 2),
-      #("duration", 150),
-      #("input_tokens", 100),
-      #("output_tokens", 50),
-    ]),
-    metadata:
-      dict.from_list([
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_stop_name(),
+      measurements: dict.from_list([
+        #("system_time", 456),
+        #("message_count", 2),
+        #("duration", 150),
+        #("input_tokens", 100),
+        #("output_tokens", 50),
+      ]),
+      metadata: dict.from_list([
         #("model", "gpt-4"),
         #("response_id", "resp-456"),
         #("finish_reason", "stop"),
       ]),
-  )
+    )
   let assert events.InferenceStop(
     model:,
     message_count:,
@@ -310,25 +337,26 @@ pub fn decode_preserves_enriched_inference_stop_test() {
     output_tokens:,
   ) = events.decode(raw)
   model == "gpt-4"
-    && message_count == 2
-    && duration_ms == 150
-    && response_id == Some("resp-456")
-    && finish_reason == Some("stop")
-    && input_tokens == Some(100)
-    && output_tokens == Some(50)
+  && message_count == 2
+  && duration_ms == 150
+  && response_id == Some("resp-456")
+  && finish_reason == Some("stop")
+  && input_tokens == Some(100)
+  && output_tokens == Some(50)
 }
 
 /// Decode InferenceStop without optional fields — should decode to None.
 pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_stop_name(),
-    measurements: dict.from_list([
-      #("system_time", 456),
-      #("message_count", 2),
-      #("duration", 150),
-    ]),
-    metadata: dict.from_list([#("model", "gpt-4")]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_stop_name(),
+      measurements: dict.from_list([
+        #("system_time", 456),
+        #("message_count", 2),
+        #("duration", 150),
+      ]),
+      metadata: dict.from_list([#("model", "gpt-4")]),
+    )
   let assert events.InferenceStop(
     model:,
     message_count:,
@@ -339,39 +367,40 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
     output_tokens:,
   ) = events.decode(raw)
   model == "gpt-4"
-    && message_count == 2
-    && duration_ms == 150
-    && response_id == None
-    && finish_reason == None
-    && input_tokens == None
-    && output_tokens == None
+  && message_count == 2
+  && duration_ms == 150
+  && response_id == None
+  && finish_reason == None
+  && input_tokens == None
+  && output_tokens == None
 }
 
 // ── Task 9.0e: InferenceException with error_type Tests ─────────────────
 
 /// Emit InferenceException with error_type — should not crash.
 pub fn emit_inference_exception_with_error_type_test() {
-  events.emit(
-    events.InferenceException(
-      model: "gpt-4",
-      message_count: 3,
-      error_type: "timeout",
-    ),
-  )
+  events.emit(events.InferenceException(
+    model: "gpt-4",
+    message_count: 3,
+    error_type: "timeout",
+  ))
   True
 }
 
 /// Decode InferenceException preserves error_type from metadata.
 pub fn decode_preserves_inference_exception_error_type_test() {
-  let raw = events.RawCapturedEvent(
-    name: events.inference_exception_name(),
-    measurements: dict.from_list([
-      #("system_time", 999),
-      #("message_count", 7),
-    ]),
-    metadata:
-      dict.from_list([#("model", "llama"), #("error_type", "api_error")]),
-  )
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_exception_name(),
+      measurements: dict.from_list([
+        #("system_time", 999),
+        #("message_count", 7),
+      ]),
+      metadata: dict.from_list([
+        #("model", "llama"),
+        #("error_type", "api_error"),
+      ]),
+    )
   let assert events.InferenceException(model:, message_count:, error_type:) =
     events.decode(raw)
   model == "llama" && message_count == 7 && error_type == "api_error"
@@ -385,15 +414,15 @@ pub fn to_dispatcher_sends_event_to_dispatcher_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
   process.send(disp, dispatcher.RegisterConsumer(consumer))
-  
+
   let event = InferenceStarted(model: "gpt-4", message_count: 3)
   emit.to_dispatcher(disp, event)
-  
+
   let assert Ok(received) = process.receive(consumer, 2000)
   let assert InferenceStarted(model:, message_count:) = received
   model |> should.equal("gpt-4")
   message_count |> should.equal(3)
-  
+
   process.send(disp, dispatcher.Stop)
 }
 
@@ -404,17 +433,17 @@ pub fn to_dispatcher_triggers_telemetry_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
   process.send(disp, dispatcher.RegisterConsumer(consumer))
-  
+
   let event = InferenceStarted(model: "gpt-4", message_count: 3)
   emit.to_dispatcher(disp, event)
-  
+
   // Confirm via consumer (guarantees telemetry already fired)
   let assert Ok(_) = process.receive(consumer, 2000)
-  
+
   let captured = listener.get_events(handle)
   let assert [events.InferenceStart(model:, ..)] = captured
   model |> should.equal("gpt-4")
-  
+
   listener.detach(handle)
   process.send(disp, dispatcher.Stop)
 }
@@ -424,23 +453,26 @@ pub fn to_dispatcher_sends_all_variants_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
   process.send(disp, dispatcher.RegisterConsumer(consumer))
-  
+
   // Send multiple events and verify they're all received
-  emit.to_dispatcher(disp, SessionStarted(
-    agent_id: Some("agent-1"),
-    agent_name: None,
-    model: "gpt-4",
-    provider_name: None,
-    system_prompt: None,
-  ))
+  emit.to_dispatcher(
+    disp,
+    SessionStarted(
+      agent_id: Some("agent-1"),
+      agent_name: None,
+      model: "gpt-4",
+      provider_name: None,
+      system_prompt: None,
+    ),
+  )
   let assert Ok(_) = process.receive(consumer, 2000)
-  
+
   emit.to_dispatcher(disp, InferenceStarted(model: "gpt-4", message_count: 2))
   let assert Ok(_) = process.receive(consumer, 2000)
-  
+
   emit.to_dispatcher(disp, SessionEnded(NormalEnd))
   let assert Ok(_) = process.receive(consumer, 2000)
-  
+
   process.send(disp, dispatcher.Stop)
   True
 }

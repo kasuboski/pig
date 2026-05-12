@@ -21,7 +21,8 @@ import sqlight
 /// # Root Directory
 /// Creates the root directory inode (ino=1, mode=16877) if it doesn't exist.
 pub fn init(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
-  let schema_sql = "
+  let schema_sql =
+    "
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
 

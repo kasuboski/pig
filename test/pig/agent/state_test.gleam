@@ -4,24 +4,56 @@
 //// getter/setter round-trips. Per TESTING_STRATEGY §Axiom 1:
 //// "If we entirely replace the internals, no tests should break."
 
-import gleeunit
 import gleam/list
 import gleam/option.{None}
-import gleam/erlang/process
+import gleeunit
 import gleeunit/should
 import pig/agent/state
 import pig/ai/message
-import pig/hooks
+import pig/ai/provider
+import pig/tool
 import support/harness
 
 pub fn main() -> Nil {
   gleeunit.main()
 }
 
+// ── Helpers ──────────────────────────────────────────────────────
+
+fn dummy_provider() {
+  fn(_msgs, _tools) {
+    Ok(provider.from_message(message.Assistant("x", [], None)))
+  }
+}
+
+fn new_state(tools: List(tool.Tool)) -> state.AgentState {
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  state.config(dummy_provider()) |> state.with_tools(registry) |> state.new()
+}
+
+fn new_state_with_prompt(
+  tools: List(tool.Tool),
+  prompt: String,
+) -> state.AgentState {
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  state.config(dummy_provider())
+  |> state.with_tools(registry)
+  |> state.with_system_prompt(prompt)
+  |> state.new()
+}
+
+fn new_state_with_max(tools: List(tool.Tool), max: Int) -> state.AgentState {
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  state.config(dummy_provider())
+  |> state.with_tools(registry)
+  |> state.with_max_iterations(max)
+  |> state.new()
+}
+
 // ── Immutability Contract ────────────────────────────────────────
 
 pub fn add_message_does_not_mutate_original_test() {
-  let s = harness.state_for_step([], []) |> state.add_message(message.User("a"))
+  let s = new_state([]) |> state.add_message(message.User("a"))
   let s1 = state.add_message(s, message.User("first"))
   let _s2 = state.add_message(s, message.User("second"))
   // s1 is independent — original s has "a", s1 has "a"+"first"
@@ -30,7 +62,7 @@ pub fn add_message_does_not_mutate_original_test() {
 
 pub fn add_message_preserves_insertion_order_test() {
   let s =
-    harness.state_for_step([], [])
+    new_state([])
     |> state.add_message(message.System("sys"))
     |> state.add_message(message.User("hello"))
     |> state.add_message(message.Assistant("hi", [], None))
@@ -47,7 +79,7 @@ pub fn add_message_preserves_insertion_order_test() {
 /// System prompt is NOT included in raw history.
 pub fn system_prompt_not_in_history_test() {
   let s =
-    harness.state_with_system_prompt([], [], "you are helpful")
+    new_state_with_prompt([], "you are helpful")
     |> state.add_message(message.User("hello"))
   // history has only the user message
   state.history(s) == [message.User("hello")]
@@ -56,7 +88,7 @@ pub fn system_prompt_not_in_history_test() {
 /// messages_for_provider prepends system prompt before history.
 pub fn messages_for_provider_injects_system_prompt_test() {
   let s =
-    harness.state_with_system_prompt([], [], "you are helpful")
+    new_state_with_prompt([], "you are helpful")
     |> state.add_message(message.User("hello"))
   state.messages_for_provider(s)
   == [
@@ -68,7 +100,7 @@ pub fn messages_for_provider_injects_system_prompt_test() {
 /// Without system prompt, messages_for_provider returns raw history.
 pub fn messages_for_provider_returns_history_when_no_prompt_test() {
   let s =
-    harness.state_for_step([], [])
+    new_state([])
     |> state.add_message(message.User("hello"))
   state.messages_for_provider(s) == [message.User("hello")]
 }
@@ -77,7 +109,7 @@ pub fn messages_for_provider_returns_history_when_no_prompt_test() {
 
 /// Tool definitions are extracted from the registry for provider calls.
 pub fn tool_definitions_available_from_state_test() {
-  let s = harness.state_for_step([], [harness.echo_tool()])
+  let s = new_state([harness.echo_tool()])
   let defs = state.tool_definitions(s)
   list.length(defs) == 1
 }
@@ -86,7 +118,7 @@ pub fn tool_definitions_available_from_state_test() {
 
 /// exceeded_max_iterations starts false, becomes true after incrementing.
 pub fn exceeded_max_iterations_boundary_test() {
-  let s = harness.state_with_max_iterations([], [], 2)
+  let s = new_state_with_max([], 2)
   // Not exceeded initially
   !state.exceeded_max_iterations(s)
   && {
@@ -99,78 +131,24 @@ pub fn exceeded_max_iterations_boundary_test() {
   }
 }
 
-// ── Dispatcher Config ──────────────────────────────────────────────
-
-/// Default config has no dispatcher_name.
-pub fn default_config_has_no_dispatcher_name_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  cfg.dispatcher_name |> should.equal(option.None)
-}
-
-/// with_dispatcher_name sets the dispatcher_name field.
-pub fn with_dispatcher_name_sets_name_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  let name = process.new_name("test_dispatcher")
-  let cfg2 = state.with_dispatcher_name(cfg, name)
-  cfg2.dispatcher_name |> should.equal(option.Some(name))
-}
-
-/// with_dispatcher_name does not mutate original config.
-pub fn with_dispatcher_name_does_not_mutate_original_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  let name = process.new_name("test_dispatcher")
-  let cfg2 = state.with_dispatcher_name(cfg, name)
-  
-  // Original config still has None
-  cfg.dispatcher_name |> should.equal(option.None)
-  // New config has the name
-  cfg2.dispatcher_name |> should.equal(option.Some(name))
-}
-
-// ── Hooks Config ────────────────────────────────────────────────────
-
-/// Default config has empty hooks list.
-pub fn default_config_has_empty_hooks_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  cfg.hooks |> should.equal([])
-}
-
-/// with_hooks appends a hook.
-pub fn with_hooks_adds_hook_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  let h = hooks.new("test")
-  let cfg2 = state.with_hooks(cfg, h)
-  cfg2.hooks |> should.equal([h])
-}
-
-/// with_hooks does not mutate original.
-pub fn with_hooks_does_not_mutate_original_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  let h = hooks.new("test")
-  let _cfg2 = state.with_hooks(cfg, h)
-  cfg.hooks |> should.equal([])
-}
-
 // ── Session Path Config ────────────────────────────────────────────
 
 /// Default config has no session path.
 pub fn default_config_has_no_session_path_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
-  cfg.session_path |> should.equal(option.None)
+  let cfg = state.config(dummy_provider())
+  cfg.session_path |> should.equal(None)
 }
 
 /// with_session_path sets the field.
 pub fn with_session_path_sets_path_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let cfg = state.config(dummy_provider())
   let cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
   cfg2.session_path |> should.equal(option.Some("/tmp/test.jsonl"))
 }
 
 /// with_session_path does not mutate original.
 pub fn with_session_path_does_not_mutate_original_test() {
-  let cfg = state.config(harness.fixed_provider(message.Assistant("OK", [], None)))
+  let cfg = state.config(dummy_provider())
   let _cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
-  cfg.session_path |> should.equal(option.None)
+  cfg.session_path |> should.equal(None)
 }
-
-

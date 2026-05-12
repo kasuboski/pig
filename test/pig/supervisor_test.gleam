@@ -18,10 +18,7 @@ import support/harness
 import temporary
 
 /// Run a test with a temporary JSONL file. Auto-cleaned after callback returns.
-fn with_temp_file(
-  name: String,
-  run test_fn: fn(String) -> a,
-) -> a {
+fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
   let tmp =
     temporary.file()
     |> temporary.with_prefix("pig_sup_" <> name <> "_")
@@ -74,8 +71,7 @@ pub fn run_with_timeout_works_test() {
     pig.new(harness.fixed_provider(response))
     |> agent_config
   let assert Ok(sup) = supervisor.start_supervised(config, [])
-  let assert Ok(msg) =
-    supervisor.run_with_timeout(sup, "hi", 5000)
+  let assert Ok(msg) = supervisor.run_with_timeout(sup, "hi", 5000)
   let assert True = msg == response
   supervisor.stop(sup)
 }
@@ -131,8 +127,7 @@ pub fn supervised_tool_call_works_test() {
     |> pig.with_tool(harness.echo_tool())
     |> agent_config
   let assert Ok(sup) = supervisor.start_supervised(config, [])
-  let assert Ok(msg) =
-    supervisor.run_with_timeout(sup, "use echo", 5000)
+  let assert Ok(msg) = supervisor.run_with_timeout(sup, "use echo", 5000)
   let assert True = msg == final
   supervisor.stop(sup)
 }
@@ -183,8 +178,7 @@ pub fn start_supervised_with_consumers_test() {
     ),
   ]
 
-  let assert Ok(sup) =
-    supervisor.start_supervised(config, consumer_specs)
+  let assert Ok(sup) = supervisor.start_supervised(config, consumer_specs)
 
   // Run the agent - should trigger events that go through dispatcher to consumers
   let assert Ok(_msg) = supervisor.run(sup, "test")
@@ -237,8 +231,7 @@ pub fn stop_kills_tree_test() {
     ),
   ]
 
-  let assert Ok(sup) =
-    supervisor.start_supervised(config, consumer_specs)
+  let assert Ok(sup) = supervisor.start_supervised(config, consumer_specs)
   let assert Ok(_msg) = supervisor.run(sup, "test")
 
   // Stop the supervisor

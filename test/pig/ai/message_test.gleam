@@ -28,5 +28,5 @@ pub fn role_assistant_test() {
 
 pub fn role_tool_test() {
   message.role(message.Tool(tool_call_id: "id", content: "x"))
-    == message.ToolRole
+  == message.ToolRole
 }

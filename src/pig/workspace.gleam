@@ -1,10 +1,10 @@
 import gleam/result
-import sqlight
 import pig/tool
-import pig/workspace/schema
 import pig/workspace/kv
-import pig/workspace/vfs
+import pig/workspace/schema
 import pig/workspace/tools
+import pig/workspace/vfs
+import sqlight
 
 /// The Workspace type wraps a SQLite connection.
 pub opaque type Workspace {
@@ -75,7 +75,10 @@ pub fn read_file_lines(
 }
 
 /// List entries in a directory.
-pub fn list_directory(ws: Workspace, path: String) -> Result(List(String), Error) {
+pub fn list_directory(
+  ws: Workspace,
+  path: String,
+) -> Result(List(String), Error) {
   ws.connection
   |> vfs.list_directory(path)
   |> result.map_error(wrap_vfs_error)
@@ -96,7 +99,11 @@ pub fn delete_file(ws: Workspace, path: String) -> Result(Nil, Error) {
 }
 
 /// Store a key-value pair.
-pub fn remember(ws: Workspace, key: String, value: String) -> Result(Nil, Error) {
+pub fn remember(
+  ws: Workspace,
+  key: String,
+  value: String,
+) -> Result(Nil, Error) {
   ws.connection
   |> kv.remember(key, value)
   |> result.map_error(wrap_kv_error)
