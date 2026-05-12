@@ -2,10 +2,10 @@ import gleam/dict
 import gleam/result
 import lustre/effect
 import omnimessage/server as omniserver
-import shared.{type ClientMessage, type ServerMessage}
-import server/context.{type Context}
 import pig
 import pig/ai/message
+import server/context.{type Context}
+import shared.{type ClientMessage, type ServerMessage}
 
 pub fn app() {
   let encoder_decoder =
@@ -90,9 +90,10 @@ pub fn update(model: Model, msg: Msg) {
                   |> dispatch
                 }
                 _ -> {
-                  let error_msg = shared.new_ai_chat_msg(
-                    content: "I seem to have lost my train of thought. Please try again.",
-                  )
+                  let error_msg =
+                    shared.new_ai_chat_msg(
+                      content: "I seem to have lost my train of thought. Please try again.",
+                    )
                   context.add_message(model.ctx, agent_id, error_msg)
                   [error_msg]
                   |> shared.ServerUpsertChatMessages(agent_id, _)

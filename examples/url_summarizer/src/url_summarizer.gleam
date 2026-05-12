@@ -16,6 +16,7 @@
 ////   cd examples/url_summarizer
 ////   gleam run
 
+import envoy
 import gleam/io
 import gleam/result
 import gleam/string
@@ -24,7 +25,6 @@ import pig/ai/error
 import pig/ai/message
 import pig/ai/openai
 import pig/tool/web_fetch
-import envoy
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -46,16 +46,15 @@ fn model() -> String {
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main() {
-  let provider =
-    openai.provider_with_base_url(api_key(), model(), base_url())
+  let provider = openai.provider_with_base_url(api_key(), model(), base_url())
 
   let cfg =
     pig.new(provider.call)
     |> pig.with_model("url_summarizer")
     |> pig.with_system_prompt(
       "You summarize web pages. When given a URL, use the web_fetch tool "
-        <> "to retrieve it, then provide a concise summary of the page content. "
-        <> "Use bullet points. Focus on the key takeaways.",
+      <> "to retrieve it, then provide a concise summary of the page content. "
+      <> "Use bullet points. Focus on the key takeaways.",
     )
     |> pig.with_tool(web_fetch.tool())
     |> pig.with_terminal_output()

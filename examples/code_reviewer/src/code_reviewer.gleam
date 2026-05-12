@@ -24,11 +24,15 @@
 ////   4. Explore the codebase for context
 ////   5. Produce a thorough code review
 
+import code_reviewer/args
+import code_reviewer/fs
+import code_reviewer/git
+import envoy
+import filepath
 import gleam/int
 import gleam/io
 import gleam/result
 import gleam/string
-import envoy
 import pig
 import pig/ai/error
 import pig/ai/message
@@ -36,10 +40,6 @@ import pig/ai/openai
 import pig/workspace
 import pig/workspace/tools
 import simplifile
-import filepath
-import code_reviewer/args
-import code_reviewer/git
-import code_reviewer/fs
 
 // ── CLI Args ────────────────────────────────────────────────────────
 
@@ -47,10 +47,11 @@ fn get_repo_path() -> Result(String, String) {
   case args.get_args() {
     [path] -> Ok(path)
     [path, ..] -> Ok(path)
-    [] -> Error(
-      "Usage: gleam run -- /path/to/repo\n"
+    [] ->
+      Error(
+        "Usage: gleam run -- /path/to/repo\n"
         <> "Please provide a path to a git repository.",
-    )
+      )
   }
 }
 
@@ -143,13 +144,12 @@ pub fn main() {
 
   case git.get_diff_stat(conn, repo_path) {
     Ok(_) -> Nil
-    Error(msg) ->
-      io.println("   Warning: Could not get diff stat: " <> msg)
+    Error(msg) -> io.println("   Warning: Could not get diff stat: " <> msg)
   }
   io.println(
     "   Done. Diff extracted ("
-      <> int.to_string(string.length(diff))
-      <> " chars)",
+    <> int.to_string(string.length(diff))
+    <> " chars)",
   )
   io.println("")
 
@@ -157,8 +157,7 @@ pub fn main() {
 
   io.println("Phase 1: Generating change summary...")
 
-  let provider =
-    openai.provider_with_base_url(api_key(), model, base_url())
+  let provider = openai.provider_with_base_url(api_key(), model, base_url())
 
   // Summary agent - no tools, just a simple call
   let summary_cfg =
@@ -176,10 +175,10 @@ pub fn main() {
 
   let summary_prompt =
     "Summarize the following changes.\n\n"
-      <> "## Diff Stat\n\n"
-      <> diff_stat
-      <> "\n\n## Full Diff\n\n"
-      <> diff
+    <> "## Diff Stat\n\n"
+    <> diff_stat
+    <> "\n\n## Full Diff\n\n"
+    <> diff
 
   let summary_result =
     pig.run_with_timeout(summary_agent, summary_prompt, 120_000)
@@ -224,17 +223,15 @@ pub fn main() {
   let file_count = fs.load_repo(conn, repo_path)
   io.println(
     "   Done. Loaded "
-      <> int.to_string(file_count)
-      <> " files into virtual filesystem.",
+    <> int.to_string(file_count)
+    <> " files into virtual filesystem.",
   )
   io.println("")
 
   // ── Phase 3: Review Agent ───────────────────────────────────────
 
   io.println("Phase 3: Running code review...")
-  io.println(
-    "   The agent will explore the codebase and produce a review.",
-  )
+  io.println("   The agent will explore the codebase and produce a review.")
   io.println(
     "   This may take a few minutes depending on the model and repo size.",
   )
@@ -258,12 +255,11 @@ pub fn main() {
 
   let review_prompt =
     "Please review the changes in this repository.\n\n"
-      <> "Start by reading /diffs/summary.md, then /diffs/full.diff, "
-      <> "then explore /repo/ for surrounding context.\n\n"
-      <> "Produce a thorough code review."
+    <> "Start by reading /diffs/summary.md, then /diffs/full.diff, "
+    <> "then explore /repo/ for surrounding context.\n\n"
+    <> "Produce a thorough code review."
 
-  let review_result =
-    pig.run_with_timeout(review_agent, review_prompt, 300_000)
+  let review_result = pig.run_with_timeout(review_agent, review_prompt, 300_000)
 
   case review_result {
     Ok(message.Assistant(content:, ..)) -> {
@@ -284,14 +280,10 @@ pub fn main() {
       io.println("\nWarning: API error: " <> msg)
     }
     Error(error.RateLimited) -> {
-      io.println(
-        "\nWarning: Rate limited - wait a moment and try again.",
-      )
+      io.println("\nWarning: Rate limited - wait a moment and try again.")
     }
     Error(error.InvalidResponse(detail)) -> {
-      io.println(
-        "\nWarning: Invalid response from provider: " <> detail,
-      )
+      io.println("\nWarning: Invalid response from provider: " <> detail)
     }
   }
 

@@ -12,6 +12,8 @@ import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
+import integration/config
+import integration/gate
 import jscheam/schema
 import pig/ai/error.{type AiError}
 import pig/ai/message
@@ -19,8 +21,6 @@ import pig/ai/openai
 import pig/ai/provider.{InferenceResult}
 import pig/ai/tool_definition
 import pig/tool
-import integration/config
-import integration/gate
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -80,8 +80,7 @@ pub fn tool_call_roundtrip_test() {
         tool.Tool(
           definition: tool_definition.ToolDefinition(
             name: "add",
-            description:
-              "Add two numbers. Pass {\"a\": <number>, \"b\": <number>}.",
+            description: "Add two numbers. Pass {\"a\": <number>, \"b\": <number>}.",
             parameters: schema.object([
               schema.prop("a", schema.integer())
                 |> schema.description("First number"),
@@ -89,23 +88,17 @@ pub fn tool_call_roundtrip_test() {
                 |> schema.description("Second number"),
             ]),
           ),
-          handler: fn(args: dynamic.Dynamic) ->
-            Result(json.Json, tool.ToolError) {
+          handler: fn(args: dynamic.Dynamic) -> Result(
+            json.Json,
+            tool.ToolError,
+          ) {
             let a_result =
-              decode.run(
-                args,
-                decode.field("a", decode.int, decode.success),
-              )
+              decode.run(args, decode.field("a", decode.int, decode.success))
             let b_result =
-              decode.run(
-                args,
-                decode.field("b", decode.int, decode.success),
-              )
+              decode.run(args, decode.field("b", decode.int, decode.success))
             case a_result, b_result {
-              Ok(a), Ok(b) ->
-                Ok(json.object([#("result", json.int(a + b))]))
-              _, _ ->
-                Error(tool.ToolError(message: "invalid arguments"))
+              Ok(a), Ok(b) -> Ok(json.object([#("result", json.int(a + b))]))
+              _, _ -> Error(tool.ToolError(message: "invalid arguments"))
             }
           },
         )
@@ -117,9 +110,7 @@ pub fn tool_call_roundtrip_test() {
       let defs = tool.list_definitions(registry)
       let prov = make_provider()
       let messages = [
-        message.User(
-          "What is 7 plus 3? You MUST use the add tool to answer.",
-        ),
+        message.User("What is 7 plus 3? You MUST use the add tool to answer."),
       ]
 
       let result = prov.call(messages, defs)
@@ -127,20 +118,18 @@ pub fn tool_call_roundtrip_test() {
       case result {
         Ok(InferenceResult(
           message: message.Assistant(tool_calls: [tc, ..], ..),
-          ..
+          ..,
         )) -> {
           tc.name |> should.equal("add")
         }
         Ok(InferenceResult(
           message: message.Assistant(content:, tool_calls: [], ..),
-          ..
+          ..,
         )) -> {
           string.contains(content, "10") |> should.equal(True)
         }
         Error(e) -> {
-          panic as {
-            "provider returned error: " <> ai_error_to_string(e)
-          }
+          panic as { "provider returned error: " <> ai_error_to_string(e) }
         }
         _ -> panic as "unexpected message type"
       }
@@ -174,11 +163,7 @@ pub fn bad_base_url_returns_error_test() {
     True -> Nil
     False -> {
       let prov =
-        openai.provider_with_base_url(
-          "key",
-          "model",
-          "http://127.0.0.1:1/v1",
-        )
+        openai.provider_with_base_url("key", "model", "http://127.0.0.1:1/v1")
       let messages = [message.User("hello")]
       let result = prov.call(messages, [])
       case result {

@@ -5,11 +5,11 @@ import gleam/string_tree
 
 import lustre_pipes/attribute
 import lustre_pipes/element.{children, empty, text_content}
-import lustre_pipes/element/html as html
+import lustre_pipes/element/html
 
 import filepath
-import mist
 import lustre/server_component
+import mist
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
 

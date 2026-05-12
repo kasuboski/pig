@@ -3,13 +3,15 @@
 //// Tests verify that replay() reads a JSONL file and reconstructs
 //// the conversation history accurately.
 
+import gleam/list
+import gleam/option.{None}
+import gleam/string
 import gleeunit
 import gleeunit/should
-import gleam/list
-import gleam/string
-import gleam/option.{None}
-import pig/ai/message.{User, Assistant, Tool, ToolCall}
-import pig/obs/events.{ToolBlocked, ToolExecuted, InferenceStarted, InferenceCompleted}
+import pig/ai/message.{Assistant, Tool, ToolCall, User}
+import pig/obs/events.{
+  InferenceCompleted, InferenceStarted, ToolBlocked, ToolExecuted,
+}
 import pig/obs/session
 import simplifile
 import temporary
@@ -20,10 +22,7 @@ pub fn main() {
 
 // ── Test Helpers ──────────────────────────────────────────────────────
 
-fn with_temp_file(
-  name: String,
-  run test_fn: fn(String) -> a,
-) -> a {
+fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
   let tmp =
     temporary.file()
     |> temporary.with_prefix("pig_replay_" <> name <> "_")
@@ -79,7 +78,12 @@ pub fn replay_with_tool_calls_reconstructs_full_history_test() {
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + final assistant = 4 messages
   should.equal(list.length(messages), 4)
-  let assert [User(content: use_echo), Assistant(content: "", tool_calls: [_tc], ..), Tool(tool_call_id: tc_id, content: _tool_content), Assistant(content: done, ..)] = messages
+  let assert [
+    User(content: use_echo),
+    Assistant(content: "", tool_calls: [_tc], ..),
+    Tool(tool_call_id: tc_id, content: _tool_content),
+    Assistant(content: done, ..),
+  ] = messages
   should.equal(use_echo, "use echo")
   should.equal(done, "Done!")
   should.equal(tc_id, "c1")
@@ -96,11 +100,18 @@ pub fn replay_with_blocked_tool_after_last_inference_test() {
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + assistant + blocked tool message = 3
   should.equal(list.length(messages), 3)
-  let assert [User(content: prompt), Assistant(content: "", tool_calls: [_tc], ..), Tool(tool_call_id: id, content: blocked_content)] = messages
+  let assert [
+    User(content: prompt),
+    Assistant(content: "", tool_calls: [_tc], ..),
+    Tool(tool_call_id: id, content: blocked_content),
+  ] = messages
   should.equal(prompt, "rm -rf /")
   should.equal(id, "c1")
   // Blocked tool content should reconstruct from hook_name + reason
-  should.equal(blocked_content, "Tool blocked by 'safety-guard': dangerous command")
+  should.equal(
+    blocked_content,
+    "Tool blocked by 'safety-guard': dangerous command",
+  )
 }
 
 /// Replay handles tool_executed events after last inference (crash recovery).
@@ -116,7 +127,11 @@ pub fn replay_with_executed_tool_after_last_inference_test() {
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + assistant + executed tool message = 3
   should.equal(list.length(messages), 3)
-  let assert [User(content: prompt), Assistant(content: "", tool_calls: [_tc], ..), Tool(tool_call_id: id, content: tool_content)] = messages
+  let assert [
+    User(content: prompt),
+    Assistant(content: "", tool_calls: [_tc], ..),
+    Tool(tool_call_id: id, content: tool_content),
+  ] = messages
   should.equal(prompt, "ping me")
   should.equal(id, "c1")
   // Executed tool content should come from the tool_executed result field
@@ -160,12 +175,15 @@ pub fn round_trip_single_inference_test() {
 /// should recover exactly those messages.
 pub fn round_trip_full_tool_loop_test() {
   use path <- with_temp_file("round_trip_tools")
-  let history =
-    [
-      User("Use echo"),
-      Assistant("", [ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")], None),
-      Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"),
-    ]
+  let history = [
+    User("Use echo"),
+    Assistant(
+      "",
+      [ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")],
+      None,
+    ),
+    Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"),
+  ]
   let final_response = Assistant("Done!", [], None)
   let line1 =
     InferenceStarted(model: "gpt-4", message_count: 4)
@@ -235,8 +253,7 @@ pub fn round_trip_blocked_tool_test() {
   use path <- with_temp_file("round_trip_blocked")
   let call = ToolCall(id: "c1", name: "bash", arguments_json: "{}")
   let history = [User("rm -rf /")]
-  let assistant_with_calls =
-    Assistant("", [call], None)
+  let assistant_with_calls = Assistant("", [call], None)
   // InferenceCompleted records history (original, no system prompt)
   // Then tool is blocked
   let inference_line =
@@ -266,10 +283,7 @@ pub fn round_trip_blocked_tool_test() {
   should.equal(prompt, "rm -rf /")
   should.equal(tc.id, "c1")
   should.equal(id, "c1")
-  should.equal(
-    blocked_content,
-    "Tool blocked by 'safety': dangerous",
-  )
+  should.equal(blocked_content, "Tool blocked by 'safety': dangerous")
 }
 
 /// Verify that a ToolExecuted event with hook-transformed result
@@ -277,12 +291,12 @@ pub fn round_trip_blocked_tool_test() {
 /// ToolExecuted event carries the transformed content.
 pub fn round_trip_transformed_result_test() {
   use path <- with_temp_file("round_trip_transformed")
-  let call = ToolCall(id: "c2", name: "search", arguments_json: "{\"q\":\"test\"}")
-  let history =
-    [
-      User("search for test"),
-      Assistant("", [call], None),
-    ]
+  let call =
+    ToolCall(id: "c2", name: "search", arguments_json: "{\"q\":\"test\"}")
+  let history = [
+    User("search for test"),
+    Assistant("", [call], None),
+  ]
   let final_response = Assistant("Here are the results", [], None)
   // First inference: user asks, assistant calls tool
   let inference1 =
@@ -338,7 +352,12 @@ pub fn round_trip_transformed_result_test() {
 /// This tests the "partial session" path in replay_lines.
 pub fn round_trip_partial_session_with_transformed_tool_test() {
   use path <- with_temp_file("round_trip_partial")
-  let call = ToolCall(id: "c3", name: "read", arguments_json: "{\"path\":\"/etc/passwd\"}")
+  let call =
+    ToolCall(
+      id: "c3",
+      name: "read",
+      arguments_json: "{\"path\":\"/etc/passwd\"}",
+    )
   // Only one inference completed, then a tool executed — no final inference
   let inference_line =
     InferenceCompleted(

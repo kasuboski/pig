@@ -1,7 +1,7 @@
 import gleam/option.{type Option, None}
+import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
 import pig/ai/tool_definition.{type ToolDefinition}
-import pig/ai/error.{type AiError}
 
 /// Metadata returned by the provider alongside the message.
 pub type InferenceMetadata {

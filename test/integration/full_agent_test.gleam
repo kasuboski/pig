@@ -22,10 +22,10 @@ import pig/ai/openai
 import pig/ai/provider.{type Provider}
 import pig/ai/tool_definition
 import pig/obs/events
-import temporary
 import pig/obs/listener
 import pig/tool
 import simplifile
+import temporary
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -180,11 +180,7 @@ pub fn agent_with_session_writer_test() {
             |> pig.with_session_writer(session_path)
           let assert Ok(agent) = pig.start(cfg)
           let result =
-            pig.run_with_timeout(
-              agent,
-              "Say exactly: session test",
-              60_000,
-            )
+            pig.run_with_timeout(agent, "Say exactly: session test", 60_000)
           pig.stop(agent)
 
           let assert Ok(message.Assistant(content:, ..)) = result
@@ -261,5 +257,4 @@ pub fn agent_tool_loop_with_telemetry_test() {
     }
   }
 }
-
 // ── Helpers ──────────────────────────────────────────────────────

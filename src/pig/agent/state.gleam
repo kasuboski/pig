@@ -3,8 +3,11 @@
 //// `AgentConfig` holds the immutable configuration for creating an agent.
 //// `AgentState` holds the runtime state (history, iterations).
 //// State is immutable — every mutation returns a new state.
+////
+//// Note: hooks and dispatcher are runtime concerns, stored on
+//// `PigConfig` / `RuntimeConfig`, not here. The pure core (`update.gleam`)
+//// has no knowledge of hooks or the dispatcher.
 
-import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
@@ -12,11 +15,12 @@ import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
 import pig/ai/provider.{type Provider}
 import pig/ai/tool_definition.{type ToolDefinition}
-import pig/hooks.{type Hooks}
 import pig/tool.{type ToolRegistry}
-import pig/obs/dispatcher
 
 /// Configuration for creating an agent. Immutable once constructed.
+///
+/// Hooks and dispatcher are NOT here — they're runtime concerns
+/// owned by `PigConfig` and `RuntimeConfig` respectively.
 pub type AgentConfig {
   AgentConfig(
     provider: Provider,
@@ -30,38 +34,17 @@ pub type AgentConfig {
     agent_description: Option(String),
     agent_version: Option(String),
     provider_name: Option(String),
-    // Hooks and session fields
-    hooks: List(Hooks),
+    // Session fields
     session_path: Option(String),
-    // Observability fields
-    dispatcher_name: Option(Name(dispatcher.DispatcherMessage)),
-    dispatcher: Option(Subject(dispatcher.DispatcherMessage)),
   )
 }
 
 /// Runtime state of an agent. Immutable — mutations return new state.
 pub type AgentState {
-  AgentState(
-    config: AgentConfig,
-    history: List(Message),
-    iterations: Int,
-  )
+  AgentState(config: AgentConfig, history: List(Message), iterations: Int)
 }
 
 /// Create an AgentConfig with defaults.
-///
-/// Default values:
-/// - `tools`: empty registry
-/// - `system_prompt`: None
-/// - `max_iterations`: 50
-/// - `model`: "unknown"
-/// - `agent_id`: None
-/// - `agent_name`: None
-/// - `agent_description`: None
-/// - `agent_version`: None
-/// - `provider_name`: None
-/// - `dispatcher_name`: None
-/// - `dispatcher`: None
 pub fn config(provider: Provider) -> AgentConfig {
   AgentConfig(
     provider:,
@@ -74,10 +57,7 @@ pub fn config(provider: Provider) -> AgentConfig {
     agent_description: option.None,
     agent_version: option.None,
     provider_name: option.None,
-    hooks: [],
     session_path: option.None,
-    dispatcher_name: option.None,
-    dispatcher: option.None,
   )
 }
 
@@ -87,18 +67,12 @@ pub fn with_tools(config: AgentConfig, tools: ToolRegistry) -> AgentConfig {
 }
 
 /// Set the system prompt on the config.
-pub fn with_system_prompt(
-  config: AgentConfig,
-  prompt: String,
-) -> AgentConfig {
+pub fn with_system_prompt(config: AgentConfig, prompt: String) -> AgentConfig {
   AgentConfig(..config, system_prompt: option.Some(prompt))
 }
 
 /// Set the maximum number of loop iterations before forcing termination.
-pub fn with_max_iterations(
-  config: AgentConfig,
-  max: Int,
-) -> AgentConfig {
+pub fn with_max_iterations(config: AgentConfig, max: Int) -> AgentConfig {
   AgentConfig(..config, max_iterations: max)
 }
 
@@ -135,29 +109,6 @@ pub fn with_provider_name(config: AgentConfig, name: String) -> AgentConfig {
   AgentConfig(..config, provider_name: option.Some(name))
 }
 
-/// Set the dispatcher name for observability.
-/// The agent will emit events to this dispatcher via events.emit_to().
-pub fn with_dispatcher_name(
-  config: AgentConfig,
-  name: Name(dispatcher.DispatcherMessage),
-) -> AgentConfig {
-  AgentConfig(..config, dispatcher_name: option.Some(name))
-}
-
-/// Set the dispatcher subject for observability.
-/// The agent will emit SessionEvents to this dispatcher via emit.to_dispatcher().
-pub fn with_dispatcher(
-  config: AgentConfig,
-  subject: Subject(dispatcher.DispatcherMessage),
-) -> AgentConfig {
-  AgentConfig(..config, dispatcher: option.Some(subject))
-}
-
-/// Append a hooks set to the hooks list.
-pub fn with_hooks(config: AgentConfig, h: Hooks) -> AgentConfig {
-  AgentConfig(..config, hooks: list.append(config.hooks, [h]))
-}
-
 /// Set the session path for persistence and replay.
 pub fn with_session_path(config: AgentConfig, path: String) -> AgentConfig {
   AgentConfig(..config, session_path: option.Some(path))
@@ -169,12 +120,7 @@ pub fn new(config: AgentConfig) -> AgentState {
 }
 
 /// Replace the provider on an existing state.
-/// Useful for tests that need to inject a specific provider
-/// after state construction.
-pub fn config_put_provider(
-  st: AgentState,
-  provider: Provider,
-) -> AgentState {
+pub fn config_put_provider(st: AgentState, provider: Provider) -> AgentState {
   AgentState(
     config: AgentConfig(..st.config, provider:),
     history: st.history,
@@ -212,8 +158,7 @@ pub fn tool_definitions(state: AgentState) -> List(ToolDefinition) {
 /// Prepends the system prompt as a `System` message if one is configured.
 pub fn messages_for_provider(state: AgentState) -> List(Message) {
   case state.config.system_prompt {
-    option.Some(prompt) ->
-      [message.System(content: prompt), ..state.history]
+    option.Some(prompt) -> [message.System(content: prompt), ..state.history]
     option.None -> state.history
   }
 }

@@ -85,12 +85,13 @@ pub fn with_model_works_test() {
 /// with_skill adds a skill and registers the librarian tool.
 pub fn with_skill_works_test() {
   let response = message.Assistant("ok", [], None)
-  let s = skill.Skill(
-    name: "test_skill",
-    description: "A test skill",
-    path: "test_data/skills/gleam-expert",
-    files: [],
-  )
+  let s =
+    skill.Skill(
+      name: "test_skill",
+      description: "A test skill",
+      path: "test_data/skills/gleam-expert",
+      files: [],
+    )
   let config =
     pig.new(harness.fixed_provider(response))
     |> pig.with_skill(s)
@@ -169,12 +170,20 @@ fn check_identity_builder(
 
 /// with_agent_name sets the agent_name in the underlying AgentConfig.
 pub fn with_agent_name_builder_test() {
-  check_identity_builder(pig.with_agent_name, fn(c) { c.agent_name }, "Math Tutor")
+  check_identity_builder(
+    pig.with_agent_name,
+    fn(c) { c.agent_name },
+    "Math Tutor",
+  )
 }
 
 /// with_provider_name sets the provider_name in the underlying AgentConfig.
 pub fn with_provider_name_builder_test() {
-  check_identity_builder(pig.with_provider_name, fn(c) { c.provider_name }, "openai")
+  check_identity_builder(
+    pig.with_provider_name,
+    fn(c) { c.provider_name },
+    "openai",
+  )
 }
 
 /// with_agent_id sets the agent_id in the underlying AgentConfig.
@@ -193,7 +202,11 @@ pub fn with_agent_description_builder_test() {
 
 /// with_agent_version sets the agent_version in the underlying AgentConfig.
 pub fn with_agent_version_builder_test() {
-  check_identity_builder(pig.with_agent_version, fn(c) { c.agent_version }, "1.0.0")
+  check_identity_builder(
+    pig.with_agent_version,
+    fn(c) { c.agent_version },
+    "1.0.0",
+  )
 }
 
 // ── System prompt auto-composition ────────────────────────────────

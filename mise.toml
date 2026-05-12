@@ -10,6 +10,13 @@ run = [
   "for dir in examples/*/; do echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; done",
 ]
 
+[tasks.check]
+description = "Check the library and all examples compile without warnings"
+run = [
+  "gleam check",
+  "for dir in examples/*/; do echo '→ Checking '$dir && (cd \"$dir\" && gleam check) || exit $?; done",
+]
+
 [tasks.test-integration]
 description = "Run integration tests against an OpenAI-compatible provider"
 run = "gleam test"

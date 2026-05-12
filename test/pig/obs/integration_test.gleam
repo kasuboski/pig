@@ -6,16 +6,16 @@
 //// 3. Multiple consumers receive events
 //// 4. Supervised path with consumers (tree starts correctly)
 
-import gleeunit
-import gleeunit/should
 import gleam/erlang/process
 import gleam/list
-import gleam/string
 import gleam/option
+import gleam/string
+import gleeunit
+import gleeunit/should
 import pig
+import pig/agent/state
 import pig/ai/message
 import pig/ai/provider
-import pig/agent/state
 import pig/obs/consumer_spec
 import pig/obs/events
 import pig/obs/listener
@@ -31,10 +31,7 @@ pub fn main() {
 // ── Test Helpers ─────────────────────────────────────────────────────
 
 /// Run a test with a temporary JSONL file. Auto-cleaned after callback returns.
-fn with_temp_file(
-  name: String,
-  run test_fn: fn(String) -> a,
-) -> a {
+fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
   let tmp =
     temporary.file()
     |> temporary.with_prefix("pig_integ_" <> name <> "_")
@@ -45,10 +42,7 @@ fn with_temp_file(
 
 /// Poll a file until it has non-empty content or retries are exhausted.
 /// Replaces fragile sleep-based waits with a deterministic retry loop.
-fn poll_until_content(
-  path: String,
-  remaining: Int,
-) -> Result(String, Nil) {
+fn poll_until_content(path: String, remaining: Int) -> Result(String, Nil) {
   case remaining {
     0 -> Error(Nil)
     _ -> {
@@ -112,16 +106,12 @@ pub fn telemetry_fires_through_dispatcher_test() {
 
   // Check for inference start event
   let has_start =
-    list.any(event_names, fn(name) {
-      name == events.inference_start_name()
-    })
+    list.any(event_names, fn(name) { name == events.inference_start_name() })
   has_start |> should.be_true()
 
   // Check for inference stop event
   let has_stop =
-    list.any(event_names, fn(name) {
-      name == events.inference_stop_name()
-    })
+    list.any(event_names, fn(name) { name == events.inference_stop_name() })
   has_stop |> should.be_true()
 
   // Clean up
@@ -162,9 +152,10 @@ pub fn session_writer_receives_events_via_dispatcher_test() {
   line_count |> should.not_equal(0)
 
   // Each line should be valid JSON (contains curly braces)
-  let has_json = list.any(non_empty_lines, fn(line) {
-    string.contains(line, "{") && string.contains(line, "}")
-  })
+  let has_json =
+    list.any(non_empty_lines, fn(line) {
+      string.contains(line, "{") && string.contains(line, "}")
+    })
   has_json |> should.be_true()
 }
 
@@ -208,31 +199,34 @@ pub fn supervised_path_with_consumers_test() {
   use tmp_file <- with_temp_file("supervised")
 
   // Create an AgentConfig with mock provider
-  let agent_config = state.config(fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant(
-      "mock response",
-      [],
-      option.None,
-    )))
-  })
+  let agent_config =
+    state.config(fn(_msgs, _tools) {
+      Ok(
+        provider.from_message(message.Assistant(
+          "mock response",
+          [],
+          option.None,
+        )),
+      )
+    })
 
   // Create consumer spec for session writer
   let writer_name = process.new_name("test_session_writer")
   let writer_spec = session.supervised(tmp_file, writer_name)
   let writer_start_fn = fn() { session.start_consumer(tmp_file) }
-  let consumer_spec = consumer_spec.ConsumerSpec(
-    spec: writer_spec,
-    name: writer_name,
-    start_fn: writer_start_fn,
-  )
+  let consumer_spec =
+    consumer_spec.ConsumerSpec(
+      spec: writer_spec,
+      name: writer_name,
+      start_fn: writer_start_fn,
+    )
 
   // Start supervised agent with consumer - this should not fail
   let assert Ok(supervised_agent) =
     supervisor.start_supervised(agent_config, [consumer_spec])
 
   // Run a prompt to verify the agent works
-  let assert Ok(response) =
-    supervisor.run(supervised_agent, "test prompt")
+  let assert Ok(response) = supervisor.run(supervised_agent, "test prompt")
   get_content(response) |> should.equal("mock response")
 
   // Stop the supervised agent
@@ -246,23 +240,27 @@ pub fn multiple_supervised_runs_with_consumers_test() {
   use tmp_file <- with_temp_file("multi_supervised")
 
   // Create an AgentConfig with mock provider
-  let agent_config = state.config(fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant(
-      "mock response",
-      [],
-      option.None,
-    )))
-  })
+  let agent_config =
+    state.config(fn(_msgs, _tools) {
+      Ok(
+        provider.from_message(message.Assistant(
+          "mock response",
+          [],
+          option.None,
+        )),
+      )
+    })
 
   // Create consumer spec for session writer
   let writer_name = process.new_name("test_session_writer_multi")
   let writer_spec = session.supervised(tmp_file, writer_name)
   let writer_start_fn = fn() { session.start_consumer(tmp_file) }
-  let consumer_spec = consumer_spec.ConsumerSpec(
-    spec: writer_spec,
-    name: writer_name,
-    start_fn: writer_start_fn,
-  )
+  let consumer_spec =
+    consumer_spec.ConsumerSpec(
+      spec: writer_spec,
+      name: writer_name,
+      start_fn: writer_start_fn,
+    )
 
   // Start supervised agent with consumer
   let assert Ok(supervised_agent) =

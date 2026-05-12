@@ -1,4 +1,4 @@
-import gleam/dynamic/decode as decode
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None}
@@ -7,7 +7,9 @@ import jscheam/schema
 import pig/ai/error.{type AiError}
 import pig/ai/http
 import pig/ai/message.{type Message}
-import pig/ai/provider.{InferenceMetadata, type InferenceResult, InferenceResult, default_metadata}
+import pig/ai/provider.{
+  type InferenceResult, InferenceMetadata, InferenceResult, default_metadata,
+}
 import pig/ai/tool_definition.{type ToolDefinition}
 
 /// Configuration for an OpenAI-compatible provider.
@@ -41,10 +43,10 @@ pub fn provider_with_base_url(
   let config = OpenAIConfig(api_key:, model:, base_url:)
   OpenAIProvider(
     config:,
-    call: fn(
-      messages: List(Message),
-      tools: List(ToolDefinition),
-    ) -> Result(InferenceResult, AiError) {
+    call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
+      InferenceResult,
+      AiError,
+    ) {
       do_inference(config, messages, tools)
     },
   )
@@ -69,7 +71,7 @@ pub fn build_request_body(
     [] -> base
     ts ->
       base
-        |> list.append([#("tools", json.array(ts, tool_to_json))])
+      |> list.append([#("tools", json.array(ts, tool_to_json))])
   }
   json.object(with_tools) |> json.to_string()
 }
@@ -149,7 +151,7 @@ fn assistant_to_json(
     tcs ->
       json.object(
         base
-          |> list.append([#("tool_calls", json.array(tcs, tool_call_to_json))]),
+        |> list.append([#("tool_calls", json.array(tcs, tool_call_to_json))]),
       )
   }
 }
@@ -188,7 +190,7 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
   // Decode metadata fields
   use response_id <- decode.field("id", decode.optional(decode.string))
   use response_model <- decode.field("model", decode.optional(decode.string))
-  
+
   // Decode choices to get message and finish_reason
   use choices <- decode.field("choices", decode.list(choice_decoder()))
   case list.first(choices) {
@@ -198,13 +200,14 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
         None,
         decode.optional(usage_decoder()),
       )
-      let metadata = InferenceMetadata(
-        response_id: response_id,
-        response_model: response_model,
-        finish_reason: finish_reason,
-        input_tokens: option.map(usage, fn(u) { u.prompt_tokens }),
-        output_tokens: option.map(usage, fn(u) { u.completion_tokens }),
-      )
+      let metadata =
+        InferenceMetadata(
+          response_id: response_id,
+          response_model: response_model,
+          finish_reason: finish_reason,
+          input_tokens: option.map(usage, fn(u) { u.prompt_tokens }),
+          output_tokens: option.map(usage, fn(u) { u.completion_tokens }),
+        )
       decode.success(InferenceResult(message: msg, metadata:))
     }
     Error(Nil) ->

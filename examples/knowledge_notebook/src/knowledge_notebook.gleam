@@ -26,6 +26,7 @@
 ////   cd examples/knowledge_notebook
 ////   gleam run
 
+import envoy
 import gleam/io
 import gleam/list
 import gleam/result
@@ -35,7 +36,6 @@ import pig/ai/error
 import pig/ai/message
 import pig/ai/openai
 import pig/workspace
-import envoy
 
 // ── Source Content ───────────────────────────────────────────────────
 // Pre-seeded reference texts for the agent to read and organize.
@@ -140,23 +140,21 @@ fn seed_workspace(ws: workspace.Workspace) -> Nil {
     }
     Error(_) -> {
       let _ = workspace.mkdir(ws, "/sources")
-      let _ = workspace.write_file(
-        ws,
-        "/sources/cell_theory.md",
-        cell_theory_source(),
-      )
+      let _ =
+        workspace.write_file(
+          ws,
+          "/sources/cell_theory.md",
+          cell_theory_source(),
+        )
       let _ = workspace.write_file(ws, "/sources/mitosis.md", mitosis_source())
-      let _ = workspace.write_file(
-        ws,
-        "/sources/photosynthesis.md",
-        photosynthesis_source(),
-      )
+      let _ =
+        workspace.write_file(
+          ws,
+          "/sources/photosynthesis.md",
+          photosynthesis_source(),
+        )
       let _ = workspace.remember(ws, "user_level", "beginner")
-      let _ = workspace.remember(
-        ws,
-        "studied_topics",
-        "cell_theory",
-      )
+      let _ = workspace.remember(ws, "studied_topics", "cell_theory")
       io.println("🌱 Seeded workspace with biology sources.")
     }
   }
@@ -175,9 +173,7 @@ fn print_workspace_state(ws: workspace.Workspace) -> Nil {
         // List children of each directory
         case workspace.list_directory(ws, "/" <> entry) {
           Ok(children) ->
-            list.each(children, fn(child) {
-              io.println("    " <> child)
-            })
+            list.each(children, fn(child) { io.println("    " <> child) })
           Error(_) -> Nil
         }
       })
@@ -211,25 +207,25 @@ fn print_workspace_state(ws: workspace.Workspace) -> Nil {
 
 fn system_prompt() -> String {
   "You are a biology study assistant. You have tools to read and write files "
-    <> "and to store key-value memories. Use them to complete your tasks.\n\n"
-    <> "IMPORTANT: You MUST call tools to do your work. Do not describe or "
-    <> "narrate what you would do — actually call the tools.\n\n"
-    <> "When writing study notes, include:\n"
-    <> "- A clear title\n"
-    <> "- A summary in your own words\n"
-    <> "- Key terms with definitions\n"
-    <> "- 2-3 review questions\n\n"
-    <> "Be thorough but accessible. The user is a beginner."
+  <> "and to store key-value memories. Use them to complete your tasks.\n\n"
+  <> "IMPORTANT: You MUST call tools to do your work. Do not describe or "
+  <> "narrate what you would do — actually call the tools.\n\n"
+  <> "When writing study notes, include:\n"
+  <> "- A clear title\n"
+  <> "- A summary in your own words\n"
+  <> "- Key terms with definitions\n"
+  <> "- 2-3 review questions\n\n"
+  <> "Be thorough but accessible. The user is a beginner."
 }
 
 fn user_prompt() -> String {
   "I'm studying biology and need your help organizing my notes. Please:\n\n"
-    <> "1. Call list_directory with path \"/sources\" to see the reference materials\n"
-    <> "2. Call read_file for each source to read the content\n"
-    <> "3. Call recall with key \"studied_topics\" to check what I've already covered\n"
-    <> "4. Call write_file to create organized study notes in /notes for each topic\n"
-    <> "5. Call remember with key \"studied_topics\" to update what we studied today\n\n"
-    <> "Start by calling list_directory now."
+  <> "1. Call list_directory with path \"/sources\" to see the reference materials\n"
+  <> "2. Call read_file for each source to read the content\n"
+  <> "3. Call recall with key \"studied_topics\" to check what I've already covered\n"
+  <> "4. Call write_file to create organized study notes in /notes for each topic\n"
+  <> "5. Call remember with key \"studied_topics\" to update what we studied today\n\n"
+  <> "Start by calling list_directory now."
 }
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -261,8 +257,7 @@ pub fn main() {
   // Show what's persisted — demonstrates survival across sessions
   print_workspace_state(ws)
 
-  let provider =
-    openai.provider_with_base_url(api_key(), model(), base_url())
+  let provider = openai.provider_with_base_url(api_key(), model(), base_url())
 
   // Register all 7 workspace tools in one call
   let cfg =
@@ -276,8 +271,7 @@ pub fn main() {
 
   io.println("\n🤖 Asking agent to organize study notes...\n")
 
-  let result =
-    pig.run_with_timeout(agent, user_prompt(), 120_000)
+  let result = pig.run_with_timeout(agent, user_prompt(), 120_000)
 
   case result {
     Ok(message.Assistant(content:, ..)) -> {

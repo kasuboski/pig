@@ -57,7 +57,7 @@ pub fn init_creates_root_inode_test() {
     let assert Ok(size) = decode.run(row, decode.at([2], decode.int))
 
     should.equal(ino, 1)
-    should.equal(mode, 16877)
+    should.equal(mode, 16_877)
     should.equal(size, 0)
   })
 }
@@ -80,7 +80,7 @@ pub fn init_is_idempotent_test() {
     let assert Ok(mode) = decode.run(row, decode.at([1], decode.int))
 
     should.equal(ino, 1)
-    should.equal(mode, 16877)
+    should.equal(mode, 16_877)
   })
 }
 

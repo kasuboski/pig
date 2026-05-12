@@ -38,7 +38,11 @@ pub fn new_registry() -> ToolRegistry {
 /// Register a tool in the registry. If a tool with the same name already
 /// exists, it is overwritten.
 pub fn register(registry: ToolRegistry, tool: Tool) -> ToolRegistry {
-  ToolRegistry(entries: dict.insert(registry.entries, tool.definition.name, tool))
+  ToolRegistry(entries: dict.insert(
+    registry.entries,
+    tool.definition.name,
+    tool,
+  ))
 }
 
 /// Look up a tool by name. Returns `Error(Nil)` if not found.

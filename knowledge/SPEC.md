@@ -9,6 +9,7 @@ A library for building resilient, observable, and skill-augmented AI agents on t
 *   **Provider Agnostic:** Normalize interactions across any OpenAI-compatible LLM API.
 *   **Resilient by Default:** Leverage OTP supervision trees to ensure tool failures or API timeouts don't crash the system.
 *   **Deep Observability:** Dispatcher-actor pattern with BEAM `:telemetry` for world-class tracing and debugging.
+*   **Sans-IO Core:** The agent core is a pure state machine — `(state, msg) → (state, effects)` — with all IO in a separate runtime interpreter. Testable in microseconds, no mocks needed.
 
 ---
 
@@ -17,12 +18,12 @@ A library for building resilient, observable, and skill-augmented AI agents on t
 The library is organized into layered modules:
 
 1.  **`pig/ai` (The Brain):** Normalizes LLM APIs into a unified `Provider` interface.
-2.  **`pig/agent` (The Nervous System):** An OTP Actor that manages conversation state, message history, and the execution loop.
+2.  **`pig/agent` (The Nervous System):** A pure state machine (`update.gleam`) plus an OTP runtime interpreter (`runtime.gleam`). The core has zero IO — no provider calls, no tool execution, no telemetry, no hooks. The runtime interprets effect declarations against the real world.
 3.  **`pig/skill` (The Knowledge):** A system for loading Markdown-based instructions and exposing them to the agent via a librarian tool.
 4.  **`pig/tool` (The Hands):** A typed interface for defining functions the LLM can invoke.
 5.  **`pig/workspace` (The Memory):** A SQLite-backed virtual filesystem and key-value store for agent persistence.
-6.  **`pig/hooks` (The Guardrails):** Composable lifecycle hooks that mediate inference, tool calls, and errors.
-7.  **`pig/obs` (The Senses):** A dispatcher-actor pattern that emits telemetry and fans out structured `SessionEvent` values to consumers.
+6.  **`pig/hooks` (The Guardrails):** Composable lifecycle hooks that mediate inference, tool calls, and errors. Hooks run in the runtime as middleware on effects — the core is unaware of them.
+7.  **`pig/obs` (The Senses):** A dispatcher-actor pattern that emits telemetry and fans out structured `SessionEvent` values to consumers. All events are produced by the runtime, not the core.
 
 ---
 
@@ -37,14 +38,25 @@ A unified type system for messages and a common interface for model providers.
     *   `InferenceResult`: Wraps a `Message` with `InferenceMetadata` (response ID, model, finish reason, token counts).
 *   **Interface:** A provider is a function: `fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)`.
 
-### 3.2 `pig/agent`: The Stateful Actor
-The Agent is a `gleam/otp/actor`. It maintains internal state including message history, active skills, available tools, and hook list.
+### 3.2 `pig/agent`: Sans-IO State Machine + Runtime
 
-*   **The Loop:** A recursive process that:
-    1.  Sends the current context to the Provider.
-    2.  Parses the response for `ToolCalls`.
-    3.  Executes tools (in parallel via `gleam/otp/task`).
-    4.  Appends results to history and recurses until a final answer is reached.
+The agent is split into two layers:
+
+**Pure core (`pig/agent/update.gleam`):** A state machine with the signature `update(state, msg) -> StepResult(msg)`. It has no IO — no provider calls, no tool execution, no telemetry, no hooks. Given the same `(state, msg)`, it always produces the same `(state, effects)`. This makes it trivially testable with zero mocks.
+
+The core operates on three types:
+
+*   **`AgentMsg`:** `UserPrompt(String)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
+*   **`Effect(msg):** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it.
+*   **`StepResult(msg):** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
+
+**Runtime interpreter (`pig/agent/runtime.gleam`):** An OTP actor that holds the provider function, tool registry, hooks list, and dispatcher subject. The runtime loop:
+
+1.  Receives a `Run(prompt)` message.
+2.  Calls `update(state, UserPrompt(prompt))` — pure.
+3.  For each effect returned, applies hooks as middleware, then executes the effect.
+4.  Produces `SessionEvent` values from hook processing and effect execution.
+5.  Feeds results back as new `AgentMsg` values and loops.
 
 ### 3.3 `pig/skill`: Logic-less Knowledge
 A Skill is a directory on disk containing a `SKILL.md` (with YAML frontmatter for name/description) and supplementary files.
@@ -58,7 +70,7 @@ A SQLite-backed abstraction providing:
 *   **Tool Generation:** `workspace.all_tools(connection)` returns a list of tools the LLM can invoke to interact with the workspace.
 
 ### 3.5 `pig/hooks`: Lifecycle Mediation
-Hooks intercept agent lifecycle events and return actions that control behavior.
+Hooks intercept agent lifecycle events and return actions that control behavior. Hooks run in the runtime as middleware on effects — the core is pure and has no knowledge of hooks.
 *   **Hook Points:** `on_before_inference`, `on_after_inference`, `on_tool_call`, `on_tool_result`, `on_error`, `on_complete`, `on_session_start`, `on_session_shutdown`.
 *   **Actions:** Hooks return typed actions — `AllowTool`/`BlockTool`, `KeepResult`/`ReplaceResult`, `KeepMessages`/`ReplaceMessages`.
 *   **Composition:** Multiple hooks chain together. The first hook to block or replace wins.
@@ -74,15 +86,13 @@ The observability system uses a dispatcher-actor pattern.
 ## 4. The Execution Loop Detail
 
 When `pig.run(agent, prompt)` is called:
-1.  **Entry:** The prompt is wrapped in a `User` message and appended to history.
-2.  **Inference:** The actor calls the configured `Provider`.
-3.  **Branching:**
-    *   **If Content:** The loop completes, returning the response.
-    *   **If ToolCalls:**
-        *   The actor spawns `Task`s for each tool call.
-        *   Results are collected into `Tool` messages.
-        *   The actor updates history and calls itself (Step 2).
-4.  **Stop:** The actor checks its mailbox for `Stop` signals between every iteration.
+1.  **Entry:** The runtime receives `Run(prompt)`, wraps it in `UserPrompt`, calls `update(state, UserPrompt(prompt))`. The core returns `Continue(state, [CallProvider(messages, tools, on_response)])`.
+2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (may transform messages), calls the provider, fires `on_after_inference` hooks, emits `InferenceStarted`/`InferenceCompleted` events, then feeds the response back as `ProviderResponded`.
+3.  **Branching:** The core processes `ProviderResponded`:
+    *   **If text:** Returns `Done(state, message)`. The runtime returns the message to the caller.
+    *   **If tool calls:** Returns `Continue(state, [ExecuteTools(calls, on_results)])`. The runtime applies `on_tool_call` hooks (allow/block), executes allowed tools in parallel, applies `on_tool_result` hooks, emits events, then feeds results back as `ToolResults`.
+4.  **Loop:** The runtime continues calling `update` with each response until it gets `Done` or `Failed`.
+5.  **Circuit breaker:** If `exceeded_max_iterations` is true, the core returns `Failed` instead of `Continue`.
 
 ---
 
@@ -163,15 +173,16 @@ The library provides two start modes:
       │     └── terminal_printer (named)
       └── pig_agent (named)
     ```
-*   **Tool Isolation:** Tools are executed in transient Task processes. If a tool crashes, the Agent process remains stable and receives an `Error` result it can report to the LLM.
+*   **Tool Isolation:** Tools are executed in spawned BEAM processes (one per tool, collected in order). If a tool crashes, the runtime catches the timeout and returns an error result — the agent stays alive.
 
 ### 6.2 Parallelism
-The loop executes multiple tool calls in parallel using BEAM processes. If an LLM requests 5 files, they are read concurrently, significantly reducing wall-clock time.
+The runtime's `ExecuteTools` handler spawns one BEAM process per allowed tool call and collects results in order. This is a runtime implementation detail — the core just says "execute these tools" via the `ExecuteTools` effect. The runtime decides concurrency.
 
 ### 6.3 State Immutability
-Every step of the agent's "thinking" results in a new, immutable `AgentState`. This allows for:
+Every step of the agent's "thinking" results in a new, immutable `AgentState`. The pure `update` function never mutates — it returns a new state. This allows for:
 *   **Snapshots:** Saving the state at any point.
 *   **Branching:** Exploring two different responses from the same point in a conversation by spawning two different actors with the same state.
+*   **Instant testing:** `(state, msg) → (state, effects)` with zero IO.
 
 ---
 
@@ -179,7 +190,7 @@ Every step of the agent's "thinking" results in a new, immutable `AgentState`. T
 
 Library users extend behavior through:
 1.  **Custom Tools:** Providing Gleam functions that the agent can call.
-2.  **Hooks:** Composable lifecycle hooks that can block tools, replace messages, or transform results.
+2.  **Hooks:** Composable lifecycle hooks that can block tools, replace messages, or transform results. Applied by the runtime as middleware on effects.
 3.  **Skill Markdown:** Refining the agent's behavior and domain knowledge by editing Markdown files without touching code.
 4.  **Workspace:** SQLite-backed persistence for file I/O and key-value storage.
 5.  **Custom Consumers:** Registering actors that receive `SessionEvent` values — enables OTel exporters, custom analytics, or alternative session stores.
@@ -193,4 +204,4 @@ Library users extend behavior through:
 *   **Async Persistence:** Logging and saving sessions must never block the LLM inference or tool execution. Fire-and-forget `process.send` throughout.
 *   **Normalized Messaging:** Regardless of provider, the user only ever interacts with the `pig/ai.Message` type.
 *   **Optional Observability:** No dispatcher configured means zero overhead. Observability never crashes the agent.
-*   **Hooks over Middleware:** Composable hook functions return typed actions rather than opaque middleware chains.
+*   **Sans-IO Core:** The agent logic is a pure function `(state, msg) -> StepResult(msg)`. All IO lives in the runtime interpreter. The core has no imports for HTTP, process spawning, telemetry, or hooks.

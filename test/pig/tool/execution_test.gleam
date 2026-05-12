@@ -48,11 +48,7 @@ pub fn execute_tool_handler_receives_dynamic_test() {
 pub fn execute_unknown_tool_returns_error_test() {
   let registry = tool.new_registry()
   let call =
-    message.ToolCall(
-      id: "call_3",
-      name: "no_such_tool",
-      arguments_json: "{}",
-    )
+    message.ToolCall(id: "call_3", name: "no_such_tool", arguments_json: "{}")
   let assert Error(err) = execution.execute_tool(registry, call)
   err.message == "unknown tool \"no_such_tool\""
 }
@@ -62,11 +58,7 @@ pub fn execute_unknown_tool_in_nonempty_registry_test() {
     tool.new_registry()
     |> tool.register(echo_tool())
   let call =
-    message.ToolCall(
-      id: "call_4",
-      name: "missing",
-      arguments_json: "{}",
-    )
+    message.ToolCall(id: "call_4", name: "missing", arguments_json: "{}")
   let assert Error(err) = execution.execute_tool(registry, call)
   err.message == "unknown tool \"missing\""
 }
@@ -91,12 +83,7 @@ pub fn execute_tool_empty_string_args_returns_error_test() {
   let registry =
     tool.new_registry()
     |> tool.register(echo_tool())
-  let call =
-    message.ToolCall(
-      id: "call_6",
-      name: "echo",
-      arguments_json: "",
-    )
+  let call = message.ToolCall(id: "call_6", name: "echo", arguments_json: "")
   let assert Error(err) = execution.execute_tool(registry, call)
   err.message == "invalid JSON arguments for tool \"echo\""
 }
@@ -107,12 +94,7 @@ pub fn execute_tool_handler_error_propagates_test() {
   let registry =
     tool.new_registry()
     |> tool.register(failing_tool())
-  let call =
-    message.ToolCall(
-      id: "call_7",
-      name: "fail",
-      arguments_json: "{}",
-    )
+  let call = message.ToolCall(id: "call_7", name: "fail", arguments_json: "{}")
   let assert Error(err) = execution.execute_tool(registry, call)
   err.message == "something went wrong"
 }
@@ -121,12 +103,11 @@ pub fn execute_tool_handler_error_propagates_test() {
 
 fn echo_tool() -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "echo",
-        description: "Echo tool",
-        parameters: schema.object([]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "echo",
+      description: "Echo tool",
+      parameters: schema.object([]),
+    ),
     handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       let assert Ok(msg) =
         decode.run(args, decode.field("msg", decode.string, decode.success))
@@ -137,14 +118,15 @@ fn echo_tool() -> tool.Tool {
 
 fn field_extractor_tool() -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "extract",
-        description: "Extracts city field",
-        parameters: schema.object([]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "extract",
+      description: "Extracts city field",
+      parameters: schema.object([]),
+    ),
     handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
-      case decode.run(args, decode.field("city", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("city", decode.string, decode.success))
+      {
         Ok(city) -> Ok(json.object([#("result", json.string(city))]))
         Error(_) ->
           Error(tool.ToolError(message: "missing or invalid 'city' field"))
@@ -155,12 +137,11 @@ fn field_extractor_tool() -> tool.Tool {
 
 fn failing_tool() -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "fail",
-        description: "Always fails",
-        parameters: schema.object([]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "fail",
+      description: "Always fails",
+      parameters: schema.object([]),
+    ),
     handler: fn(_args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       Error(tool.ToolError(message: "something went wrong"))
     },

@@ -21,34 +21,31 @@ import simplifile
 /// It reads the SKILL.md content from disk and returns it as JSON.
 pub fn librarian_tool(skills: List(skill.Skill)) -> tool.Tool {
   tool.Tool(
-    definition:
-      tool_definition.ToolDefinition(
-        name: "read_skill",
-        description:
-          "Read the full content of a skill by name. "
-          <> "Returns the SKILL.md content for the requested skill.",
-        parameters:
-          schema.object([schema.prop("name", schema.string())]),
-      ),
+    definition: tool_definition.ToolDefinition(
+      name: "read_skill",
+      description: "Read the full content of a skill by name. "
+        <> "Returns the SKILL.md content for the requested skill.",
+      parameters: schema.object([schema.prop("name", schema.string())]),
+    ),
     handler: fn(args: dynamic.Dynamic) {
-      case decode.run(args, decode.field("name", decode.string, decode.success)) {
+      case
+        decode.run(args, decode.field("name", decode.string, decode.success))
+      {
         Ok(name) -> {
           case find_skill(skills, name) {
             Ok(s) -> read_skill_content(s)
             Error(Nil) ->
               Error(tool.ToolError(
-                message:
-                  "Unknown skill \""
-                  <> name
-                  <> "\". Available: "
-                  <> available_names(skills),
+                message: "Unknown skill \""
+                <> name
+                <> "\". Available: "
+                <> available_names(skills),
               ))
           }
         }
         Error(_) ->
           Error(tool.ToolError(
-            message:
-              "Invalid arguments: expected {\"name\": \"<skill-name>\"}",
+            message: "Invalid arguments: expected {\"name\": \"<skill-name>\"}",
           ))
       }
     },

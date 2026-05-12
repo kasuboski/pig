@@ -35,7 +35,8 @@ pub fn remember_stores_value_test() {
 /// Recall nonexistent key returns Error(NotFound)
 pub fn recall_missing_key_returns_error_test() {
   with_db(fn(conn) {
-    let assert Error(kv.NotFound(key: "missing_key")) = kv.recall(conn, "missing_key")
+    let assert Error(kv.NotFound(key: "missing_key")) =
+      kv.recall(conn, "missing_key")
   })
 }
 

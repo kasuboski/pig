@@ -22,8 +22,7 @@ pub fn build_request(
         |> set_headers(headers)
         |> request.set_body(body),
       )
-    Error(_) ->
-      Error(error.ApiError("Invalid URL: " <> url))
+    Error(_) -> Error(error.ApiError("Invalid URL: " <> url))
   }
 }
 
@@ -49,9 +48,7 @@ pub fn map_http_error(err: httpc.HttpError) -> AiError {
     httpc.InvalidUtf8Response ->
       error.InvalidResponse("Response body was not valid UTF-8")
     httpc.FailedToConnect(..) ->
-      error.ApiError(
-        "Failed to connect: " <> format_connect_error(err),
-      )
+      error.ApiError("Failed to connect: " <> format_connect_error(err))
   }
 }
 
@@ -67,10 +64,7 @@ pub fn post(
     httpc.send(req)
     |> result.map_error(map_http_error),
   )
-  logging.log(
-    logging.Debug,
-    "Response: HTTP " <> int.to_string(resp.status),
-  )
+  logging.log(logging.Debug, "Response: HTTP " <> int.to_string(resp.status))
   map_response(resp)
 }
 
@@ -90,7 +84,10 @@ fn set_headers(
 fn format_connect_error(err: httpc.HttpError) -> String {
   case err {
     httpc.FailedToConnect(ip4:, ip6:) ->
-      "ipv4=" <> format_socket_error(ip4) <> " ipv6=" <> format_socket_error(ip6)
+      "ipv4="
+      <> format_socket_error(ip4)
+      <> " ipv6="
+      <> format_socket_error(ip6)
     _ -> "unknown connection error"
   }
 }
@@ -101,5 +98,3 @@ fn format_socket_error(err: httpc.ConnectError) -> String {
     httpc.TlsAlert(code:, detail:) -> code <> ": " <> detail
   }
 }
-
-

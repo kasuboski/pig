@@ -13,12 +13,7 @@ import simplifile
 
 /// A loaded skill with its metadata.
 pub type Skill {
-  Skill(
-    name: String,
-    description: String,
-    path: String,
-    files: List(String),
-  )
+  Skill(name: String, description: String, path: String, files: List(String))
 }
 
 /// Errors that can occur during skill loading.
