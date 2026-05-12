@@ -3,7 +3,6 @@ import gleam/list
 import gleam/option
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig
 import pig/ai/message
 import pig/hooks
@@ -103,7 +102,7 @@ pub fn start_without_consumers_works_test() {
 
   // Run a prompt to verify the agent works
   let assert Ok(response) = pig.run(agent, "test")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   pig.stop(agent)
 }
@@ -117,7 +116,7 @@ pub fn start_without_dispatcher_configured_works_test() {
 
   // After start, the agent should be functional
   let assert Ok(response) = pig.run(agent, "test")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   pig.stop(agent)
 }
@@ -134,7 +133,7 @@ pub fn start_with_session_writer_registers_consumer_test() {
 
   // Run a prompt to trigger events
   let assert Ok(response) = pig.run(agent, "test")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   // Give the consumer time to write
   let _ = process.receive(process.new_subject(), 100)
@@ -151,7 +150,7 @@ pub fn start_with_session_writer_registers_consumer_test() {
 
   // Should have at least one event line
   let line_count = list.length(non_empty_lines)
-  line_count |> should.not_equal(0)
+  assert line_count != 0
 }
 
 // ── Hooks Tests ──────────────────────────────────────────────────────
@@ -166,7 +165,7 @@ pub fn with_hooks_adds_hooks_to_config_test() {
   // Verify by starting and running — hooks don't crash
   let assert Ok(agent) = pig.start(config)
   let assert Ok(response) = pig.run(agent, "test")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
   pig.stop(agent)
 }
 
@@ -182,7 +181,7 @@ pub fn with_hooks_chains_multiple_test() {
   // Verify by starting and running — multiple hooks don't crash
   let assert Ok(agent) = pig.start(config)
   let assert Ok(response) = pig.run(agent, "test")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
   pig.stop(agent)
 }
 
@@ -193,12 +192,12 @@ pub fn with_session_writer_sets_session_path_test() {
     |> pig.with_session_writer("/tmp/test.jsonl")
 
   let agent_cfg = pig.agent_config(config)
-  agent_cfg.session_path |> should.equal(option.Some("/tmp/test.jsonl"))
+  assert agent_cfg.session_path == option.Some("/tmp/test.jsonl")
 }
 
 // Test 11: default config has no session_path
 pub fn default_config_has_no_session_path_test() {
   let config = pig.test_harness()
   let agent_cfg = pig.agent_config(config)
-  agent_cfg.session_path |> should.equal(option.None)
+  assert agent_cfg.session_path == option.None
 }

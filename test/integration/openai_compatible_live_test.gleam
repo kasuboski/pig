@@ -11,7 +11,6 @@ import gleam/json
 import gleam/option
 import gleam/string
 import gleeunit
-import gleeunit/should
 import integration/config
 import integration/gate
 import jscheam/schema
@@ -46,8 +45,7 @@ pub fn simple_text_completion_test() {
       let assert Ok(InferenceResult(message: msg, metadata: _)) = result
       case msg {
         message.Assistant(content:, tool_calls: [], thinking: _) -> {
-          string.contains(string.lowercase(content), "hello")
-          |> should.equal(True)
+          assert string.contains(string.lowercase(content), "hello") == True
         }
         _ -> panic as "expected Assistant with no tool calls"
       }
@@ -65,7 +63,7 @@ pub fn response_has_metadata_test() {
       let messages = [message.User("Say exactly: test")]
       let result = prov.call(messages, [])
       let assert Ok(InferenceResult(message: _, metadata: meta)) = result
-      option.is_some(meta.finish_reason) |> should.equal(True)
+      assert option.is_some(meta.finish_reason) == True
     }
   }
 }
@@ -120,13 +118,13 @@ pub fn tool_call_roundtrip_test() {
           message: message.Assistant(tool_calls: [tc, ..], ..),
           ..,
         )) -> {
-          tc.name |> should.equal("add")
+          assert tc.name == "add"
         }
         Ok(InferenceResult(
           message: message.Assistant(content:, tool_calls: [], ..),
           ..,
         )) -> {
-          string.contains(content, "10") |> should.equal(True)
+          assert string.contains(content, "10") == True
         }
         Error(e) -> {
           panic as { "provider returned error: " <> ai_error_to_string(e) }

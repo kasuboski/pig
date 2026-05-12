@@ -7,7 +7,6 @@
 import gleam/list
 import gleam/option.{None}
 import gleeunit
-import gleeunit/should
 import pig/agent/state
 import pig/ai/message
 import pig/ai/provider
@@ -136,19 +135,19 @@ pub fn exceeded_max_iterations_boundary_test() {
 /// Default config has no session path.
 pub fn default_config_has_no_session_path_test() {
   let cfg = state.config(dummy_provider())
-  cfg.session_path |> should.equal(None)
+  assert cfg.session_path == None
 }
 
 /// with_session_path sets the field.
 pub fn with_session_path_sets_path_test() {
   let cfg = state.config(dummy_provider())
   let cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
-  cfg2.session_path |> should.equal(option.Some("/tmp/test.jsonl"))
+  assert cfg2.session_path == option.Some("/tmp/test.jsonl")
 }
 
 /// with_session_path does not mutate original.
 pub fn with_session_path_does_not_mutate_original_test() {
   let cfg = state.config(dummy_provider())
   let _cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
-  cfg.session_path |> should.equal(None)
+  assert cfg.session_path == None
 }

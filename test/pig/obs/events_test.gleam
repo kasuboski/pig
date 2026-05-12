@@ -3,7 +3,6 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
-import gleeunit/should
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}
@@ -420,8 +419,8 @@ pub fn to_dispatcher_sends_event_to_dispatcher_test() {
 
   let assert Ok(received) = process.receive(consumer, 2000)
   let assert InferenceStarted(model:, message_count:) = received
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  assert model == "gpt-4"
+  assert message_count == 3
 
   process.send(disp, dispatcher.Stop)
 }
@@ -442,7 +441,7 @@ pub fn to_dispatcher_triggers_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [events.InferenceStart(model:, ..)] = captured
-  model |> should.equal("gpt-4")
+  assert model == "gpt-4"
 
   listener.detach(handle)
   process.send(disp, dispatcher.Stop)

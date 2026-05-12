@@ -8,7 +8,6 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
 import gleeunit
-import gleeunit/should
 import pig/ai/error
 import pig/ai/message
 import pig/hooks
@@ -22,7 +21,7 @@ pub fn main() -> Nil {
 pub fn new_creates_hooks_with_name_test() {
   let h = hooks.new("my-hooks")
   let hooks.Hooks(name:, ..) = h
-  should.equal(name, "my-hooks")
+  assert name == "my-hooks"
 }
 
 pub fn new_hooks_allows_tools_by_default_test() {
@@ -36,7 +35,7 @@ pub fn new_hooks_allows_tools_by_default_test() {
   let action = case h {
     hooks.Hooks(on_tool_call: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.AllowTool)
+  assert action == hooks.AllowTool
 }
 
 pub fn new_hooks_keeps_results_by_default_test() {
@@ -52,7 +51,7 @@ pub fn new_hooks_keeps_results_by_default_test() {
   let action = case h {
     hooks.Hooks(on_tool_result: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.KeepResult)
+  assert action == hooks.KeepResult
 }
 
 pub fn new_hooks_keeps_messages_by_default_test() {
@@ -62,7 +61,7 @@ pub fn new_hooks_keeps_messages_by_default_test() {
   let action = case h {
     hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.KeepMessages)
+  assert action == hooks.KeepMessages
 }
 
 pub fn on_tool_call_replaces_handler_test() {
@@ -78,7 +77,7 @@ pub fn on_tool_call_replaces_handler_test() {
   let action = case h {
     hooks.Hooks(on_tool_call: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.BlockTool("blocked"))
+  assert action == hooks.BlockTool("blocked")
 }
 
 pub fn on_tool_result_replaces_handler_test() {
@@ -96,7 +95,7 @@ pub fn on_tool_result_replaces_handler_test() {
   let action = case h {
     hooks.Hooks(on_tool_result: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.ReplaceResult("new result", True))
+  assert action == hooks.ReplaceResult("new result", True)
 }
 
 pub fn on_before_inference_replaces_handler_test() {
@@ -111,7 +110,7 @@ pub fn on_before_inference_replaces_handler_test() {
   let action = case h {
     hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
   }
-  should.equal(action, hooks.ReplaceMessages(new_messages))
+  assert action == hooks.ReplaceMessages(new_messages)
 }
 
 pub fn on_after_inference_replaces_handler_test() {
@@ -220,33 +219,33 @@ pub fn notify_complete_calls_all_handlers_test() {
 
 pub fn allow_tool_returns_allow_test() {
   let action = hooks.allow_tool()
-  should.equal(action, hooks.AllowTool)
+  assert action == hooks.AllowTool
 }
 
 pub fn block_tool_returns_block_with_reason_test() {
   let action = hooks.block_tool("not allowed")
-  should.equal(action, hooks.BlockTool("not allowed"))
+  assert action == hooks.BlockTool("not allowed")
 }
 
 pub fn keep_result_returns_keep_test() {
   let action = hooks.keep_result()
-  should.equal(action, hooks.KeepResult)
+  assert action == hooks.KeepResult
 }
 
 pub fn replace_result_returns_replace_test() {
   let action = hooks.replace_result("new content", True)
-  should.equal(action, hooks.ReplaceResult("new content", True))
+  assert action == hooks.ReplaceResult("new content", True)
 }
 
 pub fn keep_messages_returns_keep_test() {
   let action = hooks.keep_messages()
-  should.equal(action, hooks.KeepMessages)
+  assert action == hooks.KeepMessages
 }
 
 pub fn replace_messages_returns_replace_test() {
   let messages = [message.User("test")]
   let action = hooks.replace_messages(messages)
-  should.equal(action, hooks.ReplaceMessages(messages))
+  assert action == hooks.ReplaceMessages(messages)
 }
 
 // ── Decision Type Tests ──────────────────────────────────────────────
@@ -261,7 +260,7 @@ pub fn decide_tool_call_allows_when_no_hooks_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([], event)
-  should.equal(decision, hooks.ToolAllowed)
+  assert decision == hooks.ToolAllowed
 }
 
 pub fn decide_tool_call_allows_when_all_allow_test() {
@@ -275,7 +274,7 @@ pub fn decide_tool_call_allows_when_all_allow_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h], event)
-  should.equal(decision, hooks.ToolAllowed)
+  assert decision == hooks.ToolAllowed
 }
 
 pub fn decide_tool_call_blocked_carries_attribution_test() {
@@ -289,10 +288,8 @@ pub fn decide_tool_call_blocked_carries_attribution_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h], event)
-  should.equal(
-    decision,
-    hooks.ToolBlocked(hook_name: "safety-guard", reason: "dangerous"),
-  )
+  assert decision ==
+    hooks.ToolBlocked(hook_name: "safety-guard", reason: "dangerous")
 }
 
 pub fn decide_tool_call_first_block_wins_test() {
@@ -309,7 +306,7 @@ pub fn decide_tool_call_first_block_wins_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h1, h2], event)
-  should.equal(decision, hooks.ToolBlocked(hook_name: "first", reason: "nope"))
+  assert decision == hooks.ToolBlocked(hook_name: "first", reason: "nope")
 }
 
 pub fn decide_tool_call_allow_then_block_blocks_test() {
@@ -326,10 +323,8 @@ pub fn decide_tool_call_allow_then_block_blocks_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h1, h2], event)
-  should.equal(
-    decision,
-    hooks.ToolBlocked(hook_name: "blocker", reason: "stop"),
-  )
+  assert decision ==
+    hooks.ToolBlocked(hook_name: "blocker", reason: "stop")
 }
 
 // decide_tool_result returns ToolResultDecision with attribution
@@ -344,7 +339,7 @@ pub fn decide_tool_result_unchanged_when_no_hooks_test() {
       duration_ms: 100,
     )
   let decision = hooks.decide_tool_result([], event)
-  should.equal(decision, hooks.ResultUnchanged(original_event: event))
+  assert decision == hooks.ResultUnchanged(original_event: event)
 }
 
 pub fn decide_tool_result_unchanged_when_all_keep_test() {
@@ -360,7 +355,7 @@ pub fn decide_tool_result_unchanged_when_all_keep_test() {
       duration_ms: 100,
     )
   let decision = hooks.decide_tool_result([h], event)
-  should.equal(decision, hooks.ResultUnchanged(original_event: event))
+  assert decision == hooks.ResultUnchanged(original_event: event)
 }
 
 pub fn decide_tool_result_transformed_carries_attribution_test() {
@@ -377,8 +372,8 @@ pub fn decide_tool_result_transformed_carries_attribution_test() {
     )
   let decision = hooks.decide_tool_result([h], event)
   let assert hooks.ResultTransformed(final_event:, transformers:) = decision
-  should.equal(final_event.result, "scrubbed")
-  should.equal(transformers, ["scrubber"])
+  assert final_event.result == "scrubbed"
+  assert transformers == ["scrubber"]
 }
 
 pub fn decide_tool_result_chain_carries_all_transformers_test() {
@@ -402,8 +397,8 @@ pub fn decide_tool_result_chain_carries_all_transformers_test() {
     )
   let decision = hooks.decide_tool_result([h1, h2], event)
   let assert hooks.ResultTransformed(final_event:, transformers:) = decision
-  should.equal(final_event.result, "orig +1 +2")
-  should.equal(transformers, ["first", "second"])
+  assert final_event.result == "orig +1 +2"
+  assert transformers == ["first", "second"]
 }
 
 // decide_messages returns MessagesDecision with attribution
@@ -412,7 +407,7 @@ pub fn decide_messages_unchanged_when_no_hooks_test() {
   let messages = [message.User("hello")]
   let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages:)
   let decision = hooks.decide_messages([], event)
-  should.equal(decision, hooks.MessagesUnchanged(original: messages))
+  assert decision == hooks.MessagesUnchanged(original: messages)
 }
 
 pub fn decide_messages_unchanged_when_all_keep_test() {
@@ -422,7 +417,7 @@ pub fn decide_messages_unchanged_when_all_keep_test() {
     hooks.new("noop")
     |> hooks.on_before_inference(fn(_) { hooks.KeepMessages })
   let decision = hooks.decide_messages([h], event)
-  should.equal(decision, hooks.MessagesUnchanged(original: messages))
+  assert decision == hooks.MessagesUnchanged(original: messages)
 }
 
 pub fn decide_messages_replaced_carries_attribution_test() {
@@ -434,8 +429,8 @@ pub fn decide_messages_replaced_carries_attribution_test() {
     hooks.BeforeInferenceEvent(model: "gpt-4", messages: [message.User("hello")])
   let decision = hooks.decide_messages([h], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
-  should.equal(final_messages, new_msgs)
-  should.equal(transformers, ["injector"])
+  assert final_messages == new_msgs
+  assert transformers == ["injector"]
 }
 
 pub fn decide_messages_chain_carries_all_transformers_test() {
@@ -458,12 +453,12 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
   let decision = hooks.decide_messages([h1, h2], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
   // Only proper chaining produces: [System("ctx"), User("hello"), User("suffix")]
-  should.equal(final_messages, [
+  assert final_messages == [
     message.System("ctx"),
     message.User("hello"),
     message.User("suffix"),
-  ])
-  should.equal(transformers, ["first", "second"])
+  ]
+  assert transformers == ["first", "second"]
 }
 
 // ── Session Lifecycle Hook Tests ──────────────────────────────────────

@@ -1,7 +1,6 @@
 //// Key-value store tests for pig workspace.
 
 import gleeunit
-import gleeunit/should
 import pig/workspace/kv
 import pig/workspace/schema
 import sqlight
@@ -28,7 +27,7 @@ pub fn remember_stores_value_test() {
   with_db(fn(conn) {
     let assert Ok(Nil) = kv.remember(conn, "test_key", "test_value")
     let assert Ok(value) = kv.recall(conn, "test_key")
-    should.equal(value, "test_value")
+    assert value == "test_value"
   })
 }
 
@@ -46,7 +45,7 @@ pub fn remember_overwrites_existing_test() {
     let assert Ok(Nil) = kv.remember(conn, "my_key", "value_a")
     let assert Ok(Nil) = kv.remember(conn, "my_key", "value_b")
     let assert Ok(value) = kv.recall(conn, "my_key")
-    should.equal(value, "value_b")
+    assert value == "value_b"
   })
 }
 
@@ -58,7 +57,7 @@ pub fn list_keys_returns_matching_prefix_test() {
     let assert Ok(Nil) = kv.remember(conn, "config:theme", "dark")
 
     let assert Ok(keys) = kv.list_keys(conn, "user:")
-    should.equal(keys, ["user:email", "user:name"])
+    assert keys == ["user:email", "user:name"]
   })
 }
 
@@ -70,7 +69,7 @@ pub fn list_keys_empty_prefix_returns_all_test() {
     let assert Ok(Nil) = kv.remember(conn, "gamma", "3")
 
     let assert Ok(keys) = kv.list_keys(conn, "")
-    should.equal(keys, ["alpha", "beta", "gamma"])
+    assert keys == ["alpha", "beta", "gamma"]
   })
 }
 
@@ -82,7 +81,7 @@ pub fn list_keys_returns_sorted_test() {
     let assert Ok(Nil) = kv.remember(conn, "banana", "3")
 
     let assert Ok(keys) = kv.list_keys(conn, "")
-    should.equal(keys, ["apple", "banana", "zebra"])
+    assert keys == ["apple", "banana", "zebra"]
   })
 }
 
@@ -93,6 +92,6 @@ pub fn list_keys_no_matches_returns_empty_test() {
     let assert Ok(Nil) = kv.remember(conn, "config:theme", "dark")
 
     let assert Ok(keys) = kv.list_keys(conn, "nonexistent:")
-    should.equal(keys, [])
+    assert keys == []
   })
 }

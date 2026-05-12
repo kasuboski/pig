@@ -1,7 +1,6 @@
 import gleam/erlang/process
 import gleam/option.{Some}
 import gleeunit
-import gleeunit/should
 import pig/ai/error.{ApiError}
 import pig/ai/message.{ToolCall, User}
 import pig/obs/dispatcher
@@ -74,8 +73,8 @@ pub fn dispatcher_emits_inference_start_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [events.InferenceStart(model:, message_count:)] = captured
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  assert model == "gpt-4"
+  assert message_count == 3
 
   cleanup()
 }
@@ -99,8 +98,8 @@ pub fn dispatcher_emits_inference_stop_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [events.InferenceStop(model:, duration_ms:, ..)] = captured
-  model |> should.equal("gpt-4")
-  duration_ms |> should.equal(150)
+  assert model == "gpt-4"
+  assert duration_ms == 150
 
   cleanup()
 }
@@ -120,9 +119,9 @@ pub fn dispatcher_emits_tool_start_telemetry_test() {
   let captured = listener.get_events(handle)
   let assert [events.ToolStart(tool_name:, tool_call_id:, arguments_json:)] =
     captured
-  tool_name |> should.equal("calculator")
-  tool_call_id |> should.equal("call_123")
-  arguments_json |> should.equal("{\"expr\":\"2+2\"}")
+  assert tool_name == "calculator"
+  assert tool_call_id == "call_123"
+  assert arguments_json == "{\"expr\":\"2+2\"}"
 
   cleanup()
 }
@@ -143,9 +142,9 @@ pub fn dispatcher_emits_tool_stop_telemetry_test() {
   let captured = listener.get_events(handle)
   let assert [events.ToolStop(tool_name:, tool_call_id:, duration_ms:, ..)] =
     captured
-  tool_name |> should.equal("calculator")
-  tool_call_id |> should.equal("call_123")
-  duration_ms |> should.equal(42)
+  assert tool_name == "calculator"
+  assert tool_call_id == "call_123"
+  assert duration_ms == 42
 
   cleanup()
 }
@@ -165,7 +164,7 @@ pub fn dispatcher_emits_tool_blocked_telemetry_test() {
 
   let names = listener.get_event_names(handle)
   let assert [first_name] = names
-  first_name |> should.equal(events.tool_blocked_name())
+  assert first_name == events.tool_blocked_name()
 
   cleanup()
 }
@@ -183,8 +182,8 @@ pub fn dispatcher_emits_inference_exception_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [events.InferenceException(model:, error_type:, ..)] = captured
-  model |> should.equal("unknown")
-  error_type |> should.equal("api_error")
+  assert model == "unknown"
+  assert error_type == "api_error"
 
   cleanup()
 }
@@ -204,7 +203,7 @@ pub fn dispatcher_does_not_emit_telemetry_for_session_started_test() {
     )
   send_and_confirm(disp, event, consumer)
 
-  listener.get_events(handle) |> should.equal([])
+  assert listener.get_events(handle) == []
 
   cleanup()
 }
@@ -220,7 +219,7 @@ pub fn dispatcher_does_not_emit_telemetry_for_hook_acted_test() {
     )
   send_and_confirm(disp, event, consumer)
 
-  listener.get_events(handle) |> should.equal([])
+  assert listener.get_events(handle) == []
 
   cleanup()
 }
@@ -231,7 +230,7 @@ pub fn dispatcher_does_not_emit_telemetry_for_session_ended_test() {
   let event = SessionEnded(reason: NormalEnd)
   send_and_confirm(disp, event, consumer)
 
-  listener.get_events(handle) |> should.equal([])
+  assert listener.get_events(handle) == []
 
   cleanup()
 }
@@ -246,8 +245,8 @@ pub fn dispatcher_fans_out_to_registered_consumer_test() {
   let received = send_and_confirm(disp, event, consumer)
 
   let assert InferenceStarted(model:, message_count:) = received
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  assert model == "gpt-4"
+  assert message_count == 3
 
   cleanup()
 }
@@ -264,8 +263,8 @@ pub fn dispatcher_fans_out_to_multiple_consumers_test() {
 
   let assert Ok(r1) = process.receive(c1, 2000)
   let assert Ok(r2) = process.receive(c2, 2000)
-  r1 |> should.equal(event)
-  r2 |> should.equal(event)
+  assert r1 == event
+  assert r2 == event
 
   process.send(disp, dispatcher.Stop)
 }
@@ -288,8 +287,8 @@ pub fn dispatcher_supports_dynamic_registration_test() {
   let received = send_and_confirm(disp, event2, consumer)
 
   let assert InferenceStarted(model:, message_count:) = received
-  model |> should.equal("gpt-3.5")
-  message_count |> should.equal(2)
+  assert model == "gpt-3.5"
+  assert message_count == 2
 
   process.send(disp, dispatcher.Stop)
 }
@@ -315,8 +314,8 @@ pub fn dispatcher_does_not_crash_on_dead_consumer_test() {
   let received = send_and_confirm(disp, event2, live_consumer)
 
   let assert InferenceStarted(model:, message_count:) = received
-  model |> should.equal("gpt-3.5")
-  message_count |> should.equal(2)
+  assert model == "gpt-3.5"
+  assert message_count == 2
 
   process.send(disp, dispatcher.Stop)
 }

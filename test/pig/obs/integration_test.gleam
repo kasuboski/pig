@@ -11,7 +11,6 @@ import gleam/list
 import gleam/option
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig
 import pig/agent/state
 import pig/ai/message
@@ -93,7 +92,7 @@ pub fn telemetry_fires_through_dispatcher_test() {
 
   // Run a prompt to trigger events
   let assert Ok(response) = pig.run(agent, "test prompt")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   // Stop the agent
   pig.stop(agent)
@@ -107,12 +106,12 @@ pub fn telemetry_fires_through_dispatcher_test() {
   // Check for inference start event
   let has_start =
     list.any(event_names, fn(name) { name == events.inference_start_name() })
-  has_start |> should.be_true()
+  assert has_start
 
   // Check for inference stop event
   let has_stop =
     list.any(event_names, fn(name) { name == events.inference_stop_name() })
-  has_stop |> should.be_true()
+  assert has_stop
 
   // Clean up
   listener.detach(listener_handle)
@@ -134,7 +133,7 @@ pub fn session_writer_receives_events_via_dispatcher_test() {
 
   // Run a prompt to trigger events
   let assert Ok(response) = pig.run(agent, "test prompt")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   // Stop the agent
   pig.stop(agent)
@@ -149,14 +148,14 @@ pub fn session_writer_receives_events_via_dispatcher_test() {
 
   // Should have at least one event line
   let line_count = list.length(non_empty_lines)
-  line_count |> should.not_equal(0)
+  assert line_count != 0
 
   // Each line should be valid JSON (contains curly braces)
   let has_json =
     list.any(non_empty_lines, fn(line) {
       string.contains(line, "{") && string.contains(line, "}")
     })
-  has_json |> should.be_true()
+  assert has_json
 }
 
 // ── Test 3: Multiple consumers receive events via dispatcher ────────
@@ -176,7 +175,7 @@ pub fn multiple_consumers_receive_events_test() {
 
   // Run a prompt to trigger events
   let assert Ok(response) = pig.run(agent, "test prompt")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   // Stop the agent
   pig.stop(agent)
@@ -188,7 +187,7 @@ pub fn multiple_consumers_receive_events_test() {
   let non_empty_lines = list.filter(lines, fn(l) { l != "" })
 
   // Should have at least one event
-  list.length(non_empty_lines) |> should.not_equal(0)
+  assert non_empty_lines != []
 }
 
 // ── Test 4: Supervised path with consumers ─────────────────────────
@@ -227,7 +226,7 @@ pub fn supervised_path_with_consumers_test() {
 
   // Run a prompt to verify the agent works
   let assert Ok(response) = supervisor.run(supervised_agent, "test prompt")
-  get_content(response) |> should.equal("mock response")
+  assert get_content(response) == "mock response"
 
   // Stop the supervised agent
   supervisor.stop(supervised_agent)
@@ -268,13 +267,13 @@ pub fn multiple_supervised_runs_with_consumers_test() {
 
   // Run multiple prompts to verify the agent works multiple times
   let assert Ok(r1) = supervisor.run(supervised_agent, "prompt 1")
-  get_content(r1) |> should.equal("mock response")
+  assert get_content(r1) == "mock response"
 
   let assert Ok(r2) = supervisor.run(supervised_agent, "prompt 2")
-  get_content(r2) |> should.equal("mock response")
+  assert get_content(r2) == "mock response"
 
   let assert Ok(r3) = supervisor.run(supervised_agent, "prompt 3")
-  get_content(r3) |> should.equal("mock response")
+  assert get_content(r3) == "mock response"
 
   // Stop the supervised agent
   supervisor.stop(supervised_agent)

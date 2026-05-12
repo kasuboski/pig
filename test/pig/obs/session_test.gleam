@@ -12,7 +12,6 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig/ai/error.{ApiError}
 import pig/ai/message.{Assistant, ToolCall, User}
 import pig/obs/dispatcher
@@ -73,8 +72,7 @@ pub fn format_session_started_produces_valid_json_with_fields_test() {
   let json_str = session.format_event(event)
 
   // Decode the "event" field — not string.contains
-  decode_event_type(json_str)
-  |> should.equal("session_started")
+  assert decode_event_type(json_str) == "session_started"
 
   // Decode the "model" field
   let model_decoder = dynamic_decode.at(["model"], dynamic_decode.string)
@@ -106,8 +104,7 @@ pub fn format_session_started_single_line_test() {
   let json_str = session.format_event(event)
 
   // Verify no newlines in the JSON string
-  string.contains(json_str, "\n")
-  |> should.be_false
+  assert string.contains(json_str, "\n") == False
 }
 
 pub fn format_inference_completed_includes_fields_test() {
@@ -127,8 +124,7 @@ pub fn format_inference_completed_includes_fields_test() {
   let json_str = session.format_event(event)
 
   // Decode and assert on individual fields
-  decode_event_type(json_str)
-  |> should.equal("inference_completed")
+  assert decode_event_type(json_str) == "inference_completed"
 
   let decoder = dynamic_decode.at(["response_id"], dynamic_decode.string)
   let assert Ok("chatcmpl-123") =
@@ -163,8 +159,7 @@ pub fn format_tool_executed_includes_fields_test() {
 
   let json_str = session.format_event(event)
 
-  decode_event_type(json_str)
-  |> should.equal("tool_executed")
+  assert decode_event_type(json_str) == "tool_executed"
 
   let decoder = dynamic_decode.at(["duration_ms"], dynamic_decode.int)
   let assert Ok(3) =
@@ -198,8 +193,7 @@ pub fn format_inference_failed_includes_error_test() {
 
   let json_str = session.format_event(event)
 
-  decode_event_type(json_str)
-  |> should.equal("inference_failed")
+  assert decode_event_type(json_str) == "inference_failed"
 
   let decoder = dynamic_decode.at(["error", "type"], dynamic_decode.string)
   let assert Ok("api_error") =
@@ -222,8 +216,7 @@ pub fn format_session_ended_normal_test() {
 
   let json_str = session.format_event(event)
 
-  decode_event_type(json_str)
-  |> should.equal("session_ended")
+  assert decode_event_type(json_str) == "session_ended"
 
   let decoder = dynamic_decode.at(["reason", "type"], dynamic_decode.string)
   let assert Ok("normal_end") =
@@ -236,8 +229,7 @@ pub fn format_session_ended_max_iterations_test() {
 
   let json_str = session.format_event(event)
 
-  decode_event_type(json_str)
-  |> should.equal("session_ended")
+  assert decode_event_type(json_str) == "session_ended"
 
   let decoder = dynamic_decode.at(["reason", "type"], dynamic_decode.string)
   let assert Ok("max_iterations_exceeded") =
@@ -276,14 +268,11 @@ pub fn write_single_event_test() {
 
   let lines = read_jsonl_lines(path)
 
-  lines
-  |> list.length
-  |> should.equal(1)
+  assert list.length(lines) == 1
 
   // Verify the event type via decode, not string.contains
-  let first_line = list.first(lines) |> should.be_ok
-  decode_event_type(first_line)
-  |> should.equal("session_started")
+  let assert Ok(first_line) = list.first(lines)
+  assert decode_event_type(first_line) == "session_started"
 
   session.stop(writer)
 }
@@ -321,22 +310,17 @@ pub fn write_multiple_events_in_order_test() {
 
   let lines = read_jsonl_lines(path)
 
-  lines
-  |> list.length
-  |> should.equal(3)
+  assert list.length(lines) == 3
 
   // Verify order by decoding event type from each line
-  let first = list.first(lines) |> should.be_ok
-  decode_event_type(first)
-  |> should.equal("session_started")
+  let assert Ok(first) = list.first(lines)
+  assert decode_event_type(first) == "session_started"
 
-  let second = list.drop(lines, 1) |> list.first |> should.be_ok
-  decode_event_type(second)
-  |> should.equal("inference_completed")
+  let assert Ok(second) = list.drop(lines, 1) |> list.first
+  assert decode_event_type(second) == "inference_completed"
 
-  let third = list.drop(lines, 2) |> list.first |> should.be_ok
-  decode_event_type(third)
-  |> should.equal("session_ended")
+  let assert Ok(third) = list.drop(lines, 2) |> list.first
+  assert decode_event_type(third) == "session_ended"
 
   session.stop(writer)
 }
@@ -369,8 +353,7 @@ pub fn format_inference_started_produces_valid_json_test() {
   let json_str = session.format_event(event)
 
   // Decode the "event" field
-  decode_event_type(json_str)
-  |> should.equal("inference_started")
+  assert decode_event_type(json_str) == "inference_started"
 
   // Decode the "model" field
   let model_decoder = dynamic_decode.at(["model"], dynamic_decode.string)
@@ -393,8 +376,7 @@ pub fn format_tool_started_produces_valid_json_test() {
   let json_str = session.format_event(event)
 
   // Decode the "event" field
-  decode_event_type(json_str)
-  |> should.equal("tool_started")
+  assert decode_event_type(json_str) == "tool_started"
 
   // Decode the tool_call fields
   let name_decoder =
@@ -432,8 +414,7 @@ pub fn format_tool_blocked_produces_valid_json_test() {
   let json_str = session.format_event(event)
 
   // Decode the "event" field
-  decode_event_type(json_str)
-  |> should.equal("tool_blocked")
+  assert decode_event_type(json_str) == "tool_blocked"
 
   // Decode the tool_call fields
   let name_decoder =
@@ -471,8 +452,7 @@ pub fn format_hook_acted_produces_valid_json_test() {
   let json_str = session.format_event(event)
 
   // Decode the "event" field
-  decode_event_type(json_str)
-  |> should.equal("hook_acted")
+  assert decode_event_type(json_str) == "hook_acted"
 
   // Decode hook_name
   let hook_name_decoder =
@@ -538,8 +518,8 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
   process.send(disp, dispatcher.Event(event1))
   let assert Ok(received1) = process.receive(sync_consumer, 2000)
   let assert InferenceStarted(model:, message_count:) = received1
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  assert model == "gpt-4"
+  assert message_count == 3
 
   let event2 =
     SessionStarted(
@@ -552,7 +532,7 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
   process.send(disp, dispatcher.Event(event2))
   let assert Ok(received2) = process.receive(sync_consumer, 2000)
   let assert SessionStarted(model:, ..) = received2
-  model |> should.equal("gpt-4")
+  assert model == "gpt-4"
 
   // Cleanup
   process.send(disp, dispatcher.Stop)

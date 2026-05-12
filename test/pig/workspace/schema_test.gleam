@@ -2,7 +2,6 @@
 
 import gleam/dynamic/decode
 import gleeunit
-import gleeunit/should
 import pig/workspace/schema
 import sqlight
 
@@ -35,7 +34,7 @@ pub fn init_creates_tables_test() {
         expecting: decode.at([0], decode.int),
       )
 
-    should.equal(count, 4)
+    assert count == 4
   })
 }
 
@@ -56,9 +55,9 @@ pub fn init_creates_root_inode_test() {
     let assert Ok(mode) = decode.run(row, decode.at([1], decode.int))
     let assert Ok(size) = decode.run(row, decode.at([2], decode.int))
 
-    should.equal(ino, 1)
-    should.equal(mode, 16_877)
-    should.equal(size, 0)
+    assert ino == 1
+    assert mode == 16_877
+    assert size == 0
   })
 }
 
@@ -79,8 +78,8 @@ pub fn init_is_idempotent_test() {
     let assert Ok(ino) = decode.run(row, decode.at([0], decode.int))
     let assert Ok(mode) = decode.run(row, decode.at([1], decode.int))
 
-    should.equal(ino, 1)
-    should.equal(mode, 16_877)
+    assert ino == 1
+    assert mode == 16_877
   })
 }
 
@@ -97,6 +96,6 @@ pub fn init_enables_wal_mode_test() {
         expecting: decode.at([0], decode.string),
       )
 
-    should.be_true(mode == "wal" || mode == "memory")
+    assert mode == "wal" || mode == "memory"
   })
 }
