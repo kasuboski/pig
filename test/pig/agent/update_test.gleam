@@ -9,7 +9,9 @@
 //// - ToolResults: adds messages, increments iterations, Continue or Failed
 
 import gleam/json
+import gleam/list
 import gleam/option.{None}
+import gleam/string
 import gleeunit
 import gleeunit/should
 import jscheam/schema
@@ -30,8 +32,8 @@ pub fn main() -> Nil {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/// Build a state for update tests. No dispatcher or provider needed —
-/// the sans-IO core never calls them.
+// Build a state for update tests. No dispatcher or provider needed —
+// the sans-IO core never calls them.
 fn state_for_update(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   // Provider is never called by update — it's a runtime concern.
@@ -57,8 +59,6 @@ fn state_for_update_with_max(
   |> state.with_max_iterations(max)
   |> state.new()
 }
-
-import gleam/list
 
 // ── Task 2.1: UserPrompt ──────────────────────────────────────────
 
@@ -282,5 +282,3 @@ pub fn tool_results_error_recorded_in_history_test() {
   let assert Ok(message.Tool(content:, ..)) = list.last(history)
   content |> should.equal("Tool error: tool exploded")
 }
-
-import gleam/string

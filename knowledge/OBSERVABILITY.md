@@ -66,10 +66,10 @@ The variants are:
 | `ToolStarted` | Tool execution beginning | `runtime` when executing tools |
 | `ToolExecuted` | Tool execution finished, with result and timing | `runtime` after tool completion |
 | `ToolBlocked` | Tool blocked by a hook | (reserved for hooks system) |
-| `ExtensionActed` | Hook performed an action | (reserved for hooks system) |
+| `HookActed` | Hook performed an action | (reserved for hooks system) |
 | `SessionEnded` | Session concluded, with reason | (reserved, not yet emitted) |
 
-All inference and tool events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider. Session lifecycle events (SessionStarted, SessionEnded) and hook events (ExtensionActed) do not carry duration or tokens.
+All inference and tool events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider. Session lifecycle events (SessionStarted, SessionEnded) and hook events (HookActed) do not carry duration or tokens.
 
 ### Why "started" variants?
 
@@ -98,7 +98,7 @@ The projection maps each `SessionEvent` to a flat telemetry event with string-ke
 | `ToolExecuted` | `[:pig, :tool, :stop]` | tool_name, tool_call_id, duration, result |
 | `ToolBlocked` | `[:pig, :tool, :blocked]` | tool_name, tool_call_id, hook_name, reason |
 | `SessionStarted` | *(not projected)* | — |
-| `ExtensionActed` | *(not projected)* | — |
+| `HookActed` | *(not projected)* | — |
 | `SessionEnded` | *(not projected)* | — |
 
 **Heavy fields stay out of telemetry.** Full message content, tool results, and input message lists are pig-consumer territory. Telemetry gets lightweight identifiers and metrics only. This keeps `:telemetry` events cheap enough to fire on every agent step without impacting throughput.
@@ -180,10 +180,6 @@ After `static_supervisor.start` returns, consumer subjects are recovered by name
 ---
 
 ## 8. Design Decisions
-
-### Why the runtime produces events, not the core
-
-The pure core returns `StepResult` — a data value. It doesn't know how long a provider call took, whether a tool succeeded, or what the provider returned. Only the runtime, which actually performs IO, has this information. Putting event emission in the runtime keeps the core's dependency surface at zero and its test surface at `(state, msg) → StepResult`.
 
 ### Why dispatcher-name vs dispatcher-subject
 

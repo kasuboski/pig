@@ -10,6 +10,7 @@
 //// The core logic (update.gleam) is pure. This module is all IO.
 
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
@@ -490,11 +491,11 @@ fn spawn_and_collect(
           let duration = events.system_time() - start_time
           process.send(reply_subject, ToolResult(call.id, result, duration))
         })
-      #(pid, reply_subject)
+      #(pid, reply_subject, call.id)
     })
   let timeout_ms = 5000
   list.map(pairs, fn(pair) {
-    let #(pid, subject) = pair
+    let #(pid, subject, call_id) = pair
     case process.receive(subject, timeout_ms) {
       Ok(result) -> result
       Error(Nil) -> {
@@ -504,7 +505,7 @@ fn spawn_and_collect(
           "Tool execution timed out after " <> int.to_string(timeout_ms) <> "ms",
         )
         ToolResult(
-          call_id: "",
+          call_id: call_id,
           result: Error(tool.ToolError(message: "Tool execution timed out")),
           duration_ms: timeout_ms,
         )
@@ -512,8 +513,6 @@ fn spawn_and_collect(
     }
   })
 }
-
-import gleam/int
 
 fn find_blocked(
   blocked: List(BlockedTool),

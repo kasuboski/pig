@@ -8,6 +8,7 @@
 
 import gleam/dynamic
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import jscheam/schema
@@ -99,5 +100,3 @@ fn count_assistant_messages(msgs: List(message.Message)) -> Int {
   })
   |> list.length()
 }
-
-import gleam/int

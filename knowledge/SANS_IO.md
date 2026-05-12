@@ -170,7 +170,7 @@ Impure hooks also mean that replay is not simply re-running the core's `update` 
 - The `(msg, state)` inputs to `update` — for verifying deterministic state transitions
 - The hook decisions made by the runtime — for reproducing the full execution path
 
-Replay re-runs `update` to verify state, but replays recorded hook decisions rather than re-executing potentially impure hooks. This is analogous to replaying a chess game: you verify the board state at each move, but you don't re-roll the dice.
+Replay re-runs `update` to verify state, but replays recorded hook decisions rather than re-executing potentially impure hooks. This is analogous to replaying a recorded game: you verify the board state at each move, but you replay the recorded random events rather than regenerating them.
 
 ---
 

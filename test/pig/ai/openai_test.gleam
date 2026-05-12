@@ -213,7 +213,8 @@ pub fn build_request_body_simple_messages_test() {
     json.parse(from: body, using: stream_dec)
     |> result.map_error(fn(_) { Nil })
   let parsed = decode_messages(body)
-  parsed == [#("system", "you are helpful"), #("user", "hello")]
+  let assert True =
+    parsed == [#("system", "you are helpful"), #("user", "hello")]
 }
 
 pub fn build_request_body_with_tools_test() {
@@ -249,10 +250,11 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
   let body = openai.build_request_body(messages, [], "gpt-4o")
 
   // No top-level "tools" — tool calls are in the messages array
-  body_has_key(body, "tools") == False
-  && body_has_key(body, "messages")
-  && string.contains(body, "tool_calls")
-  && string.contains(body, "tool_call_id")
+  let assert True =
+    body_has_key(body, "tools") == False
+    && body_has_key(body, "messages")
+    && string.contains(body, "tool_calls")
+    && string.contains(body, "tool_call_id")
 }
 
 pub fn build_request_body_no_tools_field_when_empty_test() {
@@ -285,7 +287,7 @@ pub fn build_request_body_tool_parameters_injected_as_json_test() {
     use _tools <- decode.field("tools", decode.list(decoder))
     decode.success(True)
   }
-  json.parse(from: body, using: decoder) == Ok(True)
+  let assert True = json.parse(from: body, using: decoder) == Ok(True)
 }
 
 // === provider construction tests ===
@@ -293,9 +295,10 @@ pub fn build_request_body_tool_parameters_injected_as_json_test() {
 pub fn provider_with_default_base_url_test() {
   let openai.OpenAIProvider(config:, call: _) =
     openai.provider("sk-test", "gpt-4o")
-  config.base_url == "https://api.openai.com/v1"
-  && config.api_key == "sk-test"
-  && config.model == "gpt-4o"
+  let assert True =
+    config.base_url == "https://api.openai.com/v1"
+    && config.api_key == "sk-test"
+    && config.model == "gpt-4o"
 }
 
 pub fn provider_with_custom_base_url_test() {
@@ -305,5 +308,7 @@ pub fn provider_with_custom_base_url_test() {
       "qwen3:0.6b",
       "http://localhost:11434/v1",
     )
-  config.base_url == "http://localhost:11434/v1" && config.model == "qwen3:0.6b"
+  let assert True =
+    config.base_url == "http://localhost:11434/v1"
+    && config.model == "qwen3:0.6b"
 }
