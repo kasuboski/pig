@@ -100,7 +100,7 @@ There are three variants:
 - **Continue** — the agent needs more work (inference, tool execution). Contains effects.
 - **Failed** — an unrecoverable error occurred.
 
-The core does not produce observations. The core does not know about hooks. The core's job is purely: given this state and this message, what is the next state and what effects do I need?
+The core does not produce observations. The core does not know about hooks. The core's job is purely: given this state and this message, what is the next state and what effects do I need? In the implementation, this is `pig/agent/update.update(state, msg) -> StepResult(msg)`.
 
 ### Effects
 
@@ -180,7 +180,7 @@ Replay re-runs `update` to verify state, but replays recorded hook decisions rat
 
 The runtime is the interpreter. It:
 
-1. Calls `core.update(state, msg)` to get the next state and effects
+1. Calls `update.update(state, msg)` to get the next state and effects
 2. For each effect, applies hooks as middleware (may do IO)
 3. Executes the (possibly modified) effects against the real world
 4. Produces `SessionEvent` values from hook processing and effect execution
@@ -196,7 +196,7 @@ For each `CallProvider` effect:
 2. Call the LLM with the (possibly transformed) messages
 3. Fire `on_after_inference` notification hooks
 4. Produce `InferenceStarted` and `InferenceCompleted` (or `InferenceFailed`) session events
-5. Feed `ProviderResponded` back to the core
+5. Feed `ProviderResponded` back to the core as a new `AgentMsg`
 
 For each `ExecuteTools` effect:
 
@@ -222,7 +222,7 @@ Both feed into the same `SessionEvent` stream. Downstream consumers (dispatcher,
 
 ### Runtime examples
 
-**Default Erlang runtime** — wraps the state machine in an OTP actor, uses `httpc` for HTTP, spawns processes for parallel tool execution, and sends `SessionEvent` values to the dispatcher actor.
+**Default Erlang runtime** (`pig/agent/runtime.gleam`) — wraps the state machine in an OTP actor, takes a provider function and tool registry, spawns processes for parallel tool execution, applies hooks as middleware on effects, and sends `SessionEvent` values to the dispatcher actor.
 
 **Test runtime** — executes effects inline with mock providers, never touches the network, applies no-op hooks, and collects effects for assertion. The entire agent loop becomes a pure fold over messages.
 
@@ -244,8 +244,8 @@ The session writer records all events to JSONL. The dispatcher fans them to any 
 
 ### For library authors
 
-- **Core is pure Gleam.** No target-specific dependencies. `gleam check` works without a runtime target.
-- **Trivial testing.** Every state transition is tested by constructing a `(state, msg)` pair and asserting on `(state, effects)`. No mocks, no HTTP stubs, no process spawning.
+- **Core is pure Gleam.** No target-specific dependencies. `gleam check` works without a runtime target. The core module (`update.gleam`) has zero imports for IO, telemetry, or hooks.
+- **Trivial testing.** Every state transition is tested by constructing a `(state, msg)` pair and asserting on `StepResult`. No mocks, no HTTP stubs, no process spawning. See `update_test.gleam` and `update_scenario_test.gleam` for examples.
 - **Cross-target.** Core works on Erlang and JS. Only the runtime changes per target.
 - **Observability is structural.** Effects are inspectable data. Recording and replaying agent behavior is a matter of logging `(msg, state, effects)` tuples plus runtime hook decisions.
 - **Smaller core.** The core has no hook logic, no observation types, no knowledge of the observability layer. It does one thing: state transitions.

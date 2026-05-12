@@ -1,12 +1,14 @@
 # Observability Architecture
 
-pig uses a **dispatcher-actor pattern** for all observability. The agent core emits typed `SessionEvent` values to a single dispatcher actor. The dispatcher always projects lightweight telemetry to the BEAM `:telemetry` library, then fans out the full event to registered consumers.
+pig uses a **dispatcher-actor pattern** for all observability. The runtime interpreter (`runtime.gleam`) emits typed `SessionEvent` values to a single dispatcher actor. The dispatcher always projects lightweight telemetry to the BEAM `:telemetry` library, then fans out the full event to registered consumers.
+
+The pure core (`update.gleam`) has **zero knowledge** of observability — it never imports the emit module, never touches a dispatcher subject, never fires telemetry. All event production happens in the runtime as it interprets effects and applies hooks.
 
 ---
 
 ## 1. Design Goals
 
-- **Single emission point from core** — `core.gleam` sends one message per event. No telemetry calls, no consumer iteration.
+- **Core is observation-free by construction** — `update.gleam` has no imports for telemetry, dispatchers, or event types. Events are a runtime concern.
 - **Telemetry always-on by construction** — built into the dispatcher handler, not a registration convention.
 - **Structured data for pig consumers** — full typed `SessionEvent` variants for session writer, terminal, OTel.
 - **Lightweight projection for BEAM ecosystem** — flat metrics via `:telemetry` for LiveDashboard, AppSignal, etc.
@@ -18,10 +20,10 @@ pig uses a **dispatcher-actor pattern** for all observability. The agent core em
 
 ## 2. Architecture
 
-The system has four layers: the agent core that produces events, a thin `emit` module that wraps the send, the dispatcher actor that distributes them, and the consumers that process them.
+The system has four layers: the runtime interpreter that produces events, a thin `emit` module that wraps the send, the dispatcher actor that distributes them, and the consumers that process them.
 
 ```text
-Agent Core (core.gleam, parallel.gleam)
+Runtime Interpreter (runtime.gleam)
   │
   ├── emit.to_dispatcher(dispatcher_subject, SessionEvent)
   │     └── wraps process.send to dispatcher actor
@@ -39,13 +41,13 @@ Agent Core (core.gleam, parallel.gleam)
 
 ### Dispatcher resolution
 
-`AgentConfig` carries the dispatcher reference as either a direct `Subject` or a `Name`. The agent core resolves a name to a subject once per call via `process.named_subject`. This supports both start modes: the standalone path wires a `Subject` directly, while the supervised path wires a `Name` (because the dispatcher subject doesn't exist until the supervisor starts it).
+`RuntimeConfig` (held by the runtime actor) carries the dispatcher reference as either a direct `Subject` or a `Name`. The runtime resolves a name to a subject once per call via `process.named_subject`. This supports both start modes: the standalone path wires a `Subject` directly, while the supervised path wires a `Name` (because the dispatcher subject doesn't exist until the supervisor starts it).
 
 When neither field is set — no dispatcher configured at all — every `emit_*` helper returns `Nil` without sending. This makes telemetry truly optional: an agent without observability configured runs identically to one with it, just silently.
 
 ### The emit module
 
-`pig/obs/emit.gleam` exists to break the circular import between `events.gleam` and `dispatcher.gleam`. It provides `to_dispatcher(subject, event)` — a thin wrapper around `process.send`. The agent core imports this module rather than reaching into the dispatcher directly.
+`pig/obs/emit.gleam` exists to break the circular import between `events.gleam` and `dispatcher.gleam`. It provides `to_dispatcher(subject, event)` — a thin wrapper around `process.send`. The runtime imports this module rather than reaching into the dispatcher directly.
 
 ---
 
@@ -57,25 +59,27 @@ The variants are:
 
 | Event | Purpose | Produced by |
 |-------|---------|-------------|
-| `SessionStarted` | Session begun with identity and model info | (reserved, not yet emitted from core) |
-| `InferenceStarted` | Provider call beginning, with model and message count | `core.step()` before provider call |
-| `InferenceCompleted` | Provider call succeeded, with full message, tokens, timing | `core.step()` after successful response |
-| `InferenceFailed` | Provider call failed, with error details and timing | `core.step()` after error |
-| `ToolStarted` | Tool execution beginning | `core.execute_tools_and_advance()` / `parallel.spawn_and_collect()` |
-| `ToolExecuted` | Tool execution finished, with result and timing | same as above |
-| `ToolBlocked` | Tool blocked by an extension | (reserved for extension system) |
-| `ExtensionActed` | Extension performed an action | (reserved for extension system) |
-| `SessionEnded` | Session concluded, with reason | (reserved, not yet emitted from core) |
+| `SessionStarted` | Session begun with identity and model info | (reserved, not yet emitted) |
+| `InferenceStarted` | Provider call beginning, with model and message count | `runtime` before provider call |
+| `InferenceCompleted` | Provider call succeeded, with full message, tokens, timing | `runtime` after successful response |
+| `InferenceFailed` | Provider call failed, with error details and timing | `runtime` after error |
+| `ToolStarted` | Tool execution beginning | `runtime` when executing tools |
+| `ToolExecuted` | Tool execution finished, with result and timing | `runtime` after tool completion |
+| `ToolBlocked` | Tool blocked by a hook | (reserved for hooks system) |
+| `ExtensionActed` | Hook performed an action | (reserved for hooks system) |
+| `SessionEnded` | Session concluded, with reason | (reserved, not yet emitted) |
 
-All inference and tool events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider. Session lifecycle events (SessionStarted, SessionEnded) and extension events (ExtensionActed) do not carry duration or tokens.
+All inference and tool events carry duration measurements (in monotonic milliseconds), and the inference events carry token counts when available from the provider. Session lifecycle events (SessionStarted, SessionEnded) and hook events (ExtensionActed) do not carry duration or tokens.
 
 ### Why "started" variants?
 
 BEAM telemetry conventions use start/stop pairs for duration tracking. Tools like `Telemetry.Metrics` and `opentelemetry_telemetry` expect `[:pig, :inference, :start]` before `[:pig, :inference, :stop]`. Without the "started" events, the dispatcher can't emit the start-half of these pairs. Session consumers also benefit — the session writer can log "calling provider..." before the result arrives.
 
-### Companion: the legacy Event type
+### Why the runtime produces events, not the core
 
-`events.gleam` also contains a separate `Event` type with flat fields (e.g. `InferenceStop(model:, message_count:, duration_ms:, ...)`). This is the older telemetry-only type. It remains for backward compatibility and for the test listener's decode logic. The dispatcher does **not** use this type — it works exclusively with `SessionEvent`.
+In the sans-IO architecture, the pure core (`update.gleam`) returns `StepResult` values — `Done`, `Continue`, or `Failed`. The core knows *what* happened (a provider call is needed, tools need execution) but not *how* it happened. The runtime is the only layer that actually performs IO, measures duration, and observes outcomes — so it's the natural place to emit events.
+
+This also means the core's test surface is tiny: `(state, msg) → StepResult`. No event assertions needed in core tests.
 
 ---
 
@@ -92,7 +96,7 @@ The projection maps each `SessionEvent` to a flat telemetry event with string-ke
 | `InferenceFailed` | `[:pig, :inference, :exception]` | model, error_type, duration, message_count |
 | `ToolStarted` | `[:pig, :tool, :start]` | tool_name, tool_call_id, arguments_json |
 | `ToolExecuted` | `[:pig, :tool, :stop]` | tool_name, tool_call_id, duration, result |
-| `ToolBlocked` | `[:pig, :tool, :blocked]` | tool_name, tool_call_id, extension_name, reason |
+| `ToolBlocked` | `[:pig, :tool, :blocked]` | tool_name, tool_call_id, hook_name, reason |
 | `SessionStarted` | *(not projected)* | — |
 | `ExtensionActed` | *(not projected)* | — |
 | `SessionEnded` | *(not projected)* | — |
@@ -152,7 +156,7 @@ The dispatcher is intentionally simple. It does not buffer events, does not retr
 
 ### Supervised (`pig/supervisor.gleam`)
 
-`start_supervised(config, consumer_specs)` builds a nested OTP static supervision tree:
+`start_supervised(agent_config, dispatcher_name)` builds the runtime with a named dispatcher reference. The runtime resolves the name to a live subject on first emission.
 
 ```text
 AppSupervisor (OneForOne)
@@ -163,13 +167,13 @@ AppSupervisor (OneForOne)
   └── pig_agent (named)
 ```
 
-The dispatcher name is wired into `AgentConfig.dispatcher_name` before the tree starts. After `static_supervisor.start` returns, consumer subjects are recovered by name and registered with the dispatcher via `RegisterConsumer` messages. The agent is guaranteed to be idle at this point — it only processes events inside `Run` messages, which are sent later via `supervisor.run()`.
+After `static_supervisor.start` returns, consumer subjects are recovered by name and registered with the dispatcher via `RegisterConsumer` messages. The agent is guaranteed to be idle at this point — it only processes events inside `Run` messages, which are sent later via `supervisor.run()`.
 
 **Error handling:** supervisor start failures are returned as `Error(StartError)`.
 
 ### Standalone (`pig.gleam`)
 
-`pig.start(config)` starts the dispatcher and consumers individually, without a supervisor. The dispatcher subject is wired directly into `AgentConfig.dispatcher` as a `Subject`. Each consumer's `start_fn` is called, and on success, the returned subject is registered with the dispatcher.
+`pig.start(config)` starts the dispatcher and consumers individually, without a supervisor. The dispatcher subject is wired directly into `RuntimeConfig` as a `Subject`. Each consumer's `start_fn` is called, and on success, the returned subject is registered with the dispatcher.
 
 **Error handling:** if the dispatcher fails to start, or if any consumer fails to start, the function returns `Error(StartError)` rather than crashing. Previously started consumers are left running (no rollback) — this is acceptable for the standalone path since there's no supervision tree to clean up.
 
@@ -177,18 +181,22 @@ The dispatcher name is wired into `AgentConfig.dispatcher_name` before the tree 
 
 ## 8. Design Decisions
 
+### Why the runtime produces events, not the core
+
+The pure core returns `StepResult` — a data value. It doesn't know how long a provider call took, whether a tool succeeded, or what the provider returned. Only the runtime, which actually performs IO, has this information. Putting event emission in the runtime keeps the core's dependency surface at zero and its test surface at `(state, msg) → StepResult`.
+
 ### Why dispatcher-name vs dispatcher-subject
 
-`AgentConfig` has two optional fields: `dispatcher: Option(Subject(...))` and `dispatcher_name: Option(Name(...))`. This is deliberate:
+`RuntimeConfig` accepts either a direct `Subject` or a `Name`. This is deliberate:
 
-- The **standalone path** (`pig.start`) creates the dispatcher first, then passes the live `Subject` into the config.
-- The **supervised path** (`supervisor.start_supervised`) can't create the dispatcher first — it's started by the supervisor. Instead it passes a `Name`, and the agent core resolves it to a `Subject` via `process.named_subject` on each emission.
+- The **standalone path** (`pig.start`) creates the dispatcher first, then passes the live `Subject` into the runtime config.
+- The **supervised path** (`supervisor.start_supervised`) can't create the dispatcher first — it's started by the supervisor. Instead it passes a `Name`, and the runtime resolves it to a `Subject` via `process.named_subject` on each emission.
 
-Both paths resolve to the same behavior: `get_dispatcher(st)` in `core.gleam` checks `dispatcher` first, falls back to resolving `dispatcher_name`, and returns `None` if neither is set (making emission a no-op).
+Both paths resolve to the same behavior: the runtime checks for a `Subject` first, falls back to resolving a `Name`, and skips emission entirely if neither is set.
 
 ### Why fire-and-forget, not request-response
 
-All event sends from core to dispatcher, and from dispatcher to consumers, use `process.send` (asynchronous). The agent never waits for observability to complete. This guarantees that adding consumers or telemetry never slows down the agent loop.
+All event sends from runtime to dispatcher, and from dispatcher to consumers, use `process.send` (asynchronous). The agent never waits for observability to complete. This guarantees that adding consumers or telemetry never slows down the agent loop.
 
 ### Why nested supervision, not flat
 
@@ -208,10 +216,10 @@ With `OneForAll` inside the event subtree, if the dispatcher crashes, all consum
 - **Test assertions** — tests can register a capture consumer and assert on event sequences
 - **BEAM ecosystem integration** — `:telemetry` events work with LiveDashboard, AppSignal, etc.
 
-### Near-term (extensions)
-- **Tool blocking** — `ToolBlocked` event emitted when extension blocks a tool
-- **Extension audit trail** — `ExtensionActed` events for every non-trivial extension action
-- **Core stays simple** — extensions return actions, core emits events, dispatcher handles both channels
+### Hook observability 
+- **Tool blocking** — `ToolBlocked` event emitted when a hook blocks a tool, with hook name and reason
+- **Hook audit trail** — `HookActed` events for every non-trivial hook action (message transforms, result transforms)
+- **Core stays pure** — hooks return actions, runtime emits events, dispatcher handles both channels
 
 ### Future
 - **OTel exporter** — a consumer that translates `SessionEvent` into OTel spans with `gen_ai.*` attributes
