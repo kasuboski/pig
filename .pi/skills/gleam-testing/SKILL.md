@@ -1,6 +1,6 @@
 ---
 name: gleam-testing
-description: Best practices for writing Gleam tests with gleeunit. Use when writing or reviewing Gleam test files, fixing silently-passing tests, or choosing between should functions and let assert patterns.
+description: Best practices for writing Gleam tests with gleeunit. Use when writing or reviewing Gleam test files, fixing silently-passing tests, or choosing assertion patterns.
 ---
 
 # Gleam Testing Best Practices
@@ -17,7 +17,7 @@ pub fn my_test() {
 
 // ✅ CORRECT — panics on mismatch
 pub fn my_test() {
-  should.equal(value, "expected")
+  let assert value == "expected"
 }
 ```
 
@@ -25,33 +25,30 @@ The same applies to boolean expressions as the last line of any test. A bare `co
 
 ## Assertion Strategies
 
-### `should.equal` — equality checks
+### `let assert` — equality checks
 ```gleam
-import gleeunit/should
-
-should.equal(value, "expected")
-should.equal(count, 4)
-should.equal(keys, ["alpha", "beta"])
-```
-Order convention: `should.equal(actual, expected)`.
-
-### `should.be_true` / `should.be_false` — boolean conditions
-```gleam
-should.be_true(mode == "wal" || mode == "memory")
-should.be_true(string.contains(output, "hello"))
-should.be_false(string.contains(output, "config"))
+let assert value == "expected"
+let assert count == 4
+let assert keys == ["alpha", "beta"]
 ```
 
-### `should.be_ok` / `should.be_error` — Result unwrapping
+### `let assert` — boolean conditions
 ```gleam
-let value = should.be_ok(result)    // unwraps Ok value
-let error = should.be_error(result)  // unwraps Error value
+let assert mode == "wal" || mode == "memory"
+let assert string.contains(output, "hello")
+let assert !string.contains(output, "config")
 ```
 
-### `should.be_some` / `should.be_none` — Option unwrapping
+### `let assert` — Result unwrapping
 ```gleam
-let value = should.be_some(option_value)
-should.be_none(maybe_thing)
+let assert Ok(value) = result     // unwraps Ok value, panics on Error
+let assert Error(e) = result      // unwraps Error value, panics on Ok
+```
+
+### `let assert` — Option unwrapping
+```gleam
+let assert Some(value) = option_value  // unwraps Some, panics on None
+let assert None = maybe_thing          // panics if Some
 ```
 
 ### `let assert` — pattern matching as assertion
@@ -62,16 +59,19 @@ let assert [item] = list_with_one_item()
 ```
 Use when you want to both assert a shape AND bind variables from it.
 
-## `should` vs `let assert` — When to Use Which
+## Assertion Patterns — When to Use What
 
 | Situation | Use |
 |---|---|
-| Check exact equality | `should.equal(actual, expected)` |
-| Compound boolean (OR, AND) | `should.be_true(a \|\| b)` |
+| Check exact equality | `let assert actual == expected` |
+| Check inequality | `let assert actual != expected` |
+| Compound boolean (OR, AND) | `let assert a \|\| b` |
 | Assert Result is Ok AND use the value | `let assert Ok(val) = result` |
-| Assert Result is Ok, don't need value | `should.be_ok(result)` or `let assert Ok(Nil) = ...` |
+| Assert Result is Ok, don't need value | `let assert Ok(Nil) = result` |
 | Assert specific error variant | `let assert Error(NotFound(key: k)) = ...` |
-| Assert string/list contains | `should.be_true(string.contains(s, "x"))` |
+| Assert string/list contains | `let assert string.contains(s, "x")` |
+| Assert Option is Some | `let assert Some(v) = option` |
+| Assert Option is None | `let assert None = option` |
 
 ## Common Pitfalls
 
@@ -86,34 +86,29 @@ pub fn test_something() {
 // ✅ Fix
 pub fn test_something() {
   let assert Ok(value) = compute()
-  should.equal(value, "expected")
+  let assert value == "expected"
 }
 ```
 
-### `should.be_ok` without checking specific value
+### Weak vs strong assertions on Results
 ```gleam
 // Weak — only checks it's Ok, not the value
-should.be_ok(result)
+let assert Ok(_) = result
 
 // Stronger — checks the exact value
 let assert Ok("expected") = result
-should.equal(should.be_ok(result), "expected")
 ```
 
-### Piping into should
+### Chaining assertions
 ```gleam
-list.length(items)
-|> should.equal(3)
-
-string.contains(output, "hello")
-|> should.be_true()
+let assert Ok(content) = read(conn, "/file.txt")
+let assert content == "hello"
 ```
 
 ## Test File Structure
 
 ```gleam
 import gleeunit
-import gleeunit/should
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -131,7 +126,7 @@ pub fn my_feature_test() {
   with_db(fn(conn) {
     let assert Ok(Nil) = write(conn, "/file.txt", "hello")
     let assert Ok(content) = read(conn, "/file.txt")
-    should.equal(content, "hello")
+    let assert content == "hello"
   })
 }
 ```
@@ -160,7 +155,6 @@ The fundamental building block for testing any actor that fans out or forwards m
 
 ```gleam
 import gleam/erlang/process
-import gleeunit/should
 
 // Generic helper — adapt the types to your actor
 fn send_and_confirm(
@@ -180,7 +174,7 @@ pub fn my_actor_test() {
 
   let received = send_and_confirm(actor, my_actor.DoSomething("hello"), consumer)
   // Assert on the received value
-  received |> should.equal(expected)
+  let assert received == expected
 
   process.send(actor, my_actor.Stop)
 }
@@ -214,7 +208,7 @@ pub fn test_actor_produces_side_effect() {
 
   let captured = my_listener.get_events(listener)     // 4. query
   let assert [XHappened(detail:)] = captured         // 5. assert
-  detail |> should.equal("expected")
+  let assert detail == "expected"
 
   my_listener.detach(listener)                       // 6. cleanup
   process.send(actor, my_actor.Stop)
@@ -225,7 +219,7 @@ pub fn test_actor_produces_side_effect() {
 
 ```gleam
   send_and_confirm(actor, my_actor.DoY(), consumer)
-  my_listener.get_events(listener) |> should.equal([])
+  let assert [] = my_listener.get_events(listener)
 ```
 
 ### Pattern 3: Setup/Cleanup Helpers
@@ -304,8 +298,8 @@ pub fn dispatcher_emits_inference_start_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [InferenceStart(model:, message_count:)] = captured
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  let assert model == "gpt-4"
+  let assert message_count == 3
 
   cleanup()
 }
@@ -315,7 +309,7 @@ pub fn dispatcher_does_not_emit_telemetry_for_session_ended_test() {
   let #(#(disp, consumer, handle), cleanup) = setup_with_listener()
 
   send_and_confirm(disp, SessionEnded(reason: NormalEnd), consumer)
-  listener.get_events(handle) |> should.equal([])
+  let assert [] = listener.get_events(handle)
 
   cleanup()
 }
@@ -355,24 +349,8 @@ pub fn test_dynamic_registration() {
   process.send(actor, my_actor.Subscribe(consumer))
 
   let received = send_and_confirm(actor, my_actor.Event(second), consumer)
-  received |> should.equal(second)
+  let assert received == second
 
   process.send(actor, my_actor.Stop)
 }
 ```
-
----
-
-## `gleeunit/should` Function Reference
-
-| Function | Signature | Purpose |
-|---|---|---|
-| `equal` | `(t, t) -> Nil` | Assert equality |
-| `not_equal` | `(t, t) -> Nil` | Assert inequality |
-| `be_ok` | `Result(a, e) -> a` | Assert Ok, unwrap value |
-| `be_error` | `Result(a, e) -> e` | Assert Error, unwrap error |
-| `be_some` | `Option(a) -> a` | Assert Some, unwrap value |
-| `be_none` | `Option(a) -> Nil` | Assert None |
-| `be_true` | `Bool -> Nil` | Assert True |
-| `be_false` | `Bool -> Nil` | Assert False |
-| `fail` | `() -> Nil` | Unconditional fail |
