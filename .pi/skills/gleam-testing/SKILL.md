@@ -17,61 +17,57 @@ pub fn my_test() {
 
 // ✅ CORRECT — panics on mismatch
 pub fn my_test() {
-  let assert value == "expected"
+  assert value == "expected"
 }
 ```
 
 The same applies to boolean expressions as the last line of any test. A bare `count == 4` evaluates and discards. Use assertions.
 
-## Assertion Strategies
+## Two Assertion Constructs — Do Not Confuse Them
 
-### `let assert` — equality checks
+Gleam has **two** distinct assertion mechanisms. They look similar but serve different purposes:
+
+### `assert <bool_expr>` — Boolean Assertion
+
+Evaluates the expression. Panics if it's `False`, continues if it's `True`.
+
 ```gleam
-let assert value == "expected"
-let assert count == 4
-let assert keys == ["alpha", "beta"]
+assert value == "expected"
+assert count == 4
+assert mode == "wal" || mode == "memory"
+assert string.contains(output, "hello")
+assert !string.contains(output, "config")
+assert keys == ["alpha", "beta"]
 ```
 
-### `let assert` — boolean conditions
-```gleam
-let assert mode == "wal" || mode == "memory"
-let assert string.contains(output, "hello")
-let assert !string.contains(output, "config")
-```
+### `let assert <pattern> = <expr>` — Assertive Pattern Match
 
-### `let assert` — Result unwrapping
-```gleam
-let assert Ok(value) = result     // unwraps Ok value, panics on Error
-let assert Error(e) = result      // unwraps Error value, panics on Ok
-```
+Evaluates the expression, then pattern-matches against the pattern. Panics if the pattern doesn't match. Binds variables from the pattern.
 
-### `let assert` — Option unwrapping
 ```gleam
-let assert Some(value) = option_value  // unwraps Some, panics on None
-let assert None = maybe_thing          // panics if Some
+let assert Ok(value) = result           // unwraps Ok, panics on Error
+let assert Error(e) = result            // unwraps Error, panics on Ok
+let assert Some(value) = option_value   // unwraps Some, panics on None
+let assert None = maybe_thing           // panics if Some
+let assert [item] = list_with_one       // panics unless exactly one element
+let assert Ok(Nil) = some_operation()   // asserts Ok(Nil) specifically
 ```
-
-### `let assert` — pattern matching as assertion
-```gleam
-let assert Ok(Nil) = some_operation()
-let assert Error(NotFound(key: "foo")) = lookup("foo")
-let assert [item] = list_with_one_item()
-```
-Use when you want to both assert a shape AND bind variables from it.
 
 ## Assertion Patterns — When to Use What
 
 | Situation | Use |
 |---|---|
-| Check exact equality | `let assert actual == expected` |
-| Check inequality | `let assert actual != expected` |
-| Compound boolean (OR, AND) | `let assert a \|\| b` |
+| Check exact equality | `assert actual == expected` |
+| Check inequality | `assert actual != expected` |
+| Compound boolean (OR, AND) | `assert a \|\| b` |
+| Assert string/list contains | `assert string.contains(s, "x")` |
 | Assert Result is Ok AND use the value | `let assert Ok(val) = result` |
 | Assert Result is Ok, don't need value | `let assert Ok(Nil) = result` |
+| Assert Result is Error | `let assert Error(e) = result` |
 | Assert specific error variant | `let assert Error(NotFound(key: k)) = ...` |
-| Assert string/list contains | `let assert string.contains(s, "x")` |
 | Assert Option is Some | `let assert Some(v) = option` |
 | Assert Option is None | `let assert None = option` |
+| Assert list has exactly one element | `let assert [item] = list` |
 
 ## Common Pitfalls
 
@@ -86,7 +82,7 @@ pub fn test_something() {
 // ✅ Fix
 pub fn test_something() {
   let assert Ok(value) = compute()
-  let assert value == "expected"
+  assert value == "expected"
 }
 ```
 
@@ -102,7 +98,30 @@ let assert Ok("expected") = result
 ### Chaining assertions
 ```gleam
 let assert Ok(content) = read(conn, "/file.txt")
-let assert content == "hello"
+assert content == "hello"
+```
+
+### assert inside case expressions
+```gleam
+// ❌ WRONG — `assert` is a statement, not a case branch expression
+case msg {
+  message.Assistant(content:, ..) ->
+    assert string.contains(content, "hello")
+  _ -> panic as "expected Assistant"
+}
+
+// ✅ Fix — use a block
+case msg {
+  message.Assistant(content:, ..) -> {
+    assert string.contains(content, "hello")
+    Nil
+  }
+  _ -> panic as "expected Assistant"
+}
+
+// ✅ Or better — destructure first, then assert
+let assert message.Assistant(content:, ..) = msg
+assert string.contains(content, "hello")
 ```
 
 ## Test File Structure
@@ -126,7 +145,7 @@ pub fn my_feature_test() {
   with_db(fn(conn) {
     let assert Ok(Nil) = write(conn, "/file.txt", "hello")
     let assert Ok(content) = read(conn, "/file.txt")
-    let assert content == "hello"
+    assert content == "hello"
   })
 }
 ```
@@ -173,8 +192,7 @@ pub fn my_actor_test() {
   process.send(actor, my_actor.Subscribe(consumer))
 
   let received = send_and_confirm(actor, my_actor.DoSomething("hello"), consumer)
-  // Assert on the received value
-  let assert received == expected
+  assert received == expected
 
   process.send(actor, my_actor.Stop)
 }
@@ -208,7 +226,7 @@ pub fn test_actor_produces_side_effect() {
 
   let captured = my_listener.get_events(listener)     // 4. query
   let assert [XHappened(detail:)] = captured         // 5. assert
-  let assert detail == "expected"
+  assert detail == "expected"
 
   my_listener.detach(listener)                       // 6. cleanup
   process.send(actor, my_actor.Stop)
@@ -298,8 +316,8 @@ pub fn dispatcher_emits_inference_start_telemetry_test() {
 
   let captured = listener.get_events(handle)
   let assert [InferenceStart(model:, message_count:)] = captured
-  let assert model == "gpt-4"
-  let assert message_count == 3
+  assert model == "gpt-4"
+  assert message_count == 3
 
   cleanup()
 }
@@ -349,7 +367,7 @@ pub fn test_dynamic_registration() {
   process.send(actor, my_actor.Subscribe(consumer))
 
   let received = send_and_confirm(actor, my_actor.Event(second), consumer)
-  let assert received == second
+  assert received == second
 
   process.send(actor, my_actor.Stop)
 }
