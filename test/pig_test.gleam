@@ -7,7 +7,6 @@
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig
 import pig/agent/state
 import pig/ai/message
@@ -161,7 +160,8 @@ fn check_identity_builder(
 ) {
   let config = pig.test_harness() |> set_field(value)
   let agent_config = pig.agent_config(config)
-  get_field(agent_config) |> should.equal(Some(value))
+  let result = get_field(agent_config)
+  assert result == Some(value)
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
   let assert True = msg == message.Assistant("mock response", [], None)
@@ -228,8 +228,8 @@ pub fn tools_auto_compose_system_prompt_test() {
   check_system_prompt(
     pig.test_harness() |> pig.with_tool(harness.echo_tool()),
     fn(prompt) {
-      should.be_true(string.contains(prompt, "Available tools:"))
-      should.be_true(string.contains(prompt, "echo: Echoes back"))
+      assert string.contains(prompt, "Available tools:")
+      assert string.contains(prompt, "echo: Echoes back")
     },
   )
 }
@@ -241,9 +241,9 @@ pub fn tools_append_to_existing_system_prompt_test() {
       |> pig.with_system_prompt("You are helpful.")
       |> pig.with_tool(harness.echo_tool()),
     fn(prompt) {
-      should.be_true(string.contains(prompt, "You are helpful."))
-      should.be_true(string.contains(prompt, "Available tools:"))
-      should.be_true(string.contains(prompt, "echo: Echoes back"))
+      assert string.contains(prompt, "You are helpful.")
+      assert string.contains(prompt, "Available tools:")
+      assert string.contains(prompt, "echo: Echoes back")
     },
   )
 }
@@ -252,5 +252,5 @@ pub fn tools_append_to_existing_system_prompt_test() {
 pub fn no_tools_no_prompt_means_no_system_prompt_test() {
   let config = pig.test_harness()
   let cfg = pig.build_agent_config(config)
-  should.equal(cfg.system_prompt, None)
+  assert cfg.system_prompt == None
 }

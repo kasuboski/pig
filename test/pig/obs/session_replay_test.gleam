@@ -7,7 +7,6 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig/ai/message.{Assistant, Tool, ToolCall, User}
 import pig/obs/events.{
   InferenceCompleted, InferenceStarted, ToolBlocked, ToolExecuted,
@@ -43,12 +42,12 @@ pub fn replay_empty_file_returns_empty_list_test() {
   use path <- with_temp_file("empty")
   let assert Ok(Nil) = simplifile.write(path, "")
   let result = session.replay(path)
-  should.equal(result, Ok([]))
+  assert result == Ok([])
 }
 
 pub fn replay_file_not_found_returns_error_test() {
   let result = session.replay("/nonexistent/path/session.jsonl")
-  should.be_error(result)
+  let assert Error(_) = result
 }
 
 pub fn replay_single_inference_reconstructs_messages_test() {
@@ -59,10 +58,10 @@ pub fn replay_single_inference_reconstructs_messages_test() {
   ])
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages + assistant message = [User("Hi"), Assistant("Hello!")]
-  should.equal(list.length(messages), 2)
+  assert list.length(messages) == 2
   let assert [User(content: hi), Assistant(content: hello, ..)] = messages
-  should.equal(hi, "Hi")
-  should.equal(hello, "Hello!")
+  assert hi == "Hi"
+  assert hello == "Hello!"
 }
 
 pub fn replay_with_tool_calls_reconstructs_full_history_test() {
@@ -77,16 +76,16 @@ pub fn replay_with_tool_calls_reconstructs_full_history_test() {
   ])
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + final assistant = 4 messages
-  should.equal(list.length(messages), 4)
+  assert list.length(messages) == 4
   let assert [
     User(content: use_echo),
     Assistant(content: "", tool_calls: [_tc], ..),
     Tool(tool_call_id: tc_id, content: _tool_content),
     Assistant(content: done, ..),
   ] = messages
-  should.equal(use_echo, "use echo")
-  should.equal(done, "Done!")
-  should.equal(tc_id, "c1")
+  assert use_echo == "use echo"
+  assert done == "Done!"
+  assert tc_id == "c1"
 }
 
 /// Replay handles tool_blocked events after last inference (crash recovery).
@@ -99,19 +98,17 @@ pub fn replay_with_blocked_tool_after_last_inference_test() {
   ])
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + assistant + blocked tool message = 3
-  should.equal(list.length(messages), 3)
+  assert list.length(messages) == 3
   let assert [
     User(content: prompt),
     Assistant(content: "", tool_calls: [_tc], ..),
     Tool(tool_call_id: id, content: blocked_content),
   ] = messages
-  should.equal(prompt, "rm -rf /")
-  should.equal(id, "c1")
+  assert prompt == "rm -rf /"
+  assert id == "c1"
   // Blocked tool content should reconstruct from hook_name + reason
-  should.equal(
-    blocked_content,
-    "Tool blocked by 'safety-guard': dangerous command",
-  )
+  assert blocked_content ==
+    "Tool blocked by 'safety-guard': dangerous command"
 }
 
 /// Replay handles tool_executed events after last inference (crash recovery).
@@ -126,16 +123,16 @@ pub fn replay_with_executed_tool_after_last_inference_test() {
   ])
   let assert Ok(messages) = session.replay(path)
   // Should have: input_messages from last inference + assistant + executed tool message = 3
-  should.equal(list.length(messages), 3)
+  assert list.length(messages) == 3
   let assert [
     User(content: prompt),
     Assistant(content: "", tool_calls: [_tc], ..),
     Tool(tool_call_id: id, content: tool_content),
   ] = messages
-  should.equal(prompt, "ping me")
-  should.equal(id, "c1")
+  assert prompt == "ping me"
+  assert id == "c1"
   // Executed tool content should come from the tool_executed result field
-  should.equal(tool_content, "pong")
+  assert tool_content == "pong"
 }
 
 // ── Round-trip Tests: format_event → write → replay ────────────────
@@ -164,10 +161,10 @@ pub fn round_trip_single_inference_test() {
   write_jsonl(path, [line1, line2])
   let assert Ok(messages) = session.replay(path)
   // input_messages + assistant response = 2 messages
-  should.equal(list.length(messages), 2)
+  assert list.length(messages) == 2
   let assert [User(content: hi), Assistant(content: resp, ..)] = messages
-  should.equal(hi, "Hello")
-  should.equal(resp, "Hi there!")
+  assert hi == "Hello"
+  assert resp == "Hi there!"
 }
 
 /// Verify round-trip with tool calls — the full agent loop cycle.
@@ -203,17 +200,17 @@ pub fn round_trip_full_tool_loop_test() {
   write_jsonl(path, [line1, line2])
   let assert Ok(messages) = session.replay(path)
   // 3 history messages + 1 final assistant = 4
-  should.equal(list.length(messages), 4)
+  assert list.length(messages) == 4
   let assert [
     User(content: use_echo),
     Assistant(content: "", tool_calls: [tc], ..),
     Tool(tool_call_id: tc_id, content: _),
     Assistant(content: done, ..),
   ] = messages
-  should.equal(use_echo, "Use echo")
-  should.equal(tc.id, "c1")
-  should.equal(tc_id, "c1")
-  should.equal(done, "Done!")
+  assert use_echo == "Use echo"
+  assert tc.id == "c1"
+  assert tc_id == "c1"
+  assert done == "Done!"
 }
 
 /// Verify that history stored without system prompt round-trips correctly.
@@ -238,10 +235,10 @@ pub fn round_trip_no_system_prompt_in_history_test() {
   write_jsonl(path, [line])
   let assert Ok(messages) = session.replay(path)
   // Should recover exactly the history + response, no system prompt
-  should.equal(list.length(messages), 2)
+  assert list.length(messages) == 2
   let assert [User(content: q), Assistant(content: a, ..)] = messages
-  should.equal(q, "What is 2+2?")
-  should.equal(a, "4")
+  assert q == "What is 2+2?"
+  assert a == "4"
 }
 
 // ── Hook Round-trip Tests ──────────────────────────────────────────
@@ -274,16 +271,16 @@ pub fn round_trip_blocked_tool_test() {
   write_jsonl(path, [inference_line, blocked_line])
   let assert Ok(messages) = session.replay(path)
   // input_messages + assistant + blocked tool = 3
-  should.equal(list.length(messages), 3)
+  assert list.length(messages) == 3
   let assert [
     User(content: prompt),
     Assistant(content: "", tool_calls: [tc], ..),
     Tool(tool_call_id: id, content: blocked_content),
   ] = messages
-  should.equal(prompt, "rm -rf /")
-  should.equal(tc.id, "c1")
-  should.equal(id, "c1")
-  should.equal(blocked_content, "Tool blocked by 'safety': dangerous")
+  assert prompt == "rm -rf /"
+  assert tc.id == "c1"
+  assert id == "c1"
+  assert blocked_content == "Tool blocked by 'safety': dangerous"
 }
 
 /// Verify that a ToolExecuted event with hook-transformed result
@@ -336,15 +333,15 @@ pub fn round_trip_transformed_result_test() {
   let assert Ok(messages) = session.replay(path)
   // Last InferenceCompleted has 2 input_messages + 1 final assistant = 3
   // (the ToolExecuted is before the last inference, so not picked up as partial)
-  should.equal(list.length(messages), 3)
+  assert list.length(messages) == 3
   let assert [
     User(content: q),
     Assistant(content: "", tool_calls: [tc], ..),
     Assistant(content: resp, ..),
   ] = messages
-  should.equal(q, "search for test")
-  should.equal(tc.id, "c2")
-  should.equal(resp, "Here are the results")
+  assert q == "search for test"
+  assert tc.id == "c2"
+  assert resp == "Here are the results"
 }
 
 /// Verify that a partial session (crash after tool execution, before
@@ -382,15 +379,15 @@ pub fn round_trip_partial_session_with_transformed_tool_test() {
   write_jsonl(path, [inference_line, tool_line])
   let assert Ok(messages) = session.replay(path)
   // input_messages + assistant + tool (from partial recovery) = 3
-  should.equal(list.length(messages), 3)
+  assert list.length(messages) == 3
   let assert [
     User(content: prompt),
     Assistant(content: "", tool_calls: [tc], ..),
     Tool(tool_call_id: id, content: tool_content),
   ] = messages
-  should.equal(prompt, "read passwd")
-  should.equal(tc.id, "c3")
-  should.equal(id, "c3")
+  assert prompt == "read passwd"
+  assert tc.id == "c3"
+  assert id == "c3"
   // The transformed result from ToolExecuted should be preserved
-  should.equal(tool_content, "[BLOCKED by security-hook]")
+  assert tool_content == "[BLOCKED by security-hook]"
 }

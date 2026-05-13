@@ -13,7 +13,6 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import gleeunit
-import gleeunit/should
 import jscheam/schema
 import pig/agent/effect
 import pig/agent/msg
@@ -69,7 +68,7 @@ pub fn user_prompt_adds_user_message_to_history_test() {
   let assert step_result.Continue(state: new_st, effects: _) = result
   // History should contain the User message
   let history = state.history(new_st)
-  list.last(history) |> should.equal(Ok(message.User("hello")))
+  assert list.last(history) == Ok(message.User("hello"))
 }
 
 /// UserPrompt returns Continue with a CallProvider effect.
@@ -85,7 +84,7 @@ pub fn user_prompt_returns_continue_with_call_provider_test() {
         _ -> False
       }
     })
-  list.length(call_provider_effs) |> should.equal(1)
+  assert list.length(call_provider_effs) == 1
 }
 
 /// CallProvider effect's messages include the prompt.
@@ -100,8 +99,7 @@ pub fn user_prompt_call_provider_includes_prompt_test() {
       message.User("hello") -> True
       _ -> False
     }
-  })
-  |> should.be_true()
+      })
 }
 
 /// CallProvider effect's tools match the state's tool definitions.
@@ -120,9 +118,9 @@ pub fn user_prompt_call_provider_includes_tools_test() {
   let result = update.update(st, msg.UserPrompt("hello"))
   let assert step_result.Continue(state: _, effects: effs) = result
   let assert [effect.CallProvider(tools: tool_defs, ..)] = effs
-  list.length(tool_defs) |> should.equal(1)
+  assert list.length(tool_defs) == 1
   let assert [td2] = tool_defs
-  td2.name |> should.equal("echo")
+  assert td2.name == "echo"
 }
 
 /// System prompt is prepended to messages in the effect when configured.
@@ -138,7 +136,7 @@ pub fn user_prompt_system_prompt_prepended_test() {
   let assert step_result.Continue(state: _, effects: effs) = result
   let assert [effect.CallProvider(messages: msgs, ..)] = effs
   // First message should be the system prompt
-  list.first(msgs) |> should.equal(Ok(message.System("you are a helper")))
+  assert list.first(msgs) == Ok(message.System("you are a helper"))
 }
 
 // ── Task 2.2: ProviderResponded ──────────────────────────────────
@@ -149,10 +147,10 @@ pub fn provider_responded_text_returns_done_test() {
   let resp = message.Assistant("hello!", [], None)
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Done(state: new_st, message: msg_out) = result
-  msg_out |> should.equal(resp)
+  assert msg_out == resp
   // History should contain the assistant message
   let history = state.history(new_st)
-  list.last(history) |> should.equal(Ok(resp))
+  assert list.last(history) == Ok(resp)
 }
 
 /// ProviderResponded(Ok(tool_call_message)) → Continue with ExecuteTools effect.
@@ -170,7 +168,7 @@ pub fn provider_responded_tool_calls_returns_continue_test() {
         _ -> False
       }
     })
-  list.length(exec_effs) |> should.equal(1)
+  assert list.length(exec_effs) == 1
 }
 
 /// ProviderResponded(Ok(tool_call_message)) with empty tool_calls → Done.
@@ -187,7 +185,7 @@ pub fn provider_responded_error_returns_failed_test() {
   let err = error.ApiError("provider failed")
   let result = update.update(st, msg.ProviderResponded(Error(err)))
   let assert step_result.Failed(state: _, error: e) = result
-  e |> should.equal(error.ApiError("provider failed"))
+  assert e == error.ApiError("provider failed")
 }
 
 /// ProviderResponded(Ok(tool_call_message)) puts assistant message in history.
@@ -198,7 +196,7 @@ pub fn provider_responded_tool_calls_records_assistant_test() {
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Continue(state: new_st, effects: _) = result
   let history = state.history(new_st)
-  list.last(history) |> should.equal(Ok(resp))
+  assert list.last(history) == Ok(resp)
 }
 
 // ── Task 2.3: ToolResults ────────────────────────────────────────
@@ -213,10 +211,7 @@ pub fn tool_results_adds_tool_messages_test() {
   let result = update.update(st, msg.ToolResults(results))
   let assert step_result.Continue(state: new_st, effects: _) = result
   let history = state.history(new_st)
-  list.last(history)
-  |> should.equal(
-    Ok(message.Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}")),
-  )
+  assert list.last(history) == Ok(message.Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"))
 }
 
 /// ToolResults increments iterations.
@@ -228,7 +223,7 @@ pub fn tool_results_increments_iterations_test() {
   let st = state_for_update([])
   let result = update.update(st, msg.ToolResults(results))
   let assert step_result.Continue(state: new_st, effects: _) = result
-  new_st.iterations |> should.equal(1)
+  assert new_st.iterations == 1
 }
 
 /// ToolResults returns Continue with CallProvider effect.
@@ -247,7 +242,7 @@ pub fn tool_results_returns_continue_with_call_provider_test() {
         _ -> False
       }
     })
-  list.length(call_provider_effs) |> should.equal(1)
+  assert list.length(call_provider_effs) == 1
 }
 
 /// When exceeded_max_iterations, ToolResults returns Failed.
@@ -260,13 +255,8 @@ pub fn tool_results_max_iterations_returns_failed_test() {
   let st = state_for_update_with_max([], 1)
   let result = update.update(st, msg.ToolResults(results))
   let assert step_result.Failed(state: _, error: e) = result
-  case e {
-    error.ApiError(message:) ->
-      message
-      |> string.contains("exceeded maximum iterations")
-      |> should.be_true()
-    _ -> should.be_true(False)
-  }
+  let assert error.ApiError(message:) = e
+  assert string.contains(message, "exceeded maximum iterations")
 }
 
 /// Tool error results are recorded in history correctly.
@@ -280,5 +270,5 @@ pub fn tool_results_error_recorded_in_history_test() {
   let assert step_result.Continue(state: new_st, effects: _) = result
   let history = state.history(new_st)
   let assert Ok(message.Tool(content:, ..)) = list.last(history)
-  content |> should.equal("Tool error: tool exploded")
+  assert content == "Tool error: tool exploded"
 }

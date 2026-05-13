@@ -7,7 +7,6 @@
 import gleam/json
 import gleam/option.{None}
 import gleeunit
-import gleeunit/should
 import jscheam/schema
 import pig/agent/effect
 import pig/agent/msg
@@ -153,7 +152,7 @@ pub fn scenario_simple_response_test() {
   let final = message.Assistant("4", [], None)
   let #(_st, result) = run_scenario(initial_state([]), "What is 2+2?", [final])
   let assert step_result.Done(state: _, message: msg) = result
-  msg |> should.equal(final)
+  assert msg == final
 }
 
 /// Scenario 2: Provider calls one tool, then returns text.
@@ -169,7 +168,7 @@ pub fn scenario_single_tool_call_test() {
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "use echo", [tool_resp, final])
   let assert step_result.Done(state: _, message: msg) = result
-  msg |> should.equal(final)
+  assert msg == final
 }
 
 /// Scenario 3: Provider calls 3 tools at once, then returns text.
@@ -185,7 +184,7 @@ pub fn scenario_multi_tool_call_test() {
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "multi call", [tool_resp, final])
   let assert step_result.Done(state: _, message: msg) = result
-  msg |> should.equal(final)
+  assert msg == final
 }
 
 /// Scenario 4: Chained tool calls.
@@ -208,7 +207,7 @@ pub fn scenario_chained_tool_calls_test() {
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "chain", [resp1, resp2, final])
   let assert step_result.Done(state: _, message: msg) = result
-  msg |> should.equal(final)
+  assert msg == final
 }
 
 /// Scenario 5: Provider error terminates the loop with Failed.
@@ -222,7 +221,7 @@ pub fn scenario_provider_error_test() {
       msg.ProviderResponded(Error(error.ApiError("provider failed"))),
     )
   let assert step_result.Failed(state: _, error: e) = result2
-  e |> should.equal(error.ApiError("provider failed"))
+  assert e == error.ApiError("provider failed")
 }
 
 /// Scenario 6: Circuit breaker — infinite tool-call loop terminates.
@@ -248,19 +247,15 @@ pub fn scenario_max_iterations_circuit_breaker_test() {
   ]
   let result3 = update.update(st2, msg.ToolResults(tool_results))
   let assert step_result.Continue(state: st3, effects: _) = result3
-  st3.iterations |> should.equal(1)
+  assert st3.iterations == 1
   // Step 4: Provider responds with tool calls again
   let result4 = update.update(st3, msg.ProviderResponded(Ok(looping)))
   let assert step_result.Continue(state: st4, effects: _) = result4
   // Step 5: ToolResults again (iterations now 2) — exceeds max
   let result5 = update.update(st4, msg.ToolResults(tool_results))
   let assert step_result.Failed(state: _, error: e) = result5
-  case e {
-    error.ApiError(message:) ->
-      string.contains(message, "exceeded maximum iterations")
-      |> should.be_true()
-    _ -> should.be_true(False)
-  }
+  let assert error.ApiError(message:) = e
+  assert string.contains(message, "exceeded maximum iterations")
 }
 
 /// Scenario 7: Tool error does NOT kill the loop — LLM sees error and adapts.
@@ -284,11 +279,11 @@ pub fn scenario_tool_error_recovery_test() {
   // History should contain the error message
   let history = state.history(st3)
   let assert Ok(message.Tool(content:, ..)) = list.last(history)
-  content |> should.equal("Tool error: tool exploded")
+  assert content == "Tool error: tool exploded"
   // Feed the final response
   let result4 = update.update(st3, msg.ProviderResponded(Ok(final)))
   let assert step_result.Done(state: _, message: msg) = result4
-  msg |> should.equal(final)
+  assert msg == final
 }
 
 // ── Tool helpers ─────────────────────────────────────────────────

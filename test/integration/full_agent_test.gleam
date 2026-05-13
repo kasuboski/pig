@@ -12,7 +12,6 @@ import gleam/json
 import gleam/list
 import gleam/string
 import gleeunit
-import gleeunit/should
 import integration/config
 import integration/gate
 import jscheam/schema
@@ -91,7 +90,7 @@ pub fn full_agent_with_tool_test() {
         message.Assistant(content:, tool_calls: [], thinking: _) -> {
           // The model may use the tool (answer contains "10") or answer directly.
           // Both are valid — the test verifies the full lifecycle completes.
-          should.be_true(string.length(content) > 0)
+          assert string.length(content) > 0
         }
         message.Assistant(content: _, tool_calls: calls, thinking: _) -> {
           let _ = calls
@@ -119,8 +118,8 @@ pub fn agent_with_system_prompt_test() {
       let result = pig.run_with_timeout(agent, "Count from 1 to 5", 60_000)
       pig.stop(agent)
       let assert Ok(message.Assistant(content:, ..)) = result
-      string.contains(content, "1") |> should.equal(True)
-      string.contains(content, "5") |> should.equal(True)
+      assert string.contains(content, "1") == True
+      assert string.contains(content, "5") == True
     }
   }
 }
@@ -142,18 +141,20 @@ pub fn multi_turn_separate_runs_test() {
       let assert Ok(msg1) =
         pig.run_with_timeout(agent, "Hello, this is turn 1.", 60_000)
       case msg1 {
-        message.Assistant(content:, ..) ->
-          string.contains(string.lowercase(content), "turn")
-          |> should.equal(True)
+        message.Assistant(content:, ..) -> {
+          assert string.contains(string.lowercase(content), "turn")
+          Nil
+        }
         _ -> panic as "expected Assistant"
       }
 
       let assert Ok(msg2) =
         pig.run_with_timeout(agent, "Hello, this is turn 2.", 60_000)
       case msg2 {
-        message.Assistant(content:, ..) ->
-          string.contains(string.lowercase(content), "turn")
-          |> should.equal(True)
+        message.Assistant(content:, ..) -> {
+          assert string.contains(string.lowercase(content), "turn")
+          Nil
+        }
         _ -> panic as "expected Assistant"
       }
 
@@ -184,13 +185,13 @@ pub fn agent_with_session_writer_test() {
           pig.stop(agent)
 
           let assert Ok(message.Assistant(content:, ..)) = result
-          should.be_true(string.length(content) > 0)
+          assert string.length(content) > 0
 
           // Verify session file was created and populated
           let assert Ok(file_content) = simplifile.read(session_path)
           let lines = string.split(file_content, "\n")
           let non_empty = list.filter(lines, fn(l) { l != "" })
-          should.be_true(non_empty != [])
+          assert non_empty != []
 
           Nil
         })
@@ -233,8 +234,8 @@ pub fn agent_tool_loop_with_telemetry_test() {
         |> list.map(fn(e) { events.name_to_string(events.event_name(e)) })
 
       // Must have at least one inference start/stop pair
-      should.be_true(list.contains(event_names, "pig.inference.start"))
-      should.be_true(list.contains(event_names, "pig.inference.stop"))
+      assert list.contains(event_names, "pig.inference.start")
+      assert list.contains(event_names, "pig.inference.stop")
 
       // If the model called the tool, we should see tool events
       let has_tool_start = list.contains(event_names, "pig.tool.start")
@@ -245,13 +246,13 @@ pub fn agent_tool_loop_with_telemetry_test() {
       // But if tool events exist, they must come in pairs.
       case has_tool_start {
         True -> {
-          should.be_true(has_tool_stop)
+          assert has_tool_stop
           // Answer should contain 10
-          string.contains(content, "10") |> should.be_true()
+          assert string.contains(content, "10")
         }
         False -> {
           // Model answered directly — still valid, just check it answered
-          should.be_true(string.length(content) > 0)
+          assert string.length(content) > 0
         }
       }
     }

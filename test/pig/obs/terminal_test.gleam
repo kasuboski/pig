@@ -1,7 +1,6 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
-import gleeunit/should
 import pig/ai/error.{ApiError}
 import pig/ai/message.{Assistant, ToolCall}
 import pig/obs/dispatcher
@@ -23,9 +22,9 @@ pub fn format_session_started_shows_model_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "START") |> should.be_true
-  string.contains(result, "gpt-4") |> should.be_true
-  string.contains(result, "Math Tutor") |> should.be_true
+  assert string.contains(result, "START")
+  assert string.contains(result, "gpt-4")
+  assert string.contains(result, "Math Tutor")
 }
 
 pub fn format_inference_completed_shows_duration_test() {
@@ -43,9 +42,9 @@ pub fn format_inference_completed_shows_duration_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "INF") |> should.be_true
-  string.contains(result, "150ms") |> should.be_true
-  string.contains(result, "Completed") |> should.be_true
+  assert string.contains(result, "INF")
+  assert string.contains(result, "150ms")
+  assert string.contains(result, "Completed")
 }
 
 pub fn format_inference_completed_shows_token_counts_test() {
@@ -63,11 +62,11 @@ pub fn format_inference_completed_shows_token_counts_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "INF") |> should.be_true
-  string.contains(result, "150ms") |> should.be_true
-  string.contains(result, "52") |> should.be_true
-  string.contains(result, "15") |> should.be_true
-  string.contains(result, "stop") |> should.be_true
+  assert string.contains(result, "INF")
+  assert string.contains(result, "150ms")
+  assert string.contains(result, "52")
+  assert string.contains(result, "15")
+  assert string.contains(result, "stop")
 }
 
 pub fn format_inference_completed_without_tokens_test() {
@@ -86,9 +85,9 @@ pub fn format_inference_completed_without_tokens_test() {
   let result = terminal.format_event(event)
 
   // Should not crash and should show duration
-  string.contains(result, "INF") |> should.be_true
-  string.contains(result, "200ms") |> should.be_true
-  string.contains(result, "Completed") |> should.be_true
+  assert string.contains(result, "INF")
+  assert string.contains(result, "200ms")
+  assert string.contains(result, "Completed")
 }
 
 pub fn format_tool_executed_shows_tool_name_test() {
@@ -98,9 +97,9 @@ pub fn format_tool_executed_shows_tool_name_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "TOOL") |> should.be_true
-  string.contains(result, "calculator") |> should.be_true
-  string.contains(result, "3ms") |> should.be_true
+  assert string.contains(result, "TOOL")
+  assert string.contains(result, "calculator")
+  assert string.contains(result, "3ms")
 }
 
 pub fn format_inference_failed_shows_error_test() {
@@ -113,10 +112,10 @@ pub fn format_inference_failed_shows_error_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "ERR") |> should.be_true
-  string.contains(result, "100ms") |> should.be_true
-  string.contains(result, "ApiError") |> should.be_true
-  string.contains(result, "rate limited") |> should.be_true
+  assert string.contains(result, "ERR")
+  assert string.contains(result, "100ms")
+  assert string.contains(result, "ApiError")
+  assert string.contains(result, "rate limited")
 }
 
 pub fn format_session_ended_normal_test() {
@@ -124,8 +123,8 @@ pub fn format_session_ended_normal_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "END") |> should.be_true
-  string.contains(result, "normal") |> should.be_true
+  assert string.contains(result, "END")
+  assert string.contains(result, "normal")
 }
 
 pub fn format_session_ended_max_iterations_test() {
@@ -133,9 +132,9 @@ pub fn format_session_ended_max_iterations_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "END") |> should.be_true
-  string.contains(result, "50") |> should.be_true
-  string.contains(result, "iterations") |> should.be_true
+  assert string.contains(result, "END")
+  assert string.contains(result, "50")
+  assert string.contains(result, "iterations")
 }
 
 // ── Tests for new SessionEvent variants ─────────────────────────────
@@ -145,10 +144,10 @@ pub fn format_inference_started_shows_model_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "INF") |> should.be_true
-  string.contains(result, "Started") |> should.be_true
-  string.contains(result, "gpt-4") |> should.be_true
-  string.contains(result, "3") |> should.be_true
+  assert string.contains(result, "INF")
+  assert string.contains(result, "Started")
+  assert string.contains(result, "gpt-4")
+  assert string.contains(result, "3")
 }
 
 pub fn format_tool_started_shows_tool_name_test() {
@@ -158,9 +157,9 @@ pub fn format_tool_started_shows_tool_name_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "TOOL") |> should.be_true
-  string.contains(result, "Started") |> should.be_true
-  string.contains(result, "calculator") |> should.be_true
+  assert string.contains(result, "TOOL")
+  assert string.contains(result, "Started")
+  assert string.contains(result, "calculator")
 }
 
 pub fn format_tool_blocked_shows_info_test() {
@@ -179,11 +178,11 @@ pub fn format_tool_blocked_shows_info_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "TOOL") |> should.be_true
-  string.contains(result, "Blocked") |> should.be_true
-  string.contains(result, "risky_tool") |> should.be_true
-  string.contains(result, "safety_guard") |> should.be_true
-  string.contains(result, "Dangerous command detected") |> should.be_true
+  assert string.contains(result, "TOOL")
+  assert string.contains(result, "Blocked")
+  assert string.contains(result, "risky_tool")
+  assert string.contains(result, "safety_guard")
+  assert string.contains(result, "Dangerous command detected")
 }
 
 pub fn format_hook_acted_shows_info_test() {
@@ -201,10 +200,10 @@ pub fn format_hook_acted_shows_info_test() {
 
   let result = terminal.format_event(event)
 
-  string.contains(result, "[HOOK]") |> should.be_true
-  string.contains(result, "safety_guard") |> should.be_true
-  string.contains(result, "before_tool_call") |> should.be_true
-  string.contains(result, "modify_args") |> should.be_true
+  assert string.contains(result, "[HOOK]")
+  assert string.contains(result, "safety_guard")
+  assert string.contains(result, "before_tool_call")
+  assert string.contains(result, "modify_args")
 }
 
 // ── Supervised Consumer Tests ──────────────────────────────────────
@@ -240,8 +239,8 @@ pub fn terminal_consumer_receives_events_via_dispatcher_test() {
   // Wait for sync consumer to receive (confirms dispatcher processed the message)
   let assert Ok(received) = process.receive(sync_consumer, 2000)
   let assert InferenceStarted(model:, message_count:) = received
-  model |> should.equal("gpt-4")
-  message_count |> should.equal(3)
+  assert model == "gpt-4"
+  assert message_count == 3
 
   // Cleanup
   process.send(disp, dispatcher.Stop)
@@ -256,5 +255,5 @@ pub fn start_consumer_creates_valid_subject_test() {
   // io.println and could crash during test teardown when stdout is gone.
   // The real logic (format_event) is tested separately as a pure function.
   let _ = consumer
-  should.be_true(True)
+  Nil
 }

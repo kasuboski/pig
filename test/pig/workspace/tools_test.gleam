@@ -8,7 +8,6 @@ import gleam/json
 import gleam/list
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig/tool
 import pig/workspace/kv
 import pig/workspace/schema
@@ -49,9 +48,7 @@ pub fn all_tools_returns_well_formed_tools_test() {
   with_db(fn(conn) {
     let tools = tools.all_tools(conn)
     // Must be non-empty
-    tools
-    |> list.is_empty()
-    |> should.equal(False)
+    assert list.is_empty(tools) == False
     // Every tool must have a non-empty name and description
     let all_valid =
       tools
@@ -59,14 +56,12 @@ pub fn all_tools_returns_well_formed_tools_test() {
         string.length(t.definition.name) > 0
         && string.length(t.definition.description) > 0
       })
-    should.equal(all_valid, True)
+    assert all_valid == True
     // Names must be unique
     let names =
       tools
       |> list.map(fn(t: tool.Tool) { t.definition.name })
-    names
-    |> list.length()
-    |> should.equal(list.length(list.unique(names)))
+    assert list.length(names) == list.length(list.unique(names))
   })
 }
 
@@ -83,8 +78,7 @@ pub fn write_file_tool_handler_creates_file_test() {
 
     // Verify by reading back using vfs directly
     let assert Ok(content) = vfs.read_file(conn, "/test.txt")
-    content
-    |> should.equal("hello")
+    assert content == "hello"
   })
 }
 
@@ -101,14 +95,10 @@ pub fn read_file_tool_returns_content_test() {
 
     let result_string = json.to_string(result_json)
     // Verify line-numbered output: "0\thello\n1\tworld"
-    string.contains(result_string, "0")
-    |> should.equal(True)
-    string.contains(result_string, "hello")
-    |> should.equal(True)
-    string.contains(result_string, "1")
-    |> should.equal(True)
-    string.contains(result_string, "world")
-    |> should.equal(True)
+    assert string.contains(result_string, "0") == True
+    assert string.contains(result_string, "hello") == True
+    assert string.contains(result_string, "1") == True
+    assert string.contains(result_string, "world") == True
   })
 }
 
@@ -120,10 +110,8 @@ pub fn read_file_tool_missing_returns_error_test() {
     let assert Error(tool.ToolError(message: msg)) =
       call_handler(tool, [#("path", json.string("/nonexistent.txt"))])
 
-    string.contains(msg, "File not found")
-    |> should.equal(True)
-    string.contains(msg, "/nonexistent.txt")
-    |> should.equal(True)
+    assert string.contains(msg, "File not found") == True
+    assert string.contains(msg, "/nonexistent.txt") == True
   })
 }
 
@@ -141,10 +129,8 @@ pub fn list_directory_tool_returns_entries_test() {
       call_handler(tool, [#("path", json.string("/dir"))])
 
     let result_string = json.to_string(result_json)
-    string.contains(result_string, "file1.txt")
-    |> should.equal(True)
-    string.contains(result_string, "file2.txt")
-    |> should.equal(True)
+    assert string.contains(result_string, "file1.txt") == True
+    assert string.contains(result_string, "file2.txt") == True
   })
 }
 
@@ -183,8 +169,7 @@ pub fn remember_tool_stores_value_test() {
       call_handler(recall_tool, [#("key", json.string("test_key"))])
 
     let result_string = json.to_string(result_json)
-    string.contains(result_string, "test_value")
-    |> should.equal(True)
+    assert string.contains(result_string, "test_value") == True
   })
 }
 
@@ -196,10 +181,8 @@ pub fn recall_tool_missing_returns_error_test() {
     let assert Error(tool.ToolError(message: msg)) =
       call_handler(tool, [#("key", json.string("nonexistent_key"))])
 
-    string.contains(msg, "Key not found")
-    |> should.equal(True)
-    string.contains(msg, "nonexistent_key")
-    |> should.equal(True)
+    assert string.contains(msg, "Key not found") == True
+    assert string.contains(msg, "nonexistent_key") == True
   })
 }
 
@@ -220,18 +203,12 @@ pub fn grep_tool_returns_matching_lines_test() {
 
     let result_string = json.to_string(result_json)
     // Should find matches in a.txt and b.py but not c.txt
-    string.contains(result_string, "/a.txt")
-    |> should.equal(True)
-    string.contains(result_string, "/b.py")
-    |> should.equal(True)
-    string.contains(result_string, "/c.txt")
-    |> should.equal(False)
-    string.contains(result_string, "hello world")
-    |> should.equal(True)
-    string.contains(result_string, "hello again")
-    |> should.equal(True)
-    string.contains(result_string, "def hello()")
-    |> should.equal(True)
+    assert string.contains(result_string, "/a.txt") == True
+    assert string.contains(result_string, "/b.py") == True
+    assert string.contains(result_string, "/c.txt") == False
+    assert string.contains(result_string, "hello world") == True
+    assert string.contains(result_string, "hello again") == True
+    assert string.contains(result_string, "def hello()") == True
   })
 }
 
@@ -250,10 +227,8 @@ pub fn grep_tool_filters_by_include_test() {
       ])
 
     let result_string = json.to_string(result_json)
-    string.contains(result_string, "/b.py")
-    |> should.equal(True)
-    string.contains(result_string, "/a.txt")
-    |> should.equal(False)
+    assert string.contains(result_string, "/b.py") == True
+    assert string.contains(result_string, "/a.txt") == False
   })
 }
 
@@ -273,10 +248,8 @@ pub fn grep_tool_filters_by_path_test() {
       ])
 
     let result_string = json.to_string(result_json)
-    string.contains(result_string, "/src/main.gleam")
-    |> should.equal(True)
-    string.contains(result_string, "/test.gleam")
-    |> should.equal(False)
+    assert string.contains(result_string, "/src/main.gleam") == True
+    assert string.contains(result_string, "/test.gleam") == False
   })
 }
 
@@ -300,12 +273,9 @@ pub fn grep_tool_respects_max_results_test() {
 
     let result_string = json.to_string(result_json)
     // Should only have 2 results, not 4
-    string.contains(result_string, "line1 match")
-    |> should.equal(True)
-    string.contains(result_string, "line2 match")
-    |> should.equal(True)
-    string.contains(result_string, "line4 match")
-    |> should.equal(False)
+    assert string.contains(result_string, "line1 match") == True
+    assert string.contains(result_string, "line2 match") == True
+    assert string.contains(result_string, "line4 match") == False
   })
 }
 
@@ -317,10 +287,8 @@ pub fn grep_tool_requires_pattern_test() {
     let assert Error(tool.ToolError(message: msg)) =
       call_handler(tool, [#("path", json.string("/some/path"))])
 
-    string.contains(msg, "Invalid arguments")
-    |> should.equal(True)
-    string.contains(msg, "pattern")
-    |> should.equal(True)
+    assert string.contains(msg, "Invalid arguments") == True
+    assert string.contains(msg, "pattern") == True
   })
 }
 
@@ -338,11 +306,8 @@ pub fn list_keys_tool_returns_matching_test() {
       call_handler(tool, [#("prefix", json.string("user:"))])
 
     let result_string = json.to_string(result_json)
-    string.contains(result_string, "user:email")
-    |> should.equal(True)
-    string.contains(result_string, "user:name")
-    |> should.equal(True)
-    string.contains(result_string, "config:theme")
-    |> should.equal(False)
+    assert string.contains(result_string, "user:email") == True
+    assert string.contains(result_string, "user:name") == True
+    assert string.contains(result_string, "config:theme") == False
   })
 }

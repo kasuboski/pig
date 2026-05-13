@@ -1,7 +1,6 @@
 import gleam/list
 import gleam/string
 import gleeunit
-import gleeunit/should
 import pig/tool
 import pig/workspace
 import sqlight
@@ -21,7 +20,7 @@ fn with_workspace(f: fn(workspace.Workspace) -> a) -> a {
 // Test 1: Open memory workspace succeeds and closes cleanly
 pub fn open_memory_succeeds_test() {
   let assert Ok(ws) = workspace.open(":memory:")
-  should.be_ok(workspace.close(ws))
+  let assert Ok(_) = workspace.close(ws)
 }
 
 // Test 2: Open returns usable workspace
@@ -39,7 +38,7 @@ pub fn open_returns_workspace_test() {
 pub fn close_succeeds_test() {
   let assert Ok(ws) = workspace.open(":memory:")
   let result = workspace.close(ws)
-  should.be_ok(result)
+  let assert Ok(_) = result
 }
 
 // Test 4: Connection escape hatch works
@@ -61,7 +60,7 @@ pub fn write_and_read_file_test() {
     let assert Ok(Nil) = workspace.write_file(ws, path, content)
     let assert Ok(read_content) = workspace.read_file(ws, path)
 
-    should.equal(read_content, content)
+    assert read_content == content
   })
 }
 
@@ -74,7 +73,7 @@ pub fn remember_and_recall_test() {
     let assert Ok(Nil) = workspace.remember(ws, key, value)
     let assert Ok(recalled_value) = workspace.recall(ws, key)
 
-    should.equal(recalled_value, value)
+    assert recalled_value == value
   })
 }
 
@@ -83,9 +82,7 @@ pub fn all_tools_returns_well_formed_tools_test() {
   with_workspace(fn(ws) {
     let tools = workspace.all_tools(ws)
     // Must be non-empty
-    tools
-    |> list.is_empty()
-    |> should.equal(False)
+    assert list.is_empty(tools) == False
     // Every tool must have a non-empty name and description
     let all_valid =
       tools
@@ -93,13 +90,11 @@ pub fn all_tools_returns_well_formed_tools_test() {
         string.length(t.definition.name) > 0
         && string.length(t.definition.description) > 0
       })
-    should.equal(all_valid, True)
+    assert all_valid == True
     // Names must be unique
     let names =
       tools
       |> list.map(fn(t: tool.Tool) { t.definition.name })
-    names
-    |> list.length()
-    |> should.equal(list.length(list.unique(names)))
+    assert list.length(names) == list.length(list.unique(names))
   })
 }

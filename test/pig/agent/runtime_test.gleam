@@ -13,7 +13,6 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
-import gleeunit/should
 import jscheam/schema
 import pig/agent/runtime
 import pig/ai/error
@@ -231,7 +230,7 @@ pub fn run_returns_provider_response_test() {
   let response = message.Assistant("hello!", [], None)
   let #(subject, disp) = start_simple(fixed_provider(response), [])
   let assert Ok(msg) = runtime.run(subject, "hi", 5000)
-  msg |> should.equal(response)
+  assert msg == response
   process.send(disp, dispatcher.Stop)
 }
 
@@ -260,8 +259,8 @@ pub fn call_provider_emits_inference_events_test() {
         _ -> False
       }
     })
-  has_started |> should.be_true()
-  has_completed |> should.be_true()
+  assert has_started
+  assert has_completed
   process.send(disp, dispatcher.Stop)
 }
 
@@ -282,7 +281,7 @@ pub fn call_provider_emits_inference_failed_test() {
         _ -> False
       }
     })
-  has_failed |> should.be_true()
+  assert has_failed
   process.send(disp, dispatcher.Stop)
 }
 
@@ -307,7 +306,7 @@ pub fn tool_call_scenario_test() {
       [],
     )
   let assert Ok(result) = runtime.run(subject, "use echo", 5000)
-  result |> should.equal(final)
+  assert result == final
   process.send(disp, dispatcher.Stop)
 }
 
@@ -343,8 +342,8 @@ pub fn tool_execution_emits_events_test() {
         _ -> False
       }
     })
-  has_tool_started |> should.be_true()
-  has_tool_executed |> should.be_true()
+  assert has_tool_started
+  assert has_tool_executed
   process.send(disp, dispatcher.Stop)
 }
 
@@ -360,7 +359,7 @@ pub fn tool_error_recovery_test() {
       [],
     )
   let assert Ok(result) = runtime.run(subject, "try boom", 5000)
-  result |> should.equal(final)
+  assert result == final
   process.send(disp, dispatcher.Stop)
 }
 
@@ -393,7 +392,7 @@ pub fn hook_blocks_tool_test() {
       [guard],
     )
   let assert Ok(result) = runtime.run(subject, "use echo", 5000)
-  result |> should.equal(response2)
+  assert result == response2
   let evts = collect_events(collector, 6, 2000)
   let has_blocked =
     list.any(evts, fn(e) {
@@ -402,7 +401,7 @@ pub fn hook_blocks_tool_test() {
         _ -> False
       }
     })
-  has_blocked |> should.be_true()
+  assert has_blocked
   process.send(disp, dispatcher.Stop)
 }
 
@@ -426,7 +425,7 @@ pub fn hook_allows_tool_test() {
       [guard],
     )
   let assert Ok(result) = runtime.run(subject, "use echo", 5000)
-  result |> should.equal(response2)
+  assert result == response2
   process.send(disp, dispatcher.Stop)
 }
 
@@ -455,7 +454,7 @@ pub fn hook_transforms_result_test() {
       [scrubber],
     )
   let assert Ok(result) = runtime.run(subject, "use echo", 5000)
-  result |> should.equal(response2)
+  assert result == response2
   process.send(disp, dispatcher.Stop)
 }
 
@@ -496,7 +495,7 @@ pub fn hook_transforms_messages_before_inference_test() {
     start_with_collector(provider_fn, [], [prefixer])
   let _ = runtime.run(subject, "hello", 5000)
   let assert Ok(content) = process.receive(seen, 2000)
-  content |> should.equal("[scrubbed] hello")
+  assert content == "[scrubbed] hello"
   process.send(disp, dispatcher.Stop)
 }
 
@@ -536,7 +535,7 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
     )
   let assert Ok(subject) = runtime.start(config)
   let assert Ok(final) = runtime.run(subject, "use echo", 5000)
-  should.equal(final, response2)
+  assert final == response2
   runtime.stop(subject)
 
   let _ = process.receive(process.new_subject(), 200)
@@ -554,7 +553,7 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
       && string.contains(line, "\"hook_name\":\"guard\"")
       && string.contains(line, "\"reason\":\"echo blocked\"")
     })
-  should.be_true(has_blocked)
+  assert has_blocked
 
   let has_hook_acted =
     list.any(lines, fn(line) {
@@ -562,7 +561,7 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
       && string.contains(line, "\"hook_name\":\"guard\"")
       && string.contains(line, "\"hook_point\":\"before_tool_call\"")
     })
-  should.be_true(has_hook_acted)
+  assert has_hook_acted
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -590,10 +589,10 @@ pub fn runs_accumulate_history_test() {
   let #(subject, disp) = start_simple(provider_fn, [])
   let assert Ok(_) = runtime.run(subject, "prompt one", 5000)
   let assert Ok(count1) = process.receive(call_count, 1000)
-  should.equal(count1, 1)
+  assert count1 == 1
   let assert Ok(_) = runtime.run(subject, "prompt two", 5000)
   let assert Ok(count2) = process.receive(call_count, 1000)
-  should.equal(count2, 2)
+  assert count2 == 2
   process.send(disp, dispatcher.Stop)
 }
 
@@ -674,12 +673,8 @@ pub fn max_iterations_circuit_breaker_test() {
     )
   let assert Ok(subject) = runtime.start(config)
   let assert Error(e) = runtime.run(subject, "loop", 5000)
-  case e {
-    error.ApiError(message:) ->
-      string.contains(message, "exceeded maximum iterations")
-      |> should.be_true()
-    _ -> should.be_true(False)
-  }
+  let assert error.ApiError(message:) = e
+  assert string.contains(message, "exceeded maximum iterations")
   process.send(disp, dispatcher.Stop)
 }
 
@@ -716,7 +711,7 @@ pub fn parallel_tools_all_starts_before_stops_test() {
       [],
     )
   let assert Ok(msg) = runtime.run(subject, "parallel", 10_000)
-  msg |> should.equal(final)
+  assert msg == final
   let evts = collect_events(collector, 6, 5000)
   let event_types =
     list.map(evts, fn(e) {
@@ -733,7 +728,7 @@ pub fn parallel_tools_all_starts_before_stops_test() {
     [] -> 999_999
     _ -> list.fold(stops, 999_999, int.min)
   }
-  should.be_true(max_start < min_stop)
+  assert max_start < min_stop
   process.send(disp, dispatcher.Stop)
 }
 
@@ -766,6 +761,6 @@ pub fn parallel_tools_produces_correct_results_test() {
       [],
     )
   let assert Ok(msg) = runtime.run(subject, "parallel", 5000)
-  msg |> should.equal(final)
+  assert msg == final
   process.send(disp, dispatcher.Stop)
 }

@@ -1,5 +1,4 @@
 import gleam/option.{type Option, None, Some}
-import gleeunit/should
 import pig/ai/message.{type Message, Assistant}
 import pig/ai/provider.{
   type InferenceMetadata, type InferenceResult, default_metadata, from_message,
@@ -10,16 +9,16 @@ import pig/ai/provider.{
 /// Check that from_message preserves the original message
 fn check_result_preserves_message(message: Message) {
   let result = from_message(message)
-  should.equal(result.message, message)
+  assert result.message == message
 }
 
 /// Check that default metadata has None for all optional fields
 fn check_default_has_none_fields(result: InferenceResult) {
-  should.equal(result.metadata.response_id, None)
-  should.equal(result.metadata.response_model, None)
-  should.equal(result.metadata.finish_reason, None)
-  should.equal(result.metadata.input_tokens, None)
-  should.equal(result.metadata.output_tokens, None)
+  assert result.metadata.response_id == None
+  assert result.metadata.response_model == None
+  assert result.metadata.finish_reason == None
+  assert result.metadata.input_tokens == None
+  assert result.metadata.output_tokens == None
 }
 
 /// Check that a setter applies a value to a metadata field
@@ -30,7 +29,7 @@ fn check_metadata_setter(
   value: a,
 ) {
   let updated = setter(meta, value)
-  should.equal(field_accessor(updated), Some(value))
+  assert field_accessor(updated) == Some(value)
 }
 
 pub fn result_preserves_message_test() {
@@ -100,5 +99,5 @@ pub fn equality_of_identically_constructed_test() {
     |> with_input_tokens(200)
     |> with_output_tokens(100)
 
-  should.equal(meta1, meta2)
+  assert meta1 == meta2
 }
