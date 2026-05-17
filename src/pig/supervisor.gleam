@@ -79,9 +79,9 @@ pub fn start_supervised(
   }
 }
 
-/// Run a prompt against the supervised agent with a 30-second timeout.
+/// Run a prompt against the supervised agent with a 120-second timeout.
 pub fn run(sup: SupervisedAgent, prompt: String) -> Result(Message, AiError) {
-  run_with_timeout(sup, prompt, 30_000)
+  run_with_timeout(sup, prompt, 120_000)
 }
 
 /// Run a prompt against the supervised agent with an explicit timeout.

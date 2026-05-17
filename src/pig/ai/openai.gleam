@@ -14,7 +14,12 @@ import pig/ai/tool_definition.{type ToolDefinition}
 
 /// Configuration for an OpenAI-compatible provider.
 pub type OpenAIConfig {
-  OpenAIConfig(api_key: String, model: String, base_url: String)
+  OpenAIConfig(
+    api_key: String,
+    model: String,
+    base_url: String,
+    http_timeout_ms: Int,
+  )
 }
 
 /// An OpenAI-compatible provider wrapping a callable function with its config.
@@ -34,13 +39,48 @@ pub fn provider(api_key: String, model: String) -> OpenAIProvider {
   provider_with_base_url(api_key, model, default_base_url)
 }
 
+/// The default HTTP timeout for OpenAI API calls (120 seconds).
+pub const default_http_timeout_ms = 120_000
+
 /// Create a provider with a custom base URL (for Ollama, Together, etc).
 pub fn provider_with_base_url(
   api_key: String,
   model: String,
   base_url: String,
 ) -> OpenAIProvider {
-  let config = OpenAIConfig(api_key:, model:, base_url:)
+  provider_with_base_url_and_timeout(
+    api_key,
+    model,
+    base_url,
+    default_http_timeout_ms,
+  )
+}
+
+/// Create a provider with a custom base URL and HTTP timeout.
+pub fn provider_with_base_url_and_timeout(
+  api_key: String,
+  model: String,
+  base_url: String,
+  http_timeout_ms: Int,
+) -> OpenAIProvider {
+  let config = OpenAIConfig(api_key:, model:, base_url:, http_timeout_ms:)
+  OpenAIProvider(
+    config:,
+    call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
+      InferenceResult,
+      AiError,
+    ) {
+      do_inference(config, messages, tools)
+    },
+  )
+}
+
+/// Set the HTTP timeout in milliseconds on an OpenAI provider.
+pub fn with_http_timeout(
+  provider: OpenAIProvider,
+  timeout_ms: Int,
+) -> OpenAIProvider {
+  let config = OpenAIConfig(..provider.config, http_timeout_ms: timeout_ms)
   OpenAIProvider(
     config:,
     call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
@@ -105,7 +145,12 @@ fn do_inference(
     #("authorization", "Bearer " <> config.api_key),
     #("content-type", "application/json"),
   ]
-  use raw <- result.try(http.post(url, headers, body))
+  use raw <- result.try(http.post_with_timeout(
+    url,
+    headers,
+    body,
+    config.http_timeout_ms,
+  ))
   parse_response(raw)
 }
 

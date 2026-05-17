@@ -264,9 +264,9 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
   }
 }
 
-/// Run a prompt against the agent with a 30-second default timeout.
+/// Run a prompt against the agent with a 120-second default timeout.
 pub fn run(agent: Agent, prompt: String) -> Result(Message, AiError) {
-  run_with_timeout(agent, prompt, 30_000)
+  run_with_timeout(agent, prompt, 120_000)
 }
 
 /// Run a prompt against the agent with an explicit timeout in milliseconds.

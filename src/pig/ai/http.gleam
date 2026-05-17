@@ -52,16 +52,34 @@ pub fn map_http_error(err: httpc.HttpError) -> AiError {
   }
 }
 
-/// Send a POST request. Returns response body or AiError.
+/// Default HTTP timeout for LLM API calls (120 seconds).
+pub const default_timeout_ms = 120_000
+
+/// Send a POST request with the default 120-second timeout.
+/// Returns response body or AiError.
 pub fn post(
   url: String,
   headers: List(#(String, String)),
   body: String,
 ) -> Result(String, AiError) {
+  post_with_timeout(url, headers, body, default_timeout_ms)
+}
+
+/// Send a POST request with an explicit timeout in milliseconds.
+/// Returns response body or AiError.
+pub fn post_with_timeout(
+  url: String,
+  headers: List(#(String, String)),
+  body: String,
+  timeout_ms: Int,
+) -> Result(String, AiError) {
   logging.log(logging.Debug, "POST " <> url)
   use req <- result.try(build_request(url, headers, body))
+  let config =
+    httpc.configure()
+    |> httpc.timeout(timeout_ms)
   use resp <- result.try(
-    httpc.send(req)
+    httpc.dispatch(config, req)
     |> result.map_error(map_http_error),
   )
   logging.log(logging.Debug, "Response: HTTP " <> int.to_string(resp.status))
