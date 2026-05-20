@@ -470,7 +470,7 @@ pub fn new_hooks_has_no_session_start_by_default_test() {
   case h {
     hooks.Hooks(on_session_start: handler, ..) -> handler(event)
   }
-  True
+  Nil
 }
 
 pub fn new_hooks_has_no_session_shutdown_by_default_test() {
@@ -479,7 +479,7 @@ pub fn new_hooks_has_no_session_shutdown_by_default_test() {
   case h {
     hooks.Hooks(on_session_shutdown: handler, ..) -> handler(event)
   }
-  True
+  Nil
 }
 
 pub fn on_session_start_replaces_handler_test() {
@@ -490,7 +490,7 @@ pub fn on_session_start_replaces_handler_test() {
   case h {
     hooks.Hooks(on_session_start: handler, ..) -> handler(event)
   }
-  True
+  Nil
 }
 
 pub fn on_session_shutdown_replaces_handler_test() {
@@ -501,7 +501,7 @@ pub fn on_session_shutdown_replaces_handler_test() {
   case h {
     hooks.Hooks(on_session_shutdown: handler, ..) -> handler(event)
   }
-  True
+  Nil
 }
 
 pub fn notify_session_start_calls_all_handlers_test() {
@@ -513,7 +513,7 @@ pub fn notify_session_start_calls_all_handlers_test() {
     |> hooks.on_session_start(fn(_) { Nil })
   let event = hooks.SessionStartEvent(history: [])
   hooks.notify_session_start([h1, h2], event)
-  True
+  Nil
 }
 
 pub fn notify_session_shutdown_calls_all_handlers_test() {
@@ -525,5 +525,5 @@ pub fn notify_session_shutdown_calls_all_handlers_test() {
     |> hooks.on_session_shutdown(fn(_) { Nil })
   let event = hooks.SessionShutdownEvent(history: [], iterations: 5)
   hooks.notify_session_shutdown([h1, h2], event)
-  True
+  Nil
 }

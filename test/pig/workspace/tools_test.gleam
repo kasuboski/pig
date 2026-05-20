@@ -147,7 +147,7 @@ pub fn delete_file_tool_removes_file_test() {
 
     // Verify it's gone
     let assert Error(_) = vfs.read_file(conn, "/test.txt")
-    True
+    Nil
   })
 }
 

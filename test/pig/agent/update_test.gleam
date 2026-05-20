@@ -94,12 +94,12 @@ pub fn user_prompt_call_provider_includes_prompt_test() {
   let assert step_result.Continue(state: _, effects: effs) = result
   let assert [effect.CallProvider(messages: msgs, ..)] = effs
   // Messages should contain the user prompt
-  list.any(msgs, fn(m) {
+  assert list.any(msgs, fn(m) {
     case m {
       message.User("hello") -> True
       _ -> False
     }
-      })
+  })
 }
 
 /// CallProvider effect's tools match the state's tool definitions.

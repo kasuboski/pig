@@ -40,11 +40,11 @@ pub fn register_overwrite_test() {
     |> tool.register(tool.Tool(definition: td_v1, handler: handler))
     |> tool.register(tool.Tool(definition: td_v2, handler: handler))
   let assert Ok(found) = tool.lookup(registry, "get_weather")
-  found.definition.description == "v2"
+  assert found.definition.description == "v2"
 }
 
 /// Looking up a nonexistent tool returns Error — no crash.
 pub fn lookup_nonexistent_returns_error_test() {
   let registry = tool.new_registry()
-  tool.lookup(registry, "no_such_tool") == Error(Nil)
+  assert tool.lookup(registry, "no_such_tool") == Error(Nil)
 }

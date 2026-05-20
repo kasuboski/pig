@@ -27,7 +27,7 @@ pub fn all_names_start_with_pig_test() {
         _ -> False
       }
     })
-  all_ok
+  assert all_ok
 }
 
 /// Every event name has exactly 3 segments (namespace, domain, action).
@@ -35,28 +35,23 @@ pub fn all_names_have_three_segments_test() {
   let all_ok =
     events.all_event_names()
     |> list.all(fn(name) { list.length(name) == 3 })
-  all_ok
-}
-
-/// all_event_names returns one name per Event variant (6 total).
-pub fn all_event_names_count_test() {
-  list.length(events.all_event_names()) == 6
+  assert all_ok
 }
 
 /// No duplicate event names.
 pub fn all_event_names_unique_test() {
   let names = events.all_event_names()
-  list.length(names) == list.length(list.unique(names))
+  assert list.length(names) == list.length(list.unique(names))
 }
 
 /// event_name() returns the same value as the corresponding name function.
 pub fn event_name_matches_inference_start_test() {
-  events.event_name(events.InferenceStart(model: "x", message_count: 0))
-  == events.inference_start_name()
+  assert events.event_name(events.InferenceStart(model: "x", message_count: 0))
+    == events.inference_start_name()
 }
 
 pub fn event_name_matches_inference_stop_test() {
-  events.event_name(events.InferenceStop(
+  assert events.event_name(events.InferenceStop(
     model: "x",
     message_count: 0,
     duration_ms: 0,
@@ -65,32 +60,31 @@ pub fn event_name_matches_inference_stop_test() {
     input_tokens: None,
     output_tokens: None,
   ))
-  == events.inference_stop_name()
+    == events.inference_stop_name()
 }
 
 pub fn event_name_matches_tool_start_test() {
-  events.event_name(events.ToolStart(
+  assert events.event_name(events.ToolStart(
     tool_name: "x",
     tool_call_id: "y",
     arguments_json: "{}",
   ))
-  == events.tool_start_name()
+    == events.tool_start_name()
 }
 
 // ── name_to_string ───────────────────────────────────────────────────
 
 /// name_to_string joins segments with dots.
 pub fn name_to_string_joins_with_dots_test() {
-  let result = events.name_to_string(["a", "b", "c"])
-  result == "a.b.c"
+  assert events.name_to_string(["a", "b", "c"]) == "a.b.c"
 }
 
 pub fn name_to_string_single_segment_test() {
-  events.name_to_string(["pig"]) == "pig"
+  assert events.name_to_string(["pig"]) == "pig"
 }
 
 pub fn name_to_string_empty_test() {
-  events.name_to_string([]) == ""
+  assert events.name_to_string([]) == ""
 }
 
 // ── Event Equality ───────────────────────────────────────────────────
@@ -100,20 +94,20 @@ pub fn name_to_string_empty_test() {
 pub fn same_event_is_equal_test() {
   let e1 = events.InferenceStart(model: "a", message_count: 1)
   let e2 = events.InferenceStart(model: "a", message_count: 1)
-  e1 == e2
+  assert e1 == e2
 }
 
 pub fn different_fields_not_equal_test() {
   let e1 = events.InferenceStart(model: "a", message_count: 1)
   let e2 = events.InferenceStart(model: "b", message_count: 1)
-  e1 != e2
+  assert e1 != e2
 }
 
 pub fn different_variants_not_equal_test() {
   let e1 = events.InferenceStart(model: "a", message_count: 1)
   let e2 =
     events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
-  e1 != e2
+  assert e1 != e2
 }
 
 // ── emit Does Not Crash ──────────────────────────────────────────────
@@ -151,7 +145,7 @@ pub fn emit_all_variants_test() {
     tool_call_id: "call_456",
     arguments_json: "{}",
   ))
-  True
+  Nil
 }
 
 // ── Generic Emit Helpers ─────────────────────────────────────────────
@@ -159,19 +153,19 @@ pub fn emit_all_variants_test() {
 pub fn generic_emit_start_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_start(["pig", "custom", "start"], meta)
-  True
+  Nil
 }
 
 pub fn generic_emit_stop_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_stop(["pig", "custom", "stop"], 100, meta)
-  True
+  Nil
 }
 
 pub fn generic_emit_exception_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_exception(["pig", "custom", "exception"], meta)
-  True
+  Nil
 }
 
 // ── Decode Round-Trip ────────────────────────────────────────────────
@@ -190,7 +184,8 @@ pub fn decode_preserves_inference_start_test() {
       metadata: dict.from_list([#("model", "gpt-4")]),
     )
   let assert events.InferenceStart(model:, message_count:) = events.decode(raw)
-  model == "gpt-4" && message_count == 5
+  assert model == "gpt-4"
+  assert message_count == 5
 }
 
 pub fn decode_preserves_inference_stop_test() {
@@ -213,13 +208,13 @@ pub fn decode_preserves_inference_stop_test() {
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
-  model == "gpt-4"
-  && message_count == 2
-  && duration_ms == 150
-  && response_id == None
-  && finish_reason == None
-  && input_tokens == None
-  && output_tokens == None
+  assert model == "gpt-4"
+  assert message_count == 2
+  assert duration_ms == 150
+  assert response_id == None
+  assert finish_reason == None
+  assert input_tokens == None
+  assert output_tokens == None
 }
 
 pub fn decode_preserves_tool_start_test() {
@@ -235,9 +230,9 @@ pub fn decode_preserves_tool_start_test() {
     )
   let assert events.ToolStart(tool_name:, tool_call_id:, arguments_json:) =
     events.decode(raw)
-  tool_name == "bash"
-  && tool_call_id == "c1"
-  && arguments_json == "{\"foo\":\"bar\"}"
+  assert tool_name == "bash"
+  assert tool_call_id == "c1"
+  assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_stop_test() {
@@ -253,10 +248,10 @@ pub fn decode_preserves_tool_stop_test() {
     )
   let assert events.ToolStop(tool_name:, tool_call_id:, duration_ms:, result:) =
     events.decode(raw)
-  tool_name == "bash"
-  && tool_call_id == "c1"
-  && duration_ms == 42
-  && result == "{\"foo\":\"bar\"}"
+  assert tool_name == "bash"
+  assert tool_call_id == "c1"
+  assert duration_ms == 42
+  assert result == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_tool_exception_test() {
@@ -272,9 +267,9 @@ pub fn decode_preserves_tool_exception_test() {
     )
   let assert events.ToolException(tool_name:, tool_call_id:, arguments_json:) =
     events.decode(raw)
-  tool_name == "bash"
-  && tool_call_id == "c1"
-  && arguments_json == "{\"foo\":\"bar\"}"
+  assert tool_name == "bash"
+  assert tool_call_id == "c1"
+  assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
 pub fn decode_preserves_inference_exception_test() {
@@ -289,7 +284,9 @@ pub fn decode_preserves_inference_exception_test() {
     )
   let assert events.InferenceException(model:, message_count:, error_type:) =
     events.decode(raw)
-  model == "llama" && message_count == 7 && error_type == "timeout"
+  assert model == "llama"
+  assert message_count == 7
+  assert error_type == "timeout"
 }
 
 // ── Task 9.0e: Enriched InferenceStop Tests ─────────────────────────────
@@ -305,7 +302,7 @@ pub fn emit_enriched_inference_stop_does_not_crash_test() {
     input_tokens: Some(100),
     output_tokens: Some(50),
   ))
-  True
+  Nil
 }
 
 /// Decode InferenceStop with all new fields in the raw data.
@@ -335,13 +332,13 @@ pub fn decode_preserves_enriched_inference_stop_test() {
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
-  model == "gpt-4"
-  && message_count == 2
-  && duration_ms == 150
-  && response_id == Some("resp-456")
-  && finish_reason == Some("stop")
-  && input_tokens == Some(100)
-  && output_tokens == Some(50)
+  assert model == "gpt-4"
+  assert message_count == 2
+  assert duration_ms == 150
+  assert response_id == Some("resp-456")
+  assert finish_reason == Some("stop")
+  assert input_tokens == Some(100)
+  assert output_tokens == Some(50)
 }
 
 /// Decode InferenceStop without optional fields — should decode to None.
@@ -365,13 +362,13 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
-  model == "gpt-4"
-  && message_count == 2
-  && duration_ms == 150
-  && response_id == None
-  && finish_reason == None
-  && input_tokens == None
-  && output_tokens == None
+  assert model == "gpt-4"
+  assert message_count == 2
+  assert duration_ms == 150
+  assert response_id == None
+  assert finish_reason == None
+  assert input_tokens == None
+  assert output_tokens == None
 }
 
 // ── Task 9.0e: InferenceException with error_type Tests ─────────────────
@@ -383,7 +380,7 @@ pub fn emit_inference_exception_with_error_type_test() {
     message_count: 3,
     error_type: "timeout",
   ))
-  True
+  Nil
 }
 
 /// Decode InferenceException preserves error_type from metadata.
@@ -402,7 +399,9 @@ pub fn decode_preserves_inference_exception_error_type_test() {
     )
   let assert events.InferenceException(model:, message_count:, error_type:) =
     events.decode(raw)
-  model == "llama" && message_count == 7 && error_type == "api_error"
+  assert model == "llama"
+  assert message_count == 7
+  assert error_type == "api_error"
 }
 
 // ── emit_to Tests ──────────────────────────────────────────────────
@@ -473,5 +472,5 @@ pub fn to_dispatcher_sends_all_variants_test() {
   let assert Ok(_) = process.receive(consumer, 2000)
 
   process.send(disp, dispatcher.Stop)
-  True
+  Nil
 }

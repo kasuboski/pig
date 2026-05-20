@@ -21,14 +21,14 @@ pub fn main() -> Nil {
 pub fn librarian_tool_has_correct_name_test() {
   let skills = []
   let t = librarian.librarian_tool(skills)
-  t.definition.name == "read_skill"
+  assert t.definition.name == "read_skill"
 }
 
 /// librarian_tool has a non-empty description.
 pub fn librarian_tool_has_description_test() {
   let skills = []
   let t = librarian.librarian_tool(skills)
-  t.definition.description != ""
+  assert t.definition.description != ""
 }
 
 // ── Execution ────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ pub fn read_known_skill_test() {
   let result = t.handler(dyn)
   let assert Ok(json_val) = result
   let content = json.to_string(json_val)
-  string.contains(content, "Gleam Expert")
+  assert string.contains(content, "Gleam Expert")
 }
 
 /// Executing read_skill with an unknown name returns an error.
@@ -69,5 +69,5 @@ pub fn read_unknown_skill_returns_error_test() {
   let assert Ok(dyn) = json.parse(from: args_json, using: decode.dynamic)
   let result = t.handler(dyn)
   let assert Error(tool.ToolError(message: msg)) = result
-  string.contains(msg, "nonexistent")
+  assert string.contains(msg, "nonexistent")
 }

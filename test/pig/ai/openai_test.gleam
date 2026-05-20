@@ -174,14 +174,14 @@ pub fn parse_response_captures_token_usage_test() {
 pub fn parse_malformed_json_returns_invalid_response_test() {
   let result = openai.parse_response("not json at all")
   let assert Error(error.InvalidResponse(detail:)) = result
-  string.contains(detail, "JSON")
+  assert string.contains(detail, "JSON")
 }
 
 pub fn parse_missing_choices_returns_invalid_response_test() {
   let result =
     openai.parse_response("{\"id\":\"x\",\"object\":\"chat.completion\"}")
   let assert Error(error.InvalidResponse(detail:)) = result
-  string.contains(detail, "choices")
+  assert string.contains(detail, "choices")
 }
 
 pub fn parse_empty_choices_returns_invalid_response_test() {
@@ -232,7 +232,7 @@ pub fn build_request_body_with_tools_test() {
   let body = openai.build_request_body(messages, tools, "gpt-4o")
 
   let assert Ok(names) = decode_tool_names(body)
-  names == ["calculator"]
+  assert names == ["calculator"]
 }
 
 pub fn build_request_body_with_assistant_tool_calls_test() {
@@ -261,7 +261,7 @@ pub fn build_request_body_no_tools_field_when_empty_test() {
   let messages = [message.User("hello")]
   let body = openai.build_request_body(messages, [], "gpt-4o")
 
-  body_has_key(body, "tools") == False
+  assert body_has_key(body, "tools") == False
 }
 
 pub fn build_request_body_tool_parameters_injected_as_json_test() {

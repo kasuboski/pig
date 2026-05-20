@@ -56,7 +56,7 @@ pub fn add_message_does_not_mutate_original_test() {
   let s1 = state.add_message(s, message.User("first"))
   let _s2 = state.add_message(s, message.User("second"))
   // s1 is independent — original s has "a", s1 has "a"+"first"
-  state.history(s1) == [message.User("a"), message.User("first")]
+  assert state.history(s1) == [message.User("a"), message.User("first")]
 }
 
 pub fn add_message_preserves_insertion_order_test() {
@@ -70,7 +70,7 @@ pub fn add_message_preserves_insertion_order_test() {
     message.User("hello"),
     message.Assistant("hi", [], None),
   ] = state.history(s)
-  True
+  Nil
 }
 
 // ── System Prompt Contract ───────────────────────────────────────
@@ -81,7 +81,7 @@ pub fn system_prompt_not_in_history_test() {
     new_state_with_prompt([], "you are helpful")
     |> state.add_message(message.User("hello"))
   // history has only the user message
-  state.history(s) == [message.User("hello")]
+  assert state.history(s) == [message.User("hello")]
 }
 
 /// messages_for_provider prepends system prompt before history.
@@ -89,11 +89,11 @@ pub fn messages_for_provider_injects_system_prompt_test() {
   let s =
     new_state_with_prompt([], "you are helpful")
     |> state.add_message(message.User("hello"))
-  state.messages_for_provider(s)
-  == [
-    message.System("you are helpful"),
-    message.User("hello"),
-  ]
+  assert state.messages_for_provider(s)
+    == [
+      message.System("you are helpful"),
+      message.User("hello"),
+    ]
 }
 
 /// Without system prompt, messages_for_provider returns raw history.
@@ -101,7 +101,7 @@ pub fn messages_for_provider_returns_history_when_no_prompt_test() {
   let s =
     new_state([])
     |> state.add_message(message.User("hello"))
-  state.messages_for_provider(s) == [message.User("hello")]
+  assert state.messages_for_provider(s) == [message.User("hello")]
 }
 
 // ── Tool Registry Contract ───────────────────────────────────────
@@ -110,7 +110,7 @@ pub fn messages_for_provider_returns_history_when_no_prompt_test() {
 pub fn tool_definitions_available_from_state_test() {
   let s = new_state([harness.echo_tool()])
   let defs = state.tool_definitions(s)
-  list.length(defs) == 1
+  assert list.length(defs) == 1
 }
 
 // ── Max Iterations Contract ──────────────────────────────────────
@@ -119,15 +119,11 @@ pub fn tool_definitions_available_from_state_test() {
 pub fn exceeded_max_iterations_boundary_test() {
   let s = new_state_with_max([], 2)
   // Not exceeded initially
-  !state.exceeded_max_iterations(s)
-  && {
-    let s1 = state.increment_iterations(s)
-    !state.exceeded_max_iterations(s1)
-    && {
-      let s2 = state.increment_iterations(s1)
-      state.exceeded_max_iterations(s2)
-    }
-  }
+  assert !state.exceeded_max_iterations(s)
+  let s1 = state.increment_iterations(s)
+  assert !state.exceeded_max_iterations(s1)
+  let s2 = state.increment_iterations(s1)
+  assert state.exceeded_max_iterations(s2)
 }
 
 // ── Session Path Config ────────────────────────────────────────────

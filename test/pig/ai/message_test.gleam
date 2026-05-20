@@ -15,18 +15,18 @@ pub fn main() -> Nil {
 // ── role() mapping ───────────────────────────────────────────────
 
 pub fn role_user_test() {
-  message.role(message.User("x")) == message.UserRole
+  assert message.role(message.User("x")) == message.UserRole
 }
 
 pub fn role_system_test() {
-  message.role(message.System("x")) == message.SystemRole
+  assert message.role(message.System("x")) == message.SystemRole
 }
 
 pub fn role_assistant_test() {
-  message.role(message.Assistant("x", [], None)) == message.AssistantRole
+  assert message.role(message.Assistant("x", [], None)) == message.AssistantRole
 }
 
 pub fn role_tool_test() {
-  message.role(message.Tool(tool_call_id: "id", content: "x"))
-  == message.ToolRole
+  assert message.role(message.Tool(tool_call_id: "id", content: "x"))
+    == message.ToolRole
 }

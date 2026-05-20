@@ -216,7 +216,7 @@ pub fn terminal_supervised_creates_spec_test() {
   // If we got here, the spec was created successfully.
   // The ChildSpec type ensures type safety at compile time.
   // Integration testing is covered separately.
-  True
+  Nil
 }
 
 /// Start a terminal consumer actor and verify it receives events via dispatcher.

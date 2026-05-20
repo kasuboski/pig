@@ -493,7 +493,7 @@ pub fn session_supervised_creates_spec_test() {
   // If we got here, the spec was created successfully.
   // The ChildSpec type ensures type safety at compile time.
   // Integration testing is covered separately.
-  True
+  Nil
 }
 
 /// Start a consumer actor and verify it integrates with the dispatcher.
@@ -554,5 +554,5 @@ pub fn start_consumer_creates_valid_subject_test() {
   // Fire-and-forget doesn't crash
   let _ = process.send(consumer, event)
 
-  True
+  Nil
 }
