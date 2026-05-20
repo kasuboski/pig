@@ -3,7 +3,6 @@
 //// Fixture-driven boundary tests per TESTING_STRATEGY.
 //// Tests exercise `pig/skill.load` against real files in test_data/skills/.
 
-import gleam/list
 import gleam/string
 import gleeunit
 import pig/skill
