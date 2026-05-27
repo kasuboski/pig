@@ -34,6 +34,7 @@ pub opaque type PigConfig {
     skills: List(skill.Skill),
     consumer_specs: List(ConsumerSpec),
     hooks: List(Hooks),
+    initial_history: List(Message),
   )
 }
 
@@ -52,6 +53,7 @@ pub fn new(provider: Provider) -> PigConfig {
     skills: [],
     consumer_specs: [],
     hooks: [],
+    initial_history: [],
   )
 }
 
@@ -172,6 +174,22 @@ pub fn with_terminal_output(config: PigConfig) -> PigConfig {
   ])
 }
 
+/// Seed the conversation with initial messages.
+///
+/// Messages are appended to the agent's history after session replay
+/// (if any) when the agent starts via `start()`. This allows resuming
+/// a previous conversation or providing context before the first prompt.
+///
+/// The provider will see these messages on the first `run()` call,
+/// along with any messages accumulated from session replay and the
+/// new user prompt.
+pub fn with_initial_history(
+  config: PigConfig,
+  messages: List(Message),
+) -> PigConfig {
+  PigConfig(..config, initial_history: messages)
+}
+
 /// Get the underlying AgentConfig. Useful for testing and inspection.
 pub fn agent_config(config: PigConfig) -> state.AgentConfig {
   config.agent_config
@@ -227,12 +245,20 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
               model: final_config.model,
               max_iterations: final_config.max_iterations,
             )
-          // Create initial state with system prompt and session replay
+          // Create initial state with system prompt and session replay.
+          // System messages are stripped from both replay and initial history
+          // because `messages_for_provider()` always prepends the configured
+          // system prompt. Keeping them would cause duplication.
           let agent_st = case final_config.session_path {
             option.Some(path) -> {
               let st = state.new(final_config)
               case session.replay(path) {
-                Ok(replayed) -> list.fold(replayed, st, state.add_message)
+                Ok(replayed) ->
+                  list.fold(
+                    strip_system_messages(replayed),
+                    st,
+                    state.add_message,
+                  )
                 Error(err) -> {
                   logging.log(
                     logging.Warning,
@@ -247,6 +273,13 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
             }
             option.None -> state.new(final_config)
           }
+          // Apply initial history on top of session replay
+          let agent_st =
+            list.fold(
+              strip_system_messages(config.initial_history),
+              agent_st,
+              state.add_message,
+            )
           let rt_state =
             runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
           case runtime.start_with_state(runtime_config, rt_state) {
@@ -303,6 +336,20 @@ pub fn stop(agent: Agent) -> Nil {
 pub fn test_harness() -> PigConfig {
   let response = message.Assistant("mock response", [], option.None)
   new(fn(_msgs, _tools) { Ok(from_message(response)) })
+}
+
+/// Strip System messages from a list.
+///
+/// System messages are managed exclusively by `AgentConfig.system_prompt`
+/// and prepended by `messages_for_provider()`. Including them in history
+/// (from session replay or initial_history) would cause duplication.
+fn strip_system_messages(messages: List(Message)) -> List(Message) {
+  list.filter(messages, fn(msg) {
+    case msg {
+      message.System(_) -> False
+      _ -> True
+    }
+  })
 }
 
 /// Build the final AgentConfig from a PigConfig.

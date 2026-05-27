@@ -5,6 +5,7 @@ import gleam/string
 import gleeunit
 import pig
 import pig/ai/message
+import pig/ai/provider
 import pig/hooks
 import simplifile
 import temporary
@@ -200,4 +201,134 @@ pub fn default_config_has_no_session_path_test() {
   let config = pig.test_harness()
   let agent_cfg = pig.agent_config(config)
   assert agent_cfg.session_path == option.None
+}
+
+// ── Initial History Tests ──────────────────────────────────────────
+
+// Test 12: with_initial_history works with a single message
+pub fn with_initial_history_single_message_test() {
+  let config =
+    pig.test_harness()
+    |> pig.with_initial_history([message.User("hello from the past")])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(response) = pig.run(agent, "test")
+  assert get_content(response) == "mock response"
+  pig.stop(agent)
+}
+
+// Test 13: with_initial_history with empty list is a no-op
+pub fn with_initial_history_empty_list_is_noop_test() {
+  let config =
+    pig.test_harness()
+    |> pig.with_initial_history([])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(response) = pig.run(agent, "test")
+  assert get_content(response) == "mock response"
+  pig.stop(agent)
+}
+
+// Test 14: with_initial_history with multiple message types
+pub fn with_initial_history_multiple_messages_test() {
+  let config =
+    pig.test_harness()
+    |> pig.with_initial_history([
+      message.User("what is 2+2?"),
+      message.Assistant("4", [], option.None),
+    ])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(response) = pig.run(agent, "continue")
+  assert get_content(response) == "mock response"
+  pig.stop(agent)
+}
+
+// Test 15: with_initial_history chains with session_writer
+pub fn with_initial_history_chains_with_session_writer_test() {
+  use tmp_file <- with_temp_file("initial_history_session")
+  let config =
+    pig.test_harness()
+    |> pig.with_session_writer(tmp_file)
+    |> pig.with_initial_history([message.User("seed")])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(response) = pig.run(agent, "test")
+  assert get_content(response) == "mock response"
+  pig.stop(agent)
+}
+
+// Test 16: provider sees initial history messages on first run
+pub fn with_initial_history_provider_sees_messages_test() {
+  let seen = process.new_subject()
+  let mock_response = message.Assistant("mock response", [], option.None)
+  let provider_fn = fn(msgs, _tools) {
+    let user_contents =
+      msgs
+      |> list.filter(fn(m) {
+        case m {
+          message.User(_) -> True
+          _ -> False
+        }
+      })
+      |> list.map(fn(m) {
+        let assert message.User(content) = m
+        content
+      })
+    process.send(seen, user_contents)
+    Ok(provider.from_message(mock_response))
+  }
+  let config =
+    pig.new(provider_fn)
+    |> pig.with_initial_history([
+      message.User("previous question"),
+      message.Assistant("previous answer", [], option.None),
+    ])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_response) = pig.run(agent, "new question")
+  pig.stop(agent)
+
+  // Provider should see both the initial history user message and the new one
+  let assert Ok(user_contents) = process.receive(seen, 2000)
+  assert user_contents == ["previous question", "new question"]
+}
+
+// Test 17: System messages in initial_history are stripped
+//
+// System messages are managed exclusively by with_system_prompt() and
+// prepended by messages_for_provider(). Including them in history would
+// cause duplication.
+pub fn with_initial_history_strips_system_messages_test() {
+  let seen = process.new_subject()
+  let mock_response = message.Assistant("mock response", [], option.None)
+  let provider_fn = fn(msgs, _tools) {
+    let system_msgs =
+      msgs
+      |> list.filter(fn(m) {
+        case m {
+          message.System(_) -> True
+          _ -> False
+        }
+      })
+      |> list.length()
+    process.send(seen, system_msgs)
+    Ok(provider.from_message(mock_response))
+  }
+  let config =
+    pig.new(provider_fn)
+    |> pig.with_system_prompt("configured prompt")
+    |> pig.with_initial_history([
+      message.System("should be stripped"),
+      message.User("hello"),
+      message.System("also stripped"),
+    ])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_response) = pig.run(agent, "test")
+  pig.stop(agent)
+
+  // Provider should see exactly 1 System message — the one from with_system_prompt
+  let assert Ok(system_count) = process.receive(seen, 2000)
+  assert system_count == 1
 }
