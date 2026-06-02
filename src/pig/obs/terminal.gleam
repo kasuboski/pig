@@ -12,6 +12,7 @@ import gleam/otp/supervision
 import pig/ai/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
+import pig/ai/stop_reason
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
   Interrupted, MaxIterationsExceeded, NormalEnd,
@@ -55,7 +56,7 @@ pub fn format_event(event: SessionEvent) -> String {
       message: _,
       response_id: _,
       response_model: _,
-      finish_reason:,
+      stop_reason:,
       input_tokens:,
       output_tokens:,
       duration_ms:,
@@ -68,8 +69,8 @@ pub fn format_event(event: SessionEvent) -> String {
         }
         _, _ -> ""
       }
-      let finish_part = case finish_reason {
-        Some(reason) -> " | finish: " <> reason
+      let finish_part = case stop_reason {
+        Some(reason) -> " | finish: " <> stop_reason.to_string(reason)
         None -> ""
       }
       "[INF] Completed | " <> duration_str <> token_part <> finish_part

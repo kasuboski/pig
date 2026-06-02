@@ -20,6 +20,7 @@ import pig/ai/message.{
   type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
   ToolCall, User,
 }
+import pig/ai/stop_reason
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
   AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
@@ -388,7 +389,7 @@ pub fn format_event(event: SessionEvent) -> String {
       message:,
       response_id:,
       response_model:,
-      finish_reason:,
+      stop_reason:,
       input_tokens:,
       output_tokens:,
       duration_ms:,
@@ -410,15 +411,15 @@ pub fn format_event(event: SessionEvent) -> String {
           list.append(with_response_id, [#("response_model", json.string(v))])
         None -> with_response_id
       }
-      let with_finish_reason = case finish_reason {
+      let with_stop_reason = case stop_reason {
         Some(v) ->
-          list.append(with_response_model, [#("finish_reason", json.string(v))])
+          list.append(with_response_model, [#("stop_reason", stop_reason.to_json(v))])
         None -> with_response_model
       }
       let with_input_tokens = case input_tokens {
         Some(v) ->
-          list.append(with_finish_reason, [#("input_tokens", json.int(v))])
-        None -> with_finish_reason
+          list.append(with_stop_reason, [#("input_tokens", json.int(v))])
+        None -> with_stop_reason
       }
       let with_output_tokens = case output_tokens {
         Some(v) ->

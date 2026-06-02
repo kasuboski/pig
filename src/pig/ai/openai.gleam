@@ -10,6 +10,7 @@ import pig/ai/message.{type Message}
 import pig/ai/provider.{
   type InferenceResult, InferenceMetadata, InferenceResult, default_metadata,
 }
+import pig/ai/stop_reason
 import pig/ai/tool_definition.{type ToolDefinition}
 
 /// Configuration for an OpenAI-compatible provider.
@@ -236,10 +237,10 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
   use response_id <- decode.field("id", decode.optional(decode.string))
   use response_model <- decode.field("model", decode.optional(decode.string))
 
-  // Decode choices to get message and finish_reason
+  // Decode choices to get message and stop_reason
   use choices <- decode.field("choices", decode.list(choice_decoder()))
   case list.first(choices) {
-    Ok(#(msg, finish_reason)) -> {
+    Ok(#(msg, sr)) -> {
       use usage <- decode.optional_field(
         "usage",
         None,
@@ -249,7 +250,7 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
         InferenceMetadata(
           response_id: response_id,
           response_model: response_model,
-          finish_reason: finish_reason,
+          stop_reason: sr,
           input_tokens: option.map(usage, fn(u) { u.prompt_tokens }),
           output_tokens: option.map(usage, fn(u) { u.completion_tokens }),
         )
@@ -277,14 +278,15 @@ fn usage_decoder() -> decode.Decoder(Usage) {
   decode.success(Usage(prompt_tokens:, completion_tokens:, total_tokens:))
 }
 
-fn choice_decoder() -> decode.Decoder(#(Message, Option(String))) {
+fn choice_decoder() -> decode.Decoder(#(Message, Option(stop_reason.StopReason))) {
   use msg <- decode.field("message", message_decoder())
-  use finish_reason <- decode.optional_field(
+  use raw_finish_reason <- decode.optional_field(
     "finish_reason",
     None,
     decode.optional(decode.string),
   )
-  decode.success(#(msg, finish_reason))
+  let sr = option.map(raw_finish_reason, stop_reason.from_openai)
+  decode.success(#(msg, sr))
 }
 
 fn message_decoder() -> decode.Decoder(Message) {

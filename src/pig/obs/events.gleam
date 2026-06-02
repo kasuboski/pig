@@ -13,6 +13,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
+import pig/ai/stop_reason.{type StopReason}
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ pub type Event {
     message_count: Int,
     duration_ms: Int,
     response_id: Option(String),
-    finish_reason: Option(String),
+    stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
   )
@@ -147,7 +148,7 @@ pub fn emit(event: Event) -> Nil {
       message_count:,
       duration_ms:,
       response_id:,
-      finish_reason:,
+      stop_reason:,
       input_tokens:,
       output_tokens:,
     ) -> {
@@ -168,7 +169,7 @@ pub fn emit(event: Event) -> Nil {
       let metadata =
         base_metadata
         |> maybe_insert_string("response_id", response_id)
-        |> maybe_insert_string("finish_reason", finish_reason)
+        |> maybe_insert_string("stop_reason", option.map(stop_reason, stop_reason.to_string))
 
       ffi_execute(inference_stop_name(), measurements, metadata)
     }
@@ -313,7 +314,8 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       let assert Ok(count) = dict.get(raw.measurements, "message_count")
       let assert Ok(dur) = dict.get(raw.measurements, "duration")
       let response_id = maybe_get_string(raw.metadata, "response_id")
-      let finish_reason = maybe_get_string(raw.metadata, "finish_reason")
+      let raw_stop_reason = maybe_get_string(raw.metadata, "stop_reason")
+      let sr = option.map(raw_stop_reason, stop_reason.from_string)
       let input_tokens = maybe_get_int(raw.measurements, "input_tokens")
       let output_tokens = maybe_get_int(raw.measurements, "output_tokens")
       InferenceStop(
@@ -321,7 +323,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
         message_count: count,
         duration_ms: dur,
         response_id:,
-        finish_reason:,
+        stop_reason: sr,
         input_tokens:,
         output_tokens:,
       )
@@ -401,7 +403,7 @@ pub type SessionEvent {
     message: Message,
     response_id: Option(String),
     response_model: Option(String),
-    finish_reason: Option(String),
+    stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
     duration_ms: Int,

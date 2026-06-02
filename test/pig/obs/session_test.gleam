@@ -14,6 +14,7 @@ import gleam/string
 import gleeunit
 import pig/ai/error.{ApiError}
 import pig/ai/message.{Assistant, ToolCall, User}
+import pig/ai/stop_reason
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
@@ -114,7 +115,7 @@ pub fn format_inference_completed_includes_fields_test() {
       message: message,
       response_id: Some("chatcmpl-123"),
       response_model: Some("gpt-4"),
-      finish_reason: Some("stop"),
+      stop_reason: Some(stop_reason.Stop),
       input_tokens: Some(10),
       output_tokens: Some(5),
       duration_ms: 150,
@@ -131,7 +132,7 @@ pub fn format_inference_completed_includes_fields_test() {
     json.parse(from: json_str, using: decoder)
     |> result.map_error(fn(_) { Nil })
 
-  let decoder = dynamic_decode.at(["finish_reason"], dynamic_decode.string)
+  let decoder = dynamic_decode.at(["stop_reason"], dynamic_decode.string)
   let assert Ok("stop") =
     json.parse(from: json_str, using: decoder)
     |> result.map_error(fn(_) { Nil })
@@ -295,7 +296,7 @@ pub fn write_multiple_events_in_order_test() {
       message: Assistant(content: "hi", tool_calls: [], thinking: None),
       response_id: None,
       response_model: None,
-      finish_reason: None,
+      stop_reason: None,
       input_tokens: None,
       output_tokens: None,
       duration_ms: 150,

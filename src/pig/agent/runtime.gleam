@@ -300,7 +300,7 @@ fn execute_call_provider(
           message: msg,
           response_id: meta.response_id,
           response_model:,
-          finish_reason: meta.finish_reason,
+          stop_reason: meta.stop_reason,
           input_tokens: meta.input_tokens,
           output_tokens: meta.output_tokens,
           duration_ms: duration,

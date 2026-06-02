@@ -3,6 +3,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import pig/ai/error.{ApiError}
 import pig/ai/message.{Assistant, ToolCall}
+import pig/ai/stop_reason
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActionDetail, InferenceStarted, MaxIterationsExceeded,
@@ -33,7 +34,7 @@ pub fn format_inference_completed_shows_duration_test() {
       message: Assistant("hi", [], None),
       response_id: None,
       response_model: None,
-      finish_reason: None,
+      stop_reason: None,
       input_tokens: None,
       output_tokens: None,
       duration_ms: 150,
@@ -53,7 +54,7 @@ pub fn format_inference_completed_shows_token_counts_test() {
       message: Assistant("hi", [], None),
       response_id: None,
       response_model: None,
-      finish_reason: Some("stop"),
+      stop_reason: Some(stop_reason.Stop),
       input_tokens: Some(52),
       output_tokens: Some(15),
       duration_ms: 150,
@@ -75,7 +76,7 @@ pub fn format_inference_completed_without_tokens_test() {
       message: Assistant("hi", [], None),
       response_id: None,
       response_model: None,
-      finish_reason: None,
+      stop_reason: None,
       input_tokens: None,
       output_tokens: None,
       duration_ms: 200,

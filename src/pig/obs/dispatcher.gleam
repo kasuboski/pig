@@ -15,6 +15,7 @@ import gleam/otp/supervision
 import pig/ai/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
+import pig/ai/stop_reason
 import pig/obs/events.{
   type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
   InferenceStarted, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
@@ -112,7 +113,7 @@ fn emit_telemetry(event: SessionEvent) {
       message: _,
       response_id:,
       response_model:,
-      finish_reason:,
+      stop_reason:,
       input_tokens:,
       output_tokens:,
       duration_ms:,
@@ -140,7 +141,7 @@ fn emit_telemetry(event: SessionEvent) {
       let metadata =
         base_metadata
         |> maybe_insert_string("response_id", response_id)
-        |> maybe_insert_string("finish_reason", finish_reason)
+        |> maybe_insert_string("stop_reason", option.map(stop_reason, stop_reason.to_string))
 
       execute_telemetry(inference_stop_name(), measurements, metadata)
     }

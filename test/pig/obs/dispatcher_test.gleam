@@ -3,6 +3,7 @@ import gleam/option.{Some}
 import gleeunit
 import pig/ai/error.{ApiError}
 import pig/ai/message.{ToolCall, User}
+import pig/ai/stop_reason
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
@@ -88,7 +89,7 @@ pub fn dispatcher_emits_inference_stop_telemetry_test() {
       message:,
       response_id: Some("resp-123"),
       response_model: Some("gpt-4"),
-      finish_reason: Some("stop"),
+      stop_reason: Some(stop_reason.Stop),
       input_tokens: Some(100),
       output_tokens: Some(50),
       duration_ms: 150,

@@ -1,6 +1,7 @@
 import gleam/option.{type Option, None}
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message}
+import pig/ai/stop_reason.{type StopReason}
 import pig/ai/tool_definition.{type ToolDefinition}
 
 /// Metadata returned by the provider alongside the message.
@@ -8,7 +9,7 @@ pub type InferenceMetadata {
   InferenceMetadata(
     response_id: Option(String),
     response_model: Option(String),
-    finish_reason: Option(String),
+    stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
   )
@@ -29,7 +30,7 @@ pub fn default_metadata() -> InferenceMetadata {
   InferenceMetadata(
     response_id: None,
     response_model: None,
-    finish_reason: None,
+    stop_reason: None,
     input_tokens: None,
     output_tokens: None,
   )
@@ -56,12 +57,12 @@ pub fn with_response_model(
   InferenceMetadata(..meta, response_model: option.Some(model))
 }
 
-/// Set finish_reason on metadata.
-pub fn with_finish_reason(
+/// Set stop_reason on metadata.
+pub fn with_stop_reason(
   meta: InferenceMetadata,
-  reason: String,
+  reason: StopReason,
 ) -> InferenceMetadata {
-  InferenceMetadata(..meta, finish_reason: option.Some(reason))
+  InferenceMetadata(..meta, stop_reason: option.Some(reason))
 }
 
 /// Set input_tokens on metadata.

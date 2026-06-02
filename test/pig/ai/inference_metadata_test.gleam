@@ -2,9 +2,10 @@ import gleam/option.{type Option, None, Some}
 import pig/ai/message.{type Message, Assistant}
 import pig/ai/provider.{
   type InferenceMetadata, type InferenceResult, default_metadata, from_message,
-  with_finish_reason, with_input_tokens, with_output_tokens, with_response_id,
+  with_stop_reason, with_input_tokens, with_output_tokens, with_response_id,
   with_response_model,
 }
+import pig/ai/stop_reason
 
 /// Check that from_message preserves the original message
 fn check_result_preserves_message(message: Message) {
@@ -16,7 +17,7 @@ fn check_result_preserves_message(message: Message) {
 fn check_default_has_none_fields(result: InferenceResult) {
   assert result.metadata.response_id == None
   assert result.metadata.response_model == None
-  assert result.metadata.finish_reason == None
+  assert result.metadata.stop_reason == None
   assert result.metadata.input_tokens == None
   assert result.metadata.output_tokens == None
 }
@@ -74,9 +75,9 @@ pub fn all_setters_apply_test() {
   )
   check_metadata_setter(
     meta,
-    with_finish_reason,
-    fn(m) { m.finish_reason },
-    "stop",
+    with_stop_reason,
+    fn(m) { m.stop_reason },
+    stop_reason.Stop,
   )
   check_metadata_setter(meta, with_input_tokens, fn(m) { m.input_tokens }, 100)
   check_metadata_setter(meta, with_output_tokens, fn(m) { m.output_tokens }, 50)
@@ -87,7 +88,7 @@ pub fn equality_of_identically_constructed_test() {
     default_metadata()
     |> with_response_id("resp-789")
     |> with_response_model("gpt-4")
-    |> with_finish_reason("stop")
+    |> with_stop_reason(stop_reason.Stop)
     |> with_input_tokens(200)
     |> with_output_tokens(100)
 
@@ -95,7 +96,7 @@ pub fn equality_of_identically_constructed_test() {
     default_metadata()
     |> with_response_id("resp-789")
     |> with_response_model("gpt-4")
-    |> with_finish_reason("stop")
+    |> with_stop_reason(stop_reason.Stop)
     |> with_input_tokens(200)
     |> with_output_tokens(100)
 

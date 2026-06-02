@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
+import pig/ai/stop_reason
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}
@@ -56,7 +57,7 @@ pub fn event_name_matches_inference_stop_test() {
     message_count: 0,
     duration_ms: 0,
     response_id: None,
-    finish_reason: None,
+    stop_reason: None,
     input_tokens: None,
     output_tokens: None,
   ))
@@ -74,7 +75,7 @@ pub fn event_name_matches_tool_start_test() {
 
 // ── name_to_string ───────────────────────────────────────────────────
 
-/// name_to_string joins segments with dots.
+/// name_to_string join segments with dots.
 pub fn name_to_string_joins_with_dots_test() {
   assert events.name_to_string(["a", "b", "c"]) == "a.b.c"
 }
@@ -120,7 +121,7 @@ pub fn emit_all_variants_test() {
     message_count: 5,
     duration_ms: 150,
     response_id: None,
-    finish_reason: None,
+    stop_reason: None,
     input_tokens: None,
     output_tokens: None,
   ))
@@ -204,7 +205,7 @@ pub fn decode_preserves_inference_stop_test() {
     message_count:,
     duration_ms:,
     response_id:,
-    finish_reason:,
+    stop_reason:,
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
@@ -212,7 +213,7 @@ pub fn decode_preserves_inference_stop_test() {
   assert message_count == 2
   assert duration_ms == 150
   assert response_id == None
-  assert finish_reason == None
+  assert stop_reason == None
   assert input_tokens == None
   assert output_tokens == None
 }
@@ -298,7 +299,7 @@ pub fn emit_enriched_inference_stop_does_not_crash_test() {
     message_count: 5,
     duration_ms: 150,
     response_id: Some("resp-123"),
-    finish_reason: Some("stop"),
+    stop_reason: Some(stop_reason.Stop),
     input_tokens: Some(100),
     output_tokens: Some(50),
   ))
@@ -320,7 +321,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
       metadata: dict.from_list([
         #("model", "gpt-4"),
         #("response_id", "resp-456"),
-        #("finish_reason", "stop"),
+        #("stop_reason", "stop"),
       ]),
     )
   let assert events.InferenceStop(
@@ -328,7 +329,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
     message_count:,
     duration_ms:,
     response_id:,
-    finish_reason:,
+    stop_reason:,
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
@@ -336,7 +337,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
   assert message_count == 2
   assert duration_ms == 150
   assert response_id == Some("resp-456")
-  assert finish_reason == Some("stop")
+  assert stop_reason == Some(stop_reason.Stop)
   assert input_tokens == Some(100)
   assert output_tokens == Some(50)
 }
@@ -358,7 +359,7 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
     message_count:,
     duration_ms:,
     response_id:,
-    finish_reason:,
+    stop_reason:,
     input_tokens:,
     output_tokens:,
   ) = events.decode(raw)
@@ -366,7 +367,7 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
   assert message_count == 2
   assert duration_ms == 150
   assert response_id == None
-  assert finish_reason == None
+  assert stop_reason == None
   assert input_tokens == None
   assert output_tokens == None
 }

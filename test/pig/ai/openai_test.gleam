@@ -9,6 +9,7 @@ import jscheam/schema
 import pig/ai/error
 import pig/ai/message
 import pig/ai/openai
+import pig/ai/stop_reason
 import pig/ai/tool_definition
 import simplifile
 
@@ -82,7 +83,7 @@ pub fn parse_text_response_test() {
   // Verify metadata
   let assert Some("chatcmpl-abc123") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model
-  let assert Some("stop") = result.metadata.finish_reason
+  let assert Some(stop_reason.Stop) = result.metadata.stop_reason
   let assert Some(25) = result.metadata.input_tokens
   let assert Some(6) = result.metadata.output_tokens
 }
@@ -99,7 +100,7 @@ pub fn parse_tool_call_response_test() {
   // Verify metadata
   let assert Some("chatcmpl-def456") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model
-  let assert Some("tool_calls") = result.metadata.finish_reason
+  let assert Some(stop_reason.ToolUse) = result.metadata.stop_reason
   let assert Some(30) = result.metadata.input_tokens
   let assert Some(15) = result.metadata.output_tokens
 }
@@ -123,7 +124,7 @@ pub fn parse_multi_tool_call_response_test() {
   // Verify metadata
   let assert Some("chatcmpl-ghi789") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model
-  let assert Some("tool_calls") = result.metadata.finish_reason
+  let assert Some(stop_reason.ToolUse) = result.metadata.stop_reason
   let assert Some(40) = result.metadata.input_tokens
   let assert Some(30) = result.metadata.output_tokens
 }
@@ -137,7 +138,7 @@ pub fn parse_null_content_response_test() {
   // Verify metadata
   let assert Some("chatcmpl-jkl012") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model
-  let assert Some("stop") = result.metadata.finish_reason
+  let assert Some(stop_reason.Stop) = result.metadata.stop_reason
   let assert Some(10) = result.metadata.input_tokens
   let assert Some(0) = result.metadata.output_tokens
 }
@@ -156,10 +157,10 @@ pub fn parse_response_captures_response_model_test() {
   let assert Some("gpt-4o") = result.metadata.response_model
 }
 
-pub fn parse_response_captures_finish_reason_test() {
+pub fn parse_response_captures_stop_reason_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
   let assert Ok(result) = openai.parse_response(raw)
-  let assert Some("stop") = result.metadata.finish_reason
+  let assert Some(stop_reason.Stop) = result.metadata.stop_reason
 }
 
 pub fn parse_response_captures_token_usage_test() {

@@ -63,7 +63,7 @@ pub fn response_has_metadata_test() {
       let messages = [message.User("Say exactly: test")]
       let result = prov.call(messages, [])
       let assert Ok(InferenceResult(message: _, metadata: meta)) = result
-      assert option.is_some(meta.finish_reason) == True
+      assert option.is_some(meta.stop_reason) == True
     }
   }
 }

@@ -38,7 +38,7 @@ pub fn captures_multiple_events_in_order_test() {
     message_count: 4,
     duration_ms: 200,
     response_id: None,
-    finish_reason: None,
+    stop_reason: None,
     input_tokens: None,
     output_tokens: None,
   ))
@@ -63,7 +63,7 @@ pub fn captures_multiple_events_in_order_test() {
         message_count: 4,
         duration_ms: 200,
         response_id: None,
-        finish_reason: None,
+        stop_reason: None,
         input_tokens: None,
         output_tokens: None,
       ),
@@ -95,7 +95,7 @@ pub fn detach_stops_capture_test() {
     message_count: 2,
     duration_ms: 50,
     response_id: None,
-    finish_reason: None,
+    stop_reason: None,
     input_tokens: None,
     output_tokens: None,
   ))
