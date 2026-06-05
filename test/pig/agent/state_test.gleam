@@ -21,7 +21,7 @@ pub fn main() -> Nil {
 
 fn dummy_provider() {
   fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("x", [], None)))
+    Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
 }
 
@@ -64,11 +64,11 @@ pub fn add_message_preserves_insertion_order_test() {
     new_state([])
     |> state.add_message(message.System("sys"))
     |> state.add_message(message.User("hello"))
-    |> state.add_message(message.Assistant("hi", [], None))
+    |> state.add_message(message.Assistant("hi", [], None, None))
   let assert [
     message.System("sys"),
     message.User("hello"),
-    message.Assistant("hi", [], None),
+    message.Assistant("hi", [], None, None),
   ] = state.history(s)
   Nil
 }

@@ -14,6 +14,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
 import logging
@@ -25,6 +26,7 @@ import pig/agent/update
 import pig/ai/error.{type AiError}
 import pig/ai/message.{type Message, type ToolCall}
 import pig/ai/provider
+import pig/ai/stop_reason
 import pig/ai/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
@@ -55,6 +57,8 @@ pub type RuntimeConfig {
 pub type RuntimeMsg {
   /// Run a prompt and reply with the result.
   Run(prompt: String, reply_to: process.Subject(Result(Message, AiError)))
+  /// Resume the agent loop from its current history.
+  Continue(reply_to: process.Subject(Result(Message, AiError)))
   /// Stop the actor.
   Stop
 }
@@ -114,6 +118,20 @@ pub fn run(
   timeout: Int,
 ) -> Result(Message, AiError) {
   actor.call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
+}
+
+/// Resume the agent loop from its current history.
+///
+/// Looks at the last message in history to determine the entry point:
+/// - User/Tool message → call the provider
+/// - Assistant with stop_reason=ToolUse → execute pending tool calls
+/// - Assistant with stop_reason=Stop → return immediately
+/// - Assistant with stop_reason=Length/Error → re-call provider
+pub fn run_continue(
+  subject: process.Subject(RuntimeMsg),
+  timeout: Int,
+) -> Result(Message, AiError) {
+  actor.call(subject, timeout, fn(reply_to) { Continue(reply_to) })
 }
 
 /// Send a stop message to the runtime actor.
@@ -190,6 +208,18 @@ fn handle_message(
       process.send(reply_to, outcome)
       actor.continue(RuntimeState(agent_state: final_state, config: st.config))
     }
+    Continue(reply_to) -> {
+      let agent_st =
+        state.AgentState(
+          config: st.agent_state.config,
+          history: st.agent_state.history,
+          iterations: 0,
+        )
+      let #(final_state, outcome) =
+        resume_from_history(st.config, agent_st)
+      process.send(reply_to, outcome)
+      actor.continue(RuntimeState(agent_state: final_state, config: st.config))
+    }
     Stop -> actor.stop()
   }
 }
@@ -231,6 +261,117 @@ fn do_loop(
           #(updated_st, Error(error.ApiError("no response from effects")))
       }
     }
+  }
+}
+
+/// Resume the agent loop from its current history.
+///
+/// Determines the entry point by inspecting the last message in history.
+/// This enables the durability pattern: an external system checkpoints
+/// messages, and on retry, rebuilds history from those checkpoints.
+fn resume_from_history(
+  config: RuntimeConfig,
+  st: state.AgentState,
+) -> #(state.AgentState, Result(Message, AiError)) {
+  case list.last(st.history) {
+    // No history — nothing to continue
+    Error(_) -> #(st, Error(error.ApiError("no history to continue")))
+
+    Ok(last_msg) -> {
+      case last_msg {
+        // Assistant message — decide based on stop_reason and tool_calls
+        message.Assistant(
+          content: _,
+          tool_calls: tool_calls,
+          thinking: _,
+          stop_reason: sr,
+        ) ->
+          resume_from_assistant(config, st, tool_calls, sr)
+
+        // User or Tool message — call provider
+        message.User(_) | message.Tool(_, _) -> {
+          let messages = state.messages_for_provider(st)
+          let tools = state.tool_definitions(st)
+          let result = config.provider(messages, tools)
+          do_loop(
+            config,
+            st,
+            msg.ProviderResponded(
+              result.map(result, fn(r) { r.message }),
+            ),
+          )
+        }
+
+        // System message at end of history — shouldn't happen
+        message.System(_) ->
+          #(
+            st,
+            Error(error.ApiError("unexpected system message at end of history")),
+          )
+      }
+    }
+  }
+}
+
+/// Decide how to resume based on the last assistant message's stop_reason
+/// and tool_calls.
+fn resume_from_assistant(
+  config: RuntimeConfig,
+  st: state.AgentState,
+  tool_calls: List(message.ToolCall),
+  sr: option.Option(stop_reason.StopReason),
+) -> #(state.AgentState, Result(Message, AiError)) {
+  case sr {
+    // Tool calls pending — execute them, then continue loop
+    option.Some(stop_reason.ToolUse) -> {
+      let #(_new_st, agent_msg) =
+        execute_tools_effect(
+          config,
+          st,
+          tool_calls,
+          fn(results) { msg.ToolResults(results) },
+        )
+      do_loop(config, st, agent_msg)
+    }
+
+    // Done — completed on a previous attempt
+    option.Some(stop_reason.Stop) -> {
+      let assert Ok(msg) = list.last(st.history)
+      #(st, Ok(msg))
+    }
+
+    // Hit token limit or error — re-call provider
+    option.Some(stop_reason.Length) | option.Some(stop_reason.Error) | option.Some(
+      stop_reason.Unknown(_),
+    ) -> {
+      let messages = state.messages_for_provider(st)
+      let tools = state.tool_definitions(st)
+      let result = config.provider(messages, tools)
+      do_loop(config, st, msg.ProviderResponded(
+        result.map(result, fn(r) { r.message }),
+      ))
+    }
+
+    // No stop_reason (legacy messages) — decide by tool_calls presence
+    option.None ->
+      case tool_calls {
+        [] -> {
+          // No tool calls, no stop_reason — treat as done
+          let assert Ok(msg) = list.last(st.history)
+          #(st, Ok(msg))
+        }
+        calls -> {
+          // Has tool calls but no stop_reason — execute them
+          let #(_new_st, agent_msg) =
+            execute_tools_effect(
+              config,
+              st,
+              calls,
+              fn(results) { msg.ToolResults(results) },
+            )
+          do_loop(config, st, agent_msg)
+        }
+      }
   }
 }
 

@@ -41,7 +41,7 @@ fn agent_config(config: pig.PigConfig) -> state.AgentConfig {
 
 /// start_supervised returns Ok(SupervisedAgent).
 pub fn start_supervised_succeeds_test() {
-  let response = message.Assistant("hi", [], None)
+  let response = message.Assistant("hi", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -52,7 +52,7 @@ pub fn start_supervised_succeeds_test() {
 
 /// run returns the provider's response through the supervised agent.
 pub fn run_returns_response_test() {
-  let response = message.Assistant("hello!", [], None)
+  let response = message.Assistant("hello!", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -66,7 +66,7 @@ pub fn run_returns_response_test() {
 
 /// run_with_timeout works with explicit timeout.
 pub fn run_with_timeout_works_test() {
-  let response = message.Assistant("timed!", [], None)
+  let response = message.Assistant("timed!", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -80,7 +80,7 @@ pub fn run_with_timeout_works_test() {
 
 /// stop kills the supervisor. Monitor confirms process down.
 pub fn stop_terminates_processes_test() {
-  let response = message.Assistant("hi", [], None)
+  let response = message.Assistant("hi", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -98,7 +98,7 @@ pub fn stop_terminates_processes_test() {
 
 /// Agent is not one-shot. Multiple runs on same supervised agent work.
 pub fn agent_reusable_after_run_test() {
-  let response = message.Assistant("ok", [], None)
+  let response = message.Assistant("ok", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -120,8 +120,8 @@ pub fn supervised_tool_call_works_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"supervised\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("done!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("done!", [], None, None)
   let config =
     pig.new(harness.sequenced_provider_for_actor([tool_resp, final]))
     |> pig.with_tool(harness.echo_tool())
@@ -136,7 +136,7 @@ pub fn supervised_tool_call_works_test() {
 
 /// start_supervised with no consumers creates working agent.
 pub fn start_supervised_no_consumers_test() {
-  let response = message.Assistant("hi", [], None)
+  let response = message.Assistant("hi", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -149,7 +149,7 @@ pub fn start_supervised_no_consumers_test() {
 /// start_supervised with consumers creates nested supervision tree.
 pub fn start_supervised_with_consumers_test() {
   use session_path <- with_temp_file("consumers")
-  let response = message.Assistant("done", [], None)
+  let response = message.Assistant("done", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> pig.with_model("test-model")
@@ -189,7 +189,7 @@ pub fn start_supervised_with_consumers_test() {
 
 /// Consumers receive events via dispatcher after supervised start.
 pub fn consumers_receive_events_test() {
-  let response = message.Assistant("event test", [], None)
+  let response = message.Assistant("event test", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> pig.with_model("event-model")
@@ -213,7 +213,7 @@ pub fn consumers_receive_events_test() {
 /// stop kills the entire supervision tree.
 pub fn stop_kills_tree_test() {
   use session_path <- with_temp_file("stop_tree")
-  let response = message.Assistant("cleanup", [], None)
+  let response = message.Assistant("cleanup", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config
@@ -248,7 +248,7 @@ pub fn stop_kills_tree_test() {
 
 /// Agent can run multiple times with supervised consumers.
 pub fn multiple_runs_with_consumers_test() {
-  let response = message.Assistant("reusable", [], None)
+  let response = message.Assistant("reusable", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> agent_config

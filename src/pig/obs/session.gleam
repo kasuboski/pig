@@ -278,7 +278,12 @@ pub fn decode_message() -> dynamic_decode.Decoder(Message) {
         option.None,
         decode_thinking(),
       )
-      dynamic_decode.success(Assistant(content:, tool_calls:, thinking:))
+      use stop_reason <- dynamic_decode.optional_field(
+        "stop_reason",
+        option.None,
+        dynamic_decode.optional(stop_reason.decoder()),
+      )
+      dynamic_decode.success(Assistant(content:, tool_calls:, thinking:, stop_reason:))
     }
     _ ->
       dynamic_decode.failure(
@@ -557,13 +562,13 @@ fn message_to_json(msg: Message) -> json.Json {
         #("content", json.string(content)),
       ])
     }
-    Assistant(content:, tool_calls:, thinking:) -> {
+    Assistant(content:, tool_calls:, thinking:, stop_reason:) -> {
       let base_fields = [
         #("role", json.string("assistant")),
         #("content", json.string(content)),
         #("tool_calls", json.array(tool_calls, tool_call_to_json)),
       ]
-      let fields = case thinking {
+      let fields_with_thinking = case thinking {
         Some(t) -> {
           case t {
             Thinking(content:) -> {
@@ -575,8 +580,15 @@ fn message_to_json(msg: Message) -> json.Json {
         }
         None -> base_fields
       }
+      let fields_with_stop_reason = case stop_reason {
+        Some(sr) ->
+          list.append(fields_with_thinking, [
+            #("stop_reason", stop_reason.to_json(sr)),
+          ])
+        None -> fields_with_thinking
+      }
 
-      json.object(fields)
+      json.object(fields_with_stop_reason)
     }
     Tool(tool_call_id:, content:) -> {
       json.object([

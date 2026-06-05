@@ -21,7 +21,7 @@ pub fn main() -> Nil {
 
 /// new(provider) returns a config that can start and run.
 pub fn new_starts_and_runs_test() {
-  let response = message.Assistant("hello!", [], None)
+  let response = message.Assistant("hello!", [], None, None)
   let config = pig.new(harness.fixed_provider(response))
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
@@ -39,8 +39,8 @@ pub fn with_tool_registers_tool_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("done!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("done!", [], None, None)
   let provider = harness.sequenced_provider_for_actor([tool_resp, final])
   let config =
     pig.new(provider)
@@ -55,7 +55,7 @@ pub fn with_tool_registers_tool_test() {
 
 /// with_system_prompt sets the system prompt without breaking flow.
 pub fn with_system_prompt_works_test() {
-  let response = message.Assistant("ok", [], None)
+  let response = message.Assistant("ok", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> pig.with_system_prompt("you are a test assistant")
@@ -69,7 +69,7 @@ pub fn with_system_prompt_works_test() {
 
 /// with_model sets the model name without breaking flow.
 pub fn with_model_works_test() {
-  let response = message.Assistant("ok", [], None)
+  let response = message.Assistant("ok", [], None, None)
   let config =
     pig.new(harness.fixed_provider(response))
     |> pig.with_model("test-model")
@@ -83,7 +83,7 @@ pub fn with_model_works_test() {
 
 /// with_skill adds a skill and registers the librarian tool.
 pub fn with_skill_works_test() {
-  let response = message.Assistant("ok", [], None)
+  let response = message.Assistant("ok", [], None, None)
   let s =
     skill.Skill(
       name: "test_skill",
@@ -110,8 +110,8 @@ pub fn full_builder_flow_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"test\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("final answer", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("final answer", [], None, None)
   let config =
     pig.new(harness.sequenced_provider_for_actor([tool_resp, final]))
     |> pig.with_tool(harness.echo_tool())
@@ -127,7 +127,7 @@ pub fn full_builder_flow_test() {
 
 /// run_with_timeout works with an explicit timeout.
 pub fn run_with_timeout_works_test() {
-  let response = message.Assistant("timed!", [], None)
+  let response = message.Assistant("timed!", [], None, None)
   let config = pig.new(harness.fixed_provider(response))
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
@@ -142,7 +142,7 @@ pub fn test_harness_returns_config_test() {
   let config = pig.test_harness()
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
+  let assert True = msg == message.Assistant("mock response", [], None, None)
   pig.stop(agent)
 }
 
@@ -164,7 +164,7 @@ fn check_identity_builder(
   assert result == Some(value)
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
-  let assert True = msg == message.Assistant("mock response", [], None)
+  let assert True = msg == message.Assistant("mock response", [], None, None)
   pig.stop(agent)
 }
 

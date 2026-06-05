@@ -87,12 +87,12 @@ pub fn full_agent_with_tool_test() {
       pig.stop(agent)
       let assert Ok(msg) = result
       case msg {
-        message.Assistant(content:, tool_calls: [], thinking: _) -> {
+        message.Assistant(content:, tool_calls: [], thinking: _, stop_reason: _) -> {
           // The model may use the tool (answer contains "10") or answer directly.
           // Both are valid — the test verifies the full lifecycle completes.
           assert string.length(content) > 0
         }
-        message.Assistant(content: _, tool_calls: calls, thinking: _) -> {
+        message.Assistant(content: _, tool_calls: calls, thinking: _, stop_reason: _) -> {
           let _ = calls
           panic as "agent returned unfinished tool calls"
         }

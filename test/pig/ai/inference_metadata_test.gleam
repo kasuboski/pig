@@ -34,12 +34,12 @@ fn check_metadata_setter(
 }
 
 pub fn result_preserves_message_test() {
-  let msg = Assistant("hi", [], None)
+  let msg = Assistant("hi", [], None, None)
   check_result_preserves_message(msg)
 }
 
 pub fn default_metadata_has_none_fields_test() {
-  let msg = Assistant("hi", [], None)
+  let msg = Assistant("hi", [], None, None)
   let result = from_message(msg)
   check_default_has_none_fields(result)
 }

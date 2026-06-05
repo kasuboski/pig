@@ -15,9 +15,11 @@ import gleam/string
 import gleeunit
 import jscheam/schema
 import pig/agent/runtime
+import pig/agent/state
 import pig/ai/error
 import pig/ai/message
 import pig/ai/provider
+import pig/ai/stop_reason
 import pig/ai/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
@@ -206,14 +208,14 @@ fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
 /// Runtime starts successfully with a valid config.
 pub fn start_succeeds_test() {
   let #(_subject, disp) =
-    start_simple(fixed_provider(message.Assistant("hi", [], None)), [])
+    start_simple(fixed_provider(message.Assistant("hi", [], None, None)), [])
   process.send(disp, dispatcher.Stop)
 }
 
 /// Sending Stop terminates the actor. Monitor confirms process exit.
 pub fn stop_terminates_actor_test() {
   let #(subject, disp) =
-    start_simple(fixed_provider(message.Assistant("hi", [], None)), [])
+    start_simple(fixed_provider(message.Assistant("hi", [], None, None)), [])
   let assert Ok(pid) = process.subject_owner(subject)
   let monitor = process.monitor(pid)
   runtime.stop(subject)
@@ -227,7 +229,7 @@ pub fn stop_terminates_actor_test() {
 
 /// Run returns the provider's response.
 pub fn run_returns_provider_response_test() {
-  let response = message.Assistant("hello!", [], None)
+  let response = message.Assistant("hello!", [], None, None)
   let #(subject, disp) = start_simple(fixed_provider(response), [])
   let assert Ok(msg) = runtime.run(subject, "hi", 5000)
   assert msg == response
@@ -240,7 +242,7 @@ pub fn run_returns_provider_response_test() {
 
 /// Runtime emits InferenceStarted + InferenceCompleted events.
 pub fn call_provider_emits_inference_events_test() {
-  let response = message.Assistant("hello!", [], None)
+  let response = message.Assistant("hello!", [], None, None)
   let #(subject, collector, disp) =
     start_with_collector(fixed_provider(response), [], [])
   let _ = runtime.run(subject, "hi", 5000)
@@ -297,8 +299,8 @@ pub fn tool_call_scenario_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("done!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("done!", [], None, None)
   let #(subject, _collector, disp) =
     start_with_collector(
       sequenced_provider([tool_resp, final]),
@@ -318,8 +320,8 @@ pub fn tool_execution_emits_events_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"test\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("done", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("done", [], None, None)
   let #(subject, collector, disp) =
     start_with_collector(
       sequenced_provider([tool_resp, final]),
@@ -350,8 +352,8 @@ pub fn tool_execution_emits_events_test() {
 /// Tool errors produce error results — agent recovers.
 pub fn tool_error_recovery_test() {
   let tc = message.ToolCall(id: "c1", name: "boom", arguments_json: "{}")
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("recovered!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("recovered!", [], None, None)
   let #(subject, _collector, disp) =
     start_with_collector(
       sequenced_provider([tool_resp, final]),
@@ -375,8 +377,8 @@ pub fn hook_blocks_tool_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let response1 = message.Assistant("", [tc], None)
-  let response2 = message.Assistant("blocked handled", [], None)
+  let response1 = message.Assistant("", [tc], None, None)
+  let response2 = message.Assistant("blocked handled", [], None, None)
   let guard =
     hooks.new("guard")
     |> hooks.on_tool_call(fn(event) {
@@ -413,8 +415,8 @@ pub fn hook_allows_tool_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let response1 = message.Assistant("", [tc], None)
-  let response2 = message.Assistant("done", [], None)
+  let response1 = message.Assistant("", [tc], None, None)
+  let response2 = message.Assistant("done", [], None, None)
   let guard =
     hooks.new("guard")
     |> hooks.on_tool_call(fn(_) { hooks.allow_tool() })
@@ -437,8 +439,8 @@ pub fn hook_transforms_result_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"secret\"}",
     )
-  let response1 = message.Assistant("", [tc], None)
-  let response2 = message.Assistant("scrubbed", [], None)
+  let response1 = message.Assistant("", [tc], None, None)
+  let response2 = message.Assistant("scrubbed", [], None, None)
   let scrubber =
     hooks.new("scrubber")
     |> hooks.on_tool_result(fn(event) {
@@ -460,7 +462,7 @@ pub fn hook_transforms_result_test() {
 
 /// Hook transforms messages before inference.
 pub fn hook_transforms_messages_before_inference_test() {
-  let ok = message.Assistant("ok", [], None)
+  let ok = message.Assistant("ok", [], None, None)
   let seen = process.new_subject()
   let provider_fn = fn(msgs, _tools) {
     let first_user =
@@ -507,8 +509,8 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let response1 = message.Assistant("", [tc], None)
-  let response2 = message.Assistant("recovered", [], None)
+  let response1 = message.Assistant("", [tc], None, None)
+  let response2 = message.Assistant("recovered", [], None, None)
   let guard =
     hooks.new("guard")
     |> hooks.on_tool_call(fn(event) {
@@ -571,7 +573,7 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
 /// Two sequential runs accumulate history.
 /// The second run sees the first run's user messages.
 pub fn runs_accumulate_history_test() {
-  let ok_response = message.Assistant("ok", [], None)
+  let ok_response = message.Assistant("ok", [], None, None)
   let call_count = process.new_subject()
   let provider_fn = fn(msgs, _tools) {
     let user_count =
@@ -598,7 +600,7 @@ pub fn runs_accumulate_history_test() {
 
 /// Accumulate history across runs with hooks.
 pub fn runs_accumulate_history_with_hooks_test() {
-  let ok = message.Assistant("ok", [], None)
+  let ok = message.Assistant("ok", [], None, None)
   let count_subject = process.new_subject()
   let provider_fn = fn(msgs, _tools) {
     let user_count =
@@ -660,7 +662,7 @@ pub fn max_iterations_circuit_breaker_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"x\"}",
     )
-  let looping = message.Assistant("", [tc], None)
+  let looping = message.Assistant("", [tc], None, None)
   let assert Ok(disp) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
@@ -702,8 +704,8 @@ pub fn parallel_tools_all_starts_before_stops_test() {
       name: "slow_echo",
       arguments_json: "{\"msg\":\"z\"}",
     )
-  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None)
-  let final = message.Assistant("done!", [], None)
+  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None, None)
+  let final = message.Assistant("done!", [], None, None)
   let #(subject, collector, disp) =
     start_with_collector(
       sequenced_provider([tool_resp, final]),
@@ -752,8 +754,8 @@ pub fn parallel_tools_produces_correct_results_test() {
       name: "slow_echo",
       arguments_json: "{\"msg\":\"gamma\"}",
     )
-  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None)
-  let final = message.Assistant("complete", [], None)
+  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None, None)
+  let final = message.Assistant("complete", [], None, None)
   let #(subject, _collector, disp) =
     start_with_collector(
       sequenced_provider([tool_resp, final]),
@@ -761,6 +763,162 @@ pub fn parallel_tools_produces_correct_results_test() {
       [],
     )
   let assert Ok(msg) = runtime.run(subject, "parallel", 5000)
+  assert msg == final
+  process.send(disp, dispatcher.Stop)
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  run_continue — Durable Agent Loop
+// ══════════════════════════════════════════════════════════════════
+
+/// Start a runtime with pre-loaded history for run_continue tests.
+fn start_with_history(
+  provider_fn: provider.Provider,
+  tools: List(tool.Tool),
+  history: List(message.Message),
+) -> #(
+  process.Subject(runtime.RuntimeMsg),
+  process.Subject(dispatcher.DispatcherMessage),
+) {
+  let assert Ok(disp) = dispatcher.start()
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  let agent_config =
+    state.config(provider_fn)
+    |> state.with_tools(registry)
+    |> state.with_model("test-model")
+    |> state.with_max_iterations(50)
+  let agent_st =
+    list.fold(history, state.new(agent_config), state.add_message)
+  let runtime_config =
+    runtime.RuntimeConfig(
+      provider: provider_fn,
+      tools: registry,
+      hooks: [],
+      dispatcher: disp,
+      model: "test-model",
+      max_iterations: 50,
+    )
+  let rt_state =
+    runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
+  let assert Ok(subject) = runtime.start_with_state(runtime_config, rt_state)
+  #(subject, disp)
+}
+
+/// run_continue with empty history returns error.
+pub fn run_continue_empty_history_returns_error_test() {
+  let #(subject, disp) =
+    start_with_history(
+      fixed_provider(message.Assistant("hi", [], None, None)),
+      [],
+      [],
+    )
+  let assert Error(e) = runtime.run_continue(subject, 5000)
+  let assert error.ApiError(message:) = e
+  assert string.contains(message, "no history to continue")
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with history ending in completed assistant returns it immediately.
+pub fn run_continue_completed_assistant_returns_immediately_test() {
+  let completed =
+    message.Assistant("done", [], None, Some(stop_reason.Stop))
+  let #(subject, disp) =
+    start_with_history(
+      fn(_, _) {
+        Error(error.ApiError("should not be called"))
+      },
+      [],
+      [message.User("hi"), completed],
+    )
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
+  assert msg == completed
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with history ending in assistant with no stop_reason (legacy)
+/// treats it as done.
+pub fn run_continue_legacy_assistant_returns_immediately_test() {
+  let completed =
+    message.Assistant("legacy done", [], None, None)
+  let #(subject, disp) =
+    start_with_history(
+      fn(_, _) {
+        Error(error.ApiError("should not be called"))
+      },
+      [],
+      [message.User("hi"), completed],
+    )
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
+  assert msg == completed
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with history ending in user message calls provider.
+pub fn run_continue_user_message_calls_provider_test() {
+  let final = message.Assistant("response", [], None, None)
+  let #(subject, disp) =
+    start_with_history(fixed_provider(final), [], [
+      message.User("resume from here"),
+    ])
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
+  assert msg == final
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with history ending in tool message calls provider.
+pub fn run_continue_tool_message_calls_provider_test() {
+  let final = message.Assistant("after tool", [], None, None)
+  let tc =
+    message.ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"x\"}")
+  let #(subject, disp) =
+    start_with_history(fixed_provider(final), [echo_tool()], [
+      message.User("go"),
+      message.Assistant("", [tc], None, None),
+      message.Tool(tool_call_id: "c1", content: "result"),
+    ])
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
+  assert msg == final
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with history ending in assistant with pending tool calls
+/// executes the tools and continues the loop.
+pub fn run_continue_pending_tool_calls_test() {
+  let tc =
+    message.ToolCall(
+      id: "c1",
+      name: "echo",
+      arguments_json: "{\"msg\":\"hello\"}",
+    )
+  let tool_resp =
+    message.Assistant("", [tc], None, Some(stop_reason.ToolUse))
+  let final = message.Assistant("tool done!", [], None, None)
+  let #(subject, disp) =
+    start_with_history(
+      // sequenced_provider counts assistant messages in messages sent to provider.
+      // History already has 1 assistant, so next call will be at index 1.
+      // tool_resp at index 0 is unused padding for index alignment.
+      sequenced_provider([tool_resp, final]),
+      [echo_tool()],
+      [message.User("use echo"), tool_resp],
+    )
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
+  assert msg == final
+  process.send(disp, dispatcher.Stop)
+}
+
+/// run_continue with length stop_reason re-calls provider.
+pub fn run_continue_length_stop_reason_recalls_provider_test() {
+  let truncated =
+    message.Assistant("truncated...", [], None, Some(stop_reason.Length))
+  let final = message.Assistant("full response", [], None, None)
+  let #(subject, disp) =
+    start_with_history(
+      fixed_provider(final),
+      [],
+      [message.User("tell me a story"), truncated],
+    )
+  let assert Ok(msg) = runtime.run_continue(subject, 5000)
   assert msg == final
   process.send(disp, dispatcher.Stop)
 }

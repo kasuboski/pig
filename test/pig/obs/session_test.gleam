@@ -47,6 +47,12 @@ fn read_jsonl_lines(path: String) -> List(String) {
   string.split(contents, "\n") |> list.filter(fn(l) { l != "" })
 }
 
+fn write_jsonl(path: String, lines: List(String)) -> Nil {
+  let content = string.join(lines, "\n")
+  let assert Ok(Nil) = simplifile.write(path, content <> "\n")
+  Nil
+}
+
 /// Run a test with a temporary file. Auto-cleaned after the callback returns.
 fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
   let tmp =
@@ -109,7 +115,7 @@ pub fn format_session_started_single_line_test() {
 }
 
 pub fn format_inference_completed_includes_fields_test() {
-  let message = Assistant(content: "hi", tool_calls: [], thinking: None)
+  let message = Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None)
   let event =
     InferenceCompleted(
       message: message,
@@ -293,7 +299,7 @@ pub fn write_multiple_events_in_order_test() {
 
   let event2 =
     InferenceCompleted(
-      message: Assistant(content: "hi", tool_calls: [], thinking: None),
+      message: Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None),
       response_id: None,
       response_model: None,
       stop_reason: None,
@@ -556,4 +562,142 @@ pub fn start_consumer_creates_valid_subject_test() {
   let _ = process.send(consumer, event)
 
   Nil
+}
+
+// ── stop_reason on Assistant message round-trip tests ──────────────
+
+/// Verify that an Assistant message with stop_reason serializes
+/// to JSON and can be decoded back with the stop_reason intact.
+pub fn message_to_json_includes_stop_reason_test() {
+  let msg =
+    Assistant(
+      content: "done",
+      tool_calls: [],
+      thinking: None,
+      stop_reason: Some(stop_reason.Stop),
+    )
+  let event =
+    InferenceCompleted(
+      message: msg,
+      response_id: None,
+      response_model: None,
+      stop_reason: Some(stop_reason.Stop),
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 50,
+      input_messages: [User("hi")],
+    )
+  let json_str = session.format_event(event)
+
+  // Decode the message's stop_reason field from the serialized JSON
+  let decoder =
+    dynamic_decode.at(["message", "stop_reason"], dynamic_decode.string)
+  let assert Ok("stop") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
+}
+
+/// Verify that an Assistant message without stop_reason (None)
+/// does not include stop_reason in the JSON output.
+pub fn message_to_json_omits_none_stop_reason_test() {
+  let msg =
+    Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None)
+  let event =
+    InferenceCompleted(
+      message: msg,
+      response_id: None,
+      response_model: None,
+      stop_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 50,
+      input_messages: [],
+    )
+  let json_str = session.format_event(event)
+
+  // The serialized JSON should NOT contain "stop_reason" in the message object
+  // when it's None. We verify by decoding the message and checking the field.
+  // Since optional_field is callback-style, we use a simpler approach:
+  // just verify the JSON string doesn't have stop_reason in the message portion.
+  //
+  // Note: the top-level event stop_reason is also None, so it won't appear either.
+  // We check that the raw JSON doesn't contain the key at all.
+  assert !string.contains(json_str, "\"stop_reason\"")
+}
+
+/// Round-trip: write InferenceCompleted with stop_reason, replay, verify.
+pub fn round_trip_stop_reason_in_message_test() {
+  use path <- with_temp_file("stop_reason_round_trip")
+  let assistant =
+    Assistant(
+      content: "all done",
+      tool_calls: [],
+      thinking: None,
+      stop_reason: Some(stop_reason.Stop),
+    )
+  let line =
+    InferenceCompleted(
+      message: assistant,
+      response_id: None,
+      response_model: None,
+      stop_reason: Some(stop_reason.Stop),
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 100,
+      input_messages: [User("hello")],
+    )
+    |> session.format_event
+  write_jsonl(path, [line])
+  let assert Ok(messages) = session.replay(path)
+  assert list.length(messages) == 2
+  let assert [User(content: q), Assistant(content: a, stop_reason: sr, ..)] =
+    messages
+  assert q == "hello"
+  assert a == "all done"
+  assert sr == Some(stop_reason.Stop)
+}
+
+/// Round-trip: Assistant with ToolUse stop_reason preserves it through replay.
+pub fn round_trip_tool_use_stop_reason_in_message_test() {
+  use path <- with_temp_file("tool_use_stop_reason_round_trip")
+  let tc =
+    ToolCall(
+      id: "c1",
+      name: "echo",
+      arguments_json: "{\"msg\":\"hi\"}",
+    )
+  let assistant =
+    Assistant(
+      content: "",
+      tool_calls: [tc],
+      thinking: None,
+      stop_reason: Some(stop_reason.ToolUse),
+    )
+  let line =
+    InferenceCompleted(
+      message: assistant,
+      response_id: None,
+      response_model: None,
+      stop_reason: Some(stop_reason.ToolUse),
+      input_tokens: None,
+      output_tokens: None,
+      duration_ms: 50,
+      input_messages: [User("use echo")],
+    )
+    |> session.format_event
+  write_jsonl(path, [line])
+  let assert Ok(messages) = session.replay(path)
+  assert list.length(messages) == 2
+  let assert [
+    User(content: q),
+    Assistant(
+      content: _,
+      tool_calls: [decoded_tc],
+      thinking: _,
+      stop_reason: sr,
+    ),
+  ] = messages
+  assert q == "use echo"
+  assert decoded_tc.id == "c1"
+  assert sr == Some(stop_reason.ToolUse)
 }

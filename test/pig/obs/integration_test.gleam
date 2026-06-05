@@ -72,7 +72,7 @@ fn get_content(msg: message.Message) -> String {
   case msg {
     message.User(content) -> content
     message.System(content) -> content
-    message.Assistant(content, _, _) -> content
+    message.Assistant(content, _, _, _) -> content
     message.Tool(_, content) -> content
   }
 }
@@ -205,6 +205,7 @@ pub fn supervised_path_with_consumers_test() {
           "mock response",
           [],
           option.None,
+          option.None,
         )),
       )
     })
@@ -245,6 +246,7 @@ pub fn multiple_supervised_runs_with_consumers_test() {
         provider.from_message(message.Assistant(
           "mock response",
           [],
+          option.None,
           option.None,
         )),
       )

@@ -142,7 +142,7 @@ pub fn replay_with_executed_tool_after_last_inference_test() {
 pub fn round_trip_single_inference_test() {
   use path <- with_temp_file("round_trip_single")
   let input_messages = [User("Hello")]
-  let assistant_msg = Assistant("Hi there!", [], None)
+  let assistant_msg = Assistant("Hi there!", [], None, None)
   let line1 =
     InferenceStarted(model: "gpt-4", message_count: 1)
     |> session.format_event
@@ -178,10 +178,11 @@ pub fn round_trip_full_tool_loop_test() {
       "",
       [ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")],
       None,
+      None,
     ),
     Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"),
   ]
-  let final_response = Assistant("Done!", [], None)
+  let final_response = Assistant("Done!", [], None, None)
   let line1 =
     InferenceStarted(model: "gpt-4", message_count: 4)
     |> session.format_event
@@ -219,7 +220,7 @@ pub fn round_trip_no_system_prompt_in_history_test() {
   use path <- with_temp_file("round_trip_no_sys")
   // History is just user/assistant — no system prompt
   let history = [User("What is 2+2?")]
-  let response = Assistant("4", [], None)
+  let response = Assistant("4", [], None, None)
   let line =
     InferenceCompleted(
       message: response,
@@ -250,7 +251,7 @@ pub fn round_trip_blocked_tool_test() {
   use path <- with_temp_file("round_trip_blocked")
   let call = ToolCall(id: "c1", name: "bash", arguments_json: "{}")
   let history = [User("rm -rf /")]
-  let assistant_with_calls = Assistant("", [call], None)
+  let assistant_with_calls = Assistant("", [call], None, None)
   // InferenceCompleted records history (original, no system prompt)
   // Then tool is blocked
   let inference_line =
@@ -292,13 +293,13 @@ pub fn round_trip_transformed_result_test() {
     ToolCall(id: "c2", name: "search", arguments_json: "{\"q\":\"test\"}")
   let history = [
     User("search for test"),
-    Assistant("", [call], None),
+    Assistant("", [call], None, None),
   ]
-  let final_response = Assistant("Here are the results", [], None)
+  let final_response = Assistant("Here are the results", [], None, None)
   // First inference: user asks, assistant calls tool
   let inference1 =
     InferenceCompleted(
-      message: Assistant("", [call], None),
+      message: Assistant("", [call], None, None),
       response_id: None,
       response_model: None,
       stop_reason: None,
@@ -358,7 +359,7 @@ pub fn round_trip_partial_session_with_transformed_tool_test() {
   // Only one inference completed, then a tool executed — no final inference
   let inference_line =
     InferenceCompleted(
-      message: Assistant("", [call], None),
+      message: Assistant("", [call], None, None),
       response_id: None,
       response_model: None,
       stop_reason: None,
