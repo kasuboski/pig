@@ -38,7 +38,7 @@ fn state_for_update(tools: List(tool.Tool)) -> state.AgentState {
   // Provider is never called by update — it's a runtime concern.
   // But we need one to construct AgentConfig.
   let provider = fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("unused", [], None)))
+    Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
   |> state.with_tools(registry)
@@ -51,7 +51,7 @@ fn state_for_update_with_max(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("unused", [], None)))
+    Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
   |> state.with_tools(registry)
@@ -126,7 +126,7 @@ pub fn user_prompt_call_provider_includes_tools_test() {
 /// System prompt is prepended to messages in the effect when configured.
 pub fn user_prompt_system_prompt_prepended_test() {
   let provider = fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("x", [], None)))
+    Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
   let st =
     state.config(provider)
@@ -144,7 +144,7 @@ pub fn user_prompt_system_prompt_prepended_test() {
 /// ProviderResponded(Ok(text_message)) → Done with that message in history.
 pub fn provider_responded_text_returns_done_test() {
   let st = state_for_update([])
-  let resp = message.Assistant("hello!", [], None)
+  let resp = message.Assistant("hello!", [], None, None)
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Done(state: new_st, message: msg_out) = result
   assert msg_out == resp
@@ -156,7 +156,7 @@ pub fn provider_responded_text_returns_done_test() {
 /// ProviderResponded(Ok(tool_call_message)) → Continue with ExecuteTools effect.
 pub fn provider_responded_tool_calls_returns_continue_test() {
   let tc = message.ToolCall(id: "c1", name: "echo", arguments_json: "{}")
-  let resp = message.Assistant("", [tc], None)
+  let resp = message.Assistant("", [tc], None, None)
   let st = state_for_update([])
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Continue(state: _, effects: effs) = result
@@ -173,7 +173,7 @@ pub fn provider_responded_tool_calls_returns_continue_test() {
 
 /// ProviderResponded(Ok(tool_call_message)) with empty tool_calls → Done.
 pub fn provider_responded_empty_tool_calls_returns_done_test() {
-  let resp = message.Assistant("", [], None)
+  let resp = message.Assistant("", [], None, None)
   let st = state_for_update([])
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Done(state: _, message: _) = result
@@ -191,7 +191,7 @@ pub fn provider_responded_error_returns_failed_test() {
 /// ProviderResponded(Ok(tool_call_message)) puts assistant message in history.
 pub fn provider_responded_tool_calls_records_assistant_test() {
   let tc = message.ToolCall(id: "c1", name: "echo", arguments_json: "{}")
-  let resp = message.Assistant("", [tc], None)
+  let resp = message.Assistant("", [tc], None, None)
   let st = state_for_update([])
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
   let assert step_result.Continue(state: new_st, effects: _) = result

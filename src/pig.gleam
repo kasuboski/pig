@@ -323,6 +323,26 @@ pub fn try_run_with_timeout(
   runtime.try_run(agent.subject, prompt, timeout_ms)
 }
 
+/// Resume the agent loop from its current history.
+///
+/// Used for the durability pattern: an external system checkpoints messages,
+/// and on retry, rebuilds the agent's history from those checkpoints via
+/// `with_initial_history`. This function continues the loop from where
+/// the history left off, without adding a new user prompt.
+///
+/// Returns the final assistant message when the loop completes, or an error.
+pub fn run_continue_with_timeout(
+  agent: Agent,
+  timeout_ms: Int,
+) -> Result(Message, AiError) {
+  runtime.run_continue(agent.subject, timeout_ms)
+}
+
+/// Resume the agent loop with a 120-second default timeout.
+pub fn run_continue(agent: Agent) -> Result(Message, AiError) {
+  run_continue_with_timeout(agent, 120_000)
+}
+
 /// Stop the agent actor.
 pub fn stop(agent: Agent) -> Nil {
   runtime.stop(agent.subject)
@@ -331,10 +351,10 @@ pub fn stop(agent: Agent) -> Nil {
 /// Return a PigConfig with a deterministic mock provider.
 ///
 /// The mock provider always returns
-/// `Assistant("mock response", [], None)`.
+/// `Assistant("mock response", [], None, None)`.
 /// Useful for testing code that uses pig without hitting a real API.
 pub fn test_harness() -> PigConfig {
-  let response = message.Assistant("mock response", [], option.None)
+  let response = message.Assistant("mock response", [], option.None, option.None)
   new(fn(_msgs, _tools) { Ok(from_message(response)) })
 }
 

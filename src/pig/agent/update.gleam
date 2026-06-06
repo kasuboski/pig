@@ -52,7 +52,7 @@ fn handle_provider_responded(
 ) -> StepResult(AgentMsg) {
   case result {
     Ok(
-      message.Assistant(content: _, tool_calls: calls, thinking: _) as assistant_msg,
+      message.Assistant(content: _, tool_calls: calls, thinking: _, stop_reason: _) as assistant_msg,
     ) ->
       case calls {
         [] -> {

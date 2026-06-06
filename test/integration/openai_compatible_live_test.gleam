@@ -44,7 +44,7 @@ pub fn simple_text_completion_test() {
       let result = prov.call(messages, [])
       let assert Ok(InferenceResult(message: msg, metadata: _)) = result
       case msg {
-        message.Assistant(content:, tool_calls: [], thinking: _) -> {
+        message.Assistant(content:, tool_calls: [], thinking: _, stop_reason: _) -> {
           assert string.contains(string.lowercase(content), "hello") == True
         }
         _ -> panic as "expected Assistant with no tool calls"

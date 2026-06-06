@@ -89,7 +89,7 @@ fn get_content(msg: message.Message) -> String {
   case msg {
     message.User(content) -> content
     message.System(content) -> content
-    message.Assistant(content, _, _) -> content
+    message.Assistant(content, _, _, _) -> content
     message.Tool(_, content) -> content
   }
 }
@@ -235,7 +235,7 @@ pub fn with_initial_history_multiple_messages_test() {
     pig.test_harness()
     |> pig.with_initial_history([
       message.User("what is 2+2?"),
-      message.Assistant("4", [], option.None),
+      message.Assistant("4", [], option.None, option.None),
     ])
 
   let assert Ok(agent) = pig.start(config)
@@ -261,7 +261,7 @@ pub fn with_initial_history_chains_with_session_writer_test() {
 // Test 16: provider sees initial history messages on first run
 pub fn with_initial_history_provider_sees_messages_test() {
   let seen = process.new_subject()
-  let mock_response = message.Assistant("mock response", [], option.None)
+  let mock_response = message.Assistant("mock response", [], option.None, option.None)
   let provider_fn = fn(msgs, _tools) {
     let user_contents =
       msgs
@@ -282,7 +282,7 @@ pub fn with_initial_history_provider_sees_messages_test() {
     pig.new(provider_fn)
     |> pig.with_initial_history([
       message.User("previous question"),
-      message.Assistant("previous answer", [], option.None),
+      message.Assistant("previous answer", [], option.None, option.None),
     ])
 
   let assert Ok(agent) = pig.start(config)
@@ -301,7 +301,7 @@ pub fn with_initial_history_provider_sees_messages_test() {
 // cause duplication.
 pub fn with_initial_history_strips_system_messages_test() {
   let seen = process.new_subject()
-  let mock_response = message.Assistant("mock response", [], option.None)
+  let mock_response = message.Assistant("mock response", [], option.None, option.None)
   let provider_fn = fn(msgs, _tools) {
     let system_msgs =
       msgs

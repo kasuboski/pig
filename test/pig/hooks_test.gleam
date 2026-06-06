@@ -121,7 +121,7 @@ pub fn on_after_inference_replaces_handler_test() {
   let event =
     hooks.AfterInferenceEvent(
       model: "gpt-4",
-      message: message.Assistant("response", [], None),
+      message: message.Assistant("response", [], None, None),
       duration_ms: 100,
     )
   let _ = case h {
@@ -151,7 +151,7 @@ pub fn on_complete_replaces_handler_test() {
   let event =
     hooks.CompleteEvent(
       model: "gpt-4",
-      message: message.Assistant("final", [], None),
+      message: message.Assistant("final", [], None, None),
       total_iterations: 5,
     )
   let _ = case h {
@@ -173,7 +173,7 @@ pub fn notify_after_inference_calls_all_handlers_test() {
   let event =
     hooks.AfterInferenceEvent(
       model: "gpt-4",
-      message: message.Assistant("response", [], None),
+      message: message.Assistant("response", [], None, None),
       duration_ms: 100,
     )
   hooks.notify_after_inference([h1, h2], event)
@@ -207,7 +207,7 @@ pub fn notify_complete_calls_all_handlers_test() {
   let event =
     hooks.CompleteEvent(
       model: "gpt-4",
-      message: message.Assistant("final", [], None),
+      message: message.Assistant("final", [], None, None),
       total_iterations: 5,
     )
   hooks.notify_complete([h1, h2], event)

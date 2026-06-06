@@ -6,6 +6,7 @@
 ////
 //// Inspired by pi's `StopReason` type.
 
+import gleam/dynamic/decode
 import gleam/json
 
 /// A normalized stop reason across all providers.
@@ -78,4 +79,10 @@ pub fn from_string(s: String) -> StopReason {
 /// Serialize a StopReason as a JSON string value.
 pub fn to_json(reason: StopReason) -> json.Json {
   json.string(to_string(reason))
+}
+
+/// Decode a StopReason from a JSON string value.
+pub fn decoder() -> decode.Decoder(StopReason) {
+  use raw <- decode.map(decode.string)
+  from_string(raw)
 }

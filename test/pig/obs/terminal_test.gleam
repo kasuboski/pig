@@ -31,7 +31,7 @@ pub fn format_session_started_shows_model_test() {
 pub fn format_inference_completed_shows_duration_test() {
   let event =
     events.InferenceCompleted(
-      message: Assistant("hi", [], None),
+      message: Assistant("hi", [], None, None),
       response_id: None,
       response_model: None,
       stop_reason: None,
@@ -51,7 +51,7 @@ pub fn format_inference_completed_shows_duration_test() {
 pub fn format_inference_completed_shows_token_counts_test() {
   let event =
     events.InferenceCompleted(
-      message: Assistant("hi", [], None),
+      message: Assistant("hi", [], None, None),
       response_id: None,
       response_model: None,
       stop_reason: Some(stop_reason.Stop),
@@ -73,7 +73,7 @@ pub fn format_inference_completed_shows_token_counts_test() {
 pub fn format_inference_completed_without_tokens_test() {
   let event =
     events.InferenceCompleted(
-      message: Assistant("hi", [], None),
+      message: Assistant("hi", [], None, None),
       response_id: None,
       response_model: None,
       stop_reason: None,

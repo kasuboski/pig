@@ -171,7 +171,7 @@ fn message_to_json(msg: Message) -> json.Json {
         #("content", json.string(content)),
       ])
 
-    message.Assistant(content:, tool_calls:, thinking:) ->
+    message.Assistant(content:, tool_calls:, thinking:, stop_reason: _) ->
       assistant_to_json(content, tool_calls, thinking)
 
     message.Tool(tool_call_id:, content:) ->
@@ -259,7 +259,7 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
     Error(Nil) ->
       decode.failure(
         InferenceResult(
-          message: message.Assistant("", [], None),
+          message: message.Assistant("", [], None, None),
           metadata: default_metadata(),
         ),
         "non-empty choices",
@@ -279,13 +279,19 @@ fn usage_decoder() -> decode.Decoder(Usage) {
 }
 
 fn choice_decoder() -> decode.Decoder(#(Message, Option(stop_reason.StopReason))) {
-  use msg <- decode.field("message", message_decoder())
+  use raw_msg <- decode.field("message", message_decoder())
   use raw_finish_reason <- decode.optional_field(
     "finish_reason",
     None,
     decode.optional(decode.string),
   )
   let sr = option.map(raw_finish_reason, stop_reason.from_openai)
+  // Stamp stop_reason onto the Assistant message
+  let msg = case raw_msg {
+    message.Assistant(content:, tool_calls:, thinking:, stop_reason: _) ->
+      message.Assistant(content:, tool_calls:, thinking:, stop_reason: sr)
+    other -> other
+  }
   decode.success(#(msg, sr))
 }
 
@@ -306,6 +312,7 @@ fn message_decoder() -> decode.Decoder(Message) {
     content: content_str,
     tool_calls: tcs,
     thinking: None,
+    stop_reason: None,
   ))
 }
 

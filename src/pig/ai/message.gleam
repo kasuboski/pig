@@ -1,4 +1,5 @@
 import gleam/option.{type Option}
+import pig/ai/stop_reason.{type StopReason}
 
 /// A tool call requested by the assistant.
 pub type ToolCall {
@@ -18,6 +19,7 @@ pub type Message {
     content: String,
     tool_calls: List(ToolCall),
     thinking: Option(Thinking),
+    stop_reason: Option(StopReason),
   )
   Tool(tool_call_id: String, content: String)
 }
@@ -35,7 +37,7 @@ pub fn role(msg: Message) -> Role {
   case msg {
     User(_) -> UserRole
     System(_) -> SystemRole
-    Assistant(_, _, _) -> AssistantRole
+    Assistant(_, _, _, _) -> AssistantRole
     Tool(_, _) -> ToolRole
   }
 }

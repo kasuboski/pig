@@ -79,6 +79,7 @@ pub fn parse_text_response_test() {
     content: "The answer is 4.",
     tool_calls: [],
     thinking: None,
+    stop_reason: Some(stop_reason.Stop),
   ) = result.message
   // Verify metadata
   let assert Some("chatcmpl-abc123") = result.metadata.response_id
@@ -91,7 +92,12 @@ pub fn parse_text_response_test() {
 pub fn parse_tool_call_response_test() {
   let raw = read_golden("./test_data/providers/openai_tool_call_response.json")
   let assert Ok(result) = openai.parse_response(raw)
-  let assert message.Assistant(content: "", tool_calls: [tc], thinking: None) =
+  let assert message.Assistant(
+    content: "",
+    tool_calls: [tc],
+    thinking: None,
+    stop_reason: Some(stop_reason.ToolUse),
+  ) =
     result.message
   let assert True =
     tc.id == "call_abc123"
@@ -113,6 +119,7 @@ pub fn parse_multi_tool_call_response_test() {
     content: "",
     tool_calls: [tc1, tc2, tc3],
     thinking: None,
+    stop_reason: Some(stop_reason.ToolUse),
   ) = result.message
   let assert True =
     tc1.id == "call_001"
@@ -133,7 +140,12 @@ pub fn parse_null_content_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_null_content_response.json")
   let assert Ok(result) = openai.parse_response(raw)
-  let assert message.Assistant(content: "", tool_calls: [], thinking: None) =
+  let assert message.Assistant(
+    content: "",
+    tool_calls: [],
+    thinking: None,
+    stop_reason: Some(stop_reason.Stop),
+  ) =
     result.message
   // Verify metadata
   let assert Some("chatcmpl-jkl012") = result.metadata.response_id
@@ -245,7 +257,7 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
     )
   let messages = [
     message.User("what is 2+2?"),
-    message.Assistant("", [tc], None),
+    message.Assistant("", [tc], None, None),
     message.Tool(tool_call_id: "call_123", content: "4"),
   ]
   let body = openai.build_request_body(messages, [], "gpt-4o")

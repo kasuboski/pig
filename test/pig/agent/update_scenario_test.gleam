@@ -32,7 +32,7 @@ pub fn main() -> Nil {
 fn initial_state(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("unused", [], None)))
+    Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
   |> state.with_tools(registry)
@@ -45,7 +45,7 @@ fn initial_state_with_max(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(_msgs, _tools) {
-    Ok(provider.from_message(message.Assistant("unused", [], None)))
+    Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
   |> state.with_tools(registry)
@@ -149,7 +149,7 @@ fn fold_responses(
 
 /// Scenario 1: Provider returns text immediately.
 pub fn scenario_simple_response_test() {
-  let final = message.Assistant("4", [], None)
+  let final = message.Assistant("4", [], None, None)
   let #(_st, result) = run_scenario(initial_state([]), "What is 2+2?", [final])
   let assert step_result.Done(state: _, message: msg) = result
   assert msg == final
@@ -163,8 +163,8 @@ pub fn scenario_single_tool_call_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"test\"}",
     )
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("done!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("done!", [], None, None)
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "use echo", [tool_resp, final])
   let assert step_result.Done(state: _, message: msg) = result
@@ -179,8 +179,8 @@ pub fn scenario_multi_tool_call_test() {
     message.ToolCall(id: "b", name: "echo", arguments_json: "{\"msg\":\"y\"}")
   let tc3 =
     message.ToolCall(id: "c", name: "echo", arguments_json: "{\"msg\":\"z\"}")
-  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None)
-  let final = message.Assistant("all done!", [], None)
+  let tool_resp = message.Assistant("", [tc1, tc2, tc3], None, None)
+  let final = message.Assistant("all done!", [], None, None)
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "multi call", [tool_resp, final])
   let assert step_result.Done(state: _, message: msg) = result
@@ -201,9 +201,9 @@ pub fn scenario_chained_tool_calls_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"second\"}",
     )
-  let resp1 = message.Assistant("", [tc1], None)
-  let resp2 = message.Assistant("", [tc2], None)
-  let final = message.Assistant("chained complete!", [], None)
+  let resp1 = message.Assistant("", [tc1], None, None)
+  let resp2 = message.Assistant("", [tc2], None, None)
+  let final = message.Assistant("chained complete!", [], None, None)
   let #(_, result) =
     run_scenario(initial_state([echo_tool()]), "chain", [resp1, resp2, final])
   let assert step_result.Done(state: _, message: msg) = result
@@ -232,7 +232,7 @@ pub fn scenario_max_iterations_circuit_breaker_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"x\"}",
     )
-  let looping = message.Assistant("", [tc], None)
+  let looping = message.Assistant("", [tc], None, None)
   // Start with max_iterations = 2
   let st = initial_state_with_max([echo_tool()], 2)
   // Step 1: UserPrompt → Continue
@@ -261,8 +261,8 @@ pub fn scenario_max_iterations_circuit_breaker_test() {
 /// Scenario 7: Tool error does NOT kill the loop — LLM sees error and adapts.
 pub fn scenario_tool_error_recovery_test() {
   let tc = message.ToolCall(id: "c1", name: "boom", arguments_json: "{}")
-  let tool_resp = message.Assistant("", [tc], None)
-  let final = message.Assistant("recovered!", [], None)
+  let tool_resp = message.Assistant("", [tc], None, None)
+  let final = message.Assistant("recovered!", [], None, None)
   // Use a custom fold for error tool
   let st = initial_state([failing_tool()])
   let result = update.update(st, msg.UserPrompt("try boom"))
