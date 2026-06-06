@@ -288,18 +288,19 @@ fn resume_from_history(
         ) ->
           resume_from_assistant(config, st, tool_calls, sr)
 
-        // User or Tool message — call provider
+        // User or Tool message — call provider (through hooks pipeline)
         message.User(_) | message.Tool(_, _) -> {
-          let messages = state.messages_for_provider(st)
-          let tools = state.tool_definitions(st)
-          let result = config.provider(messages, tools)
-          do_loop(
-            config,
-            st,
-            msg.ProviderResponded(
-              result.map(result, fn(r) { r.message }),
-            ),
-          )
+          let #(st_after, provider_msg) =
+            execute_call_provider(
+              config,
+              st,
+              state.messages_for_provider(st),
+              state.tool_definitions(st),
+              fn(r) {
+                msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
+              },
+            )
+          do_loop(config, st_after, provider_msg)
         }
 
         // System message at end of history — shouldn't happen
@@ -340,16 +341,21 @@ fn resume_from_assistant(
       #(st, Ok(msg))
     }
 
-    // Hit token limit or error — re-call provider
+    // Hit token limit or error — re-call provider (through hooks pipeline)
     option.Some(stop_reason.Length) | option.Some(stop_reason.Error) | option.Some(
       stop_reason.Unknown(_),
     ) -> {
-      let messages = state.messages_for_provider(st)
-      let tools = state.tool_definitions(st)
-      let result = config.provider(messages, tools)
-      do_loop(config, st, msg.ProviderResponded(
-        result.map(result, fn(r) { r.message }),
-      ))
+      let #(st_after, provider_msg) =
+        execute_call_provider(
+          config,
+          st,
+          state.messages_for_provider(st),
+          state.tool_definitions(st),
+          fn(r) {
+            msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
+          },
+        )
+      do_loop(config, st_after, provider_msg)
     }
 
     // No stop_reason (legacy messages) — decide by tool_calls presence

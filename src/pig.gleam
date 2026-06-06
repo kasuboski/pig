@@ -351,7 +351,7 @@ pub fn stop(agent: Agent) -> Nil {
 /// Return a PigConfig with a deterministic mock provider.
 ///
 /// The mock provider always returns
-/// `Assistant("mock response", [], None)`.
+/// `Assistant("mock response", [], None, None)`.
 /// Useful for testing code that uses pig without hitting a real API.
 pub fn test_harness() -> PigConfig {
   let response = message.Assistant("mock response", [], option.None, option.None)

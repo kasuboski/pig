@@ -598,7 +598,7 @@ pub fn message_to_json_includes_stop_reason_test() {
 }
 
 /// Verify that an Assistant message without stop_reason (None)
-/// does not include stop_reason in the JSON output.
+/// decodes as None through the session serialization pipeline.
 pub fn message_to_json_omits_none_stop_reason_test() {
   let msg =
     Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None)
@@ -615,14 +615,12 @@ pub fn message_to_json_omits_none_stop_reason_test() {
     )
   let json_str = session.format_event(event)
 
-  // The serialized JSON should NOT contain "stop_reason" in the message object
-  // when it's None. We verify by decoding the message and checking the field.
-  // Since optional_field is callback-style, we use a simpler approach:
-  // just verify the JSON string doesn't have stop_reason in the message portion.
-  //
-  // Note: the top-level event stop_reason is also None, so it won't appear either.
-  // We check that the raw JSON doesn't contain the key at all.
-  assert !string.contains(json_str, "\"stop_reason\"")
+  // Decode the message structurally and verify stop_reason is None
+  let message_decoder = dynamic_decode.at(["message"], session.decode_message())
+  let assert Ok(Assistant(_, _, _, decoded_stop_reason)) =
+    json.parse(from: json_str, using: message_decoder)
+    |> result.map_error(fn(_) { Nil })
+  assert decoded_stop_reason == None
 }
 
 /// Round-trip: write InferenceCompleted with stop_reason, replay, verify.
