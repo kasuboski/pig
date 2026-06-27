@@ -283,7 +283,12 @@ pub fn decode_message() -> dynamic_decode.Decoder(Message) {
         option.None,
         dynamic_decode.optional(stop_reason.decoder()),
       )
-      dynamic_decode.success(Assistant(content:, tool_calls:, thinking:, stop_reason:))
+      dynamic_decode.success(Assistant(
+        content:,
+        tool_calls:,
+        thinking:,
+        stop_reason:,
+      ))
     }
     _ ->
       dynamic_decode.failure(
@@ -418,7 +423,9 @@ pub fn format_event(event: SessionEvent) -> String {
       }
       let with_stop_reason = case stop_reason {
         Some(v) ->
-          list.append(with_response_model, [#("stop_reason", stop_reason.to_json(v))])
+          list.append(with_response_model, [
+            #("stop_reason", stop_reason.to_json(v)),
+          ])
         None -> with_response_model
       }
       let with_input_tokens = case input_tokens {

@@ -97,8 +97,7 @@ pub fn parse_tool_call_response_test() {
     tool_calls: [tc],
     thinking: None,
     stop_reason: Some(stop_reason.ToolUse),
-  ) =
-    result.message
+  ) = result.message
   let assert True =
     tc.id == "call_abc123"
     && tc.name == "calculator"
@@ -145,8 +144,7 @@ pub fn parse_null_content_response_test() {
     tool_calls: [],
     thinking: None,
     stop_reason: Some(stop_reason.Stop),
-  ) =
-    result.message
+  ) = result.message
   // Verify metadata
   let assert Some("chatcmpl-jkl012") = result.metadata.response_id
   let assert Some("gpt-4o") = result.metadata.response_model

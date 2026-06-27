@@ -177,8 +177,6 @@ pub fn get_event_names_returns_strings_test() {
   // Verify the name matches what event_name() returns, not a hardcoded literal
   assert names
     == [
-      events.event_name(
-        events.InferenceStart(model: "gpt-4", message_count: 1),
-      ),
+      events.event_name(events.InferenceStart(model: "gpt-4", message_count: 1)),
     ]
 }

@@ -2,8 +2,8 @@ import gleam/option.{type Option, None, Some}
 import pig/ai/message.{type Message, Assistant}
 import pig/ai/provider.{
   type InferenceMetadata, type InferenceResult, default_metadata, from_message,
-  with_stop_reason, with_input_tokens, with_output_tokens, with_response_id,
-  with_response_model,
+  with_input_tokens, with_output_tokens, with_response_id, with_response_model,
+  with_stop_reason,
 }
 import pig/ai/stop_reason
 

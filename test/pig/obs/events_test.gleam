@@ -53,23 +53,23 @@ pub fn event_name_matches_inference_start_test() {
 
 pub fn event_name_matches_inference_stop_test() {
   assert events.event_name(events.InferenceStop(
-    model: "x",
-    message_count: 0,
-    duration_ms: 0,
-    response_id: None,
-    stop_reason: None,
-    input_tokens: None,
-    output_tokens: None,
-  ))
+      model: "x",
+      message_count: 0,
+      duration_ms: 0,
+      response_id: None,
+      stop_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+    ))
     == events.inference_stop_name()
 }
 
 pub fn event_name_matches_tool_start_test() {
   assert events.event_name(events.ToolStart(
-    tool_name: "x",
-    tool_call_id: "y",
-    arguments_json: "{}",
-  ))
+      tool_name: "x",
+      tool_call_id: "y",
+      arguments_json: "{}",
+    ))
     == events.tool_start_name()
 }
 

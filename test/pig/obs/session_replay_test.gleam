@@ -107,8 +107,7 @@ pub fn replay_with_blocked_tool_after_last_inference_test() {
   assert prompt == "rm -rf /"
   assert id == "c1"
   // Blocked tool content should reconstruct from hook_name + reason
-  assert blocked_content ==
-    "Tool blocked by 'safety-guard': dangerous command"
+  assert blocked_content == "Tool blocked by 'safety-guard': dangerous command"
 }
 
 /// Replay handles tool_executed events after last inference (crash recovery).

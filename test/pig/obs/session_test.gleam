@@ -115,7 +115,8 @@ pub fn format_session_started_single_line_test() {
 }
 
 pub fn format_inference_completed_includes_fields_test() {
-  let message = Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None)
+  let message =
+    Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None)
   let event =
     InferenceCompleted(
       message: message,
@@ -299,7 +300,12 @@ pub fn write_multiple_events_in_order_test() {
 
   let event2 =
     InferenceCompleted(
-      message: Assistant(content: "hi", tool_calls: [], thinking: None, stop_reason: None),
+      message: Assistant(
+        content: "hi",
+        tool_calls: [],
+        thinking: None,
+        stop_reason: None,
+      ),
       response_id: None,
       response_model: None,
       stop_reason: None,
@@ -658,12 +664,7 @@ pub fn round_trip_stop_reason_in_message_test() {
 /// Round-trip: Assistant with ToolUse stop_reason preserves it through replay.
 pub fn round_trip_tool_use_stop_reason_in_message_test() {
   use path <- with_temp_file("tool_use_stop_reason_round_trip")
-  let tc =
-    ToolCall(
-      id: "c1",
-      name: "echo",
-      arguments_json: "{\"msg\":\"hi\"}",
-    )
+  let tc = ToolCall(id: "c1", name: "echo", arguments_json: "{\"msg\":\"hi\"}")
   let assistant =
     Assistant(
       content: "",

@@ -23,7 +23,8 @@ pub fn role_system_test() {
 }
 
 pub fn role_assistant_test() {
-  assert message.role(message.Assistant("x", [], None, None)) == message.AssistantRole
+  assert message.role(message.Assistant("x", [], None, None))
+    == message.AssistantRole
 }
 
 pub fn role_tool_test() {

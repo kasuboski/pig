@@ -141,7 +141,10 @@ fn emit_telemetry(event: SessionEvent) {
       let metadata =
         base_metadata
         |> maybe_insert_string("response_id", response_id)
-        |> maybe_insert_string("stop_reason", option.map(stop_reason, stop_reason.to_string))
+        |> maybe_insert_string(
+          "stop_reason",
+          option.map(stop_reason, stop_reason.to_string),
+        )
 
       execute_telemetry(inference_stop_name(), measurements, metadata)
     }

@@ -144,10 +144,11 @@ pub fn grep_returns_matching_lines_test() {
     let assert Ok(Nil) =
       vfs.write_file(conn, "/hello.txt", "hello world\nfoo bar\nhello again")
     let assert Ok(matches) = vfs.grep(conn, "hello", "", "", 0)
-    assert matches == [
-      vfs.GrepMatch(path: "/hello.txt", line_number: 0, line: "hello world"),
-      vfs.GrepMatch(path: "/hello.txt", line_number: 2, line: "hello again"),
-    ]
+    assert matches
+      == [
+        vfs.GrepMatch(path: "/hello.txt", line_number: 0, line: "hello world"),
+        vfs.GrepMatch(path: "/hello.txt", line_number: 2, line: "hello again"),
+      ]
   })
 }
 
@@ -156,10 +157,11 @@ pub fn grep_across_multiple_files_test() {
     let assert Ok(Nil) = vfs.write_file(conn, "/a.txt", "findme here")
     let assert Ok(Nil) = vfs.write_file(conn, "/b.txt", "nope\nfindme too")
     let assert Ok(matches) = vfs.grep(conn, "findme", "", "", 0)
-    assert matches == [
-      vfs.GrepMatch(path: "/a.txt", line_number: 0, line: "findme here"),
-      vfs.GrepMatch(path: "/b.txt", line_number: 1, line: "findme too"),
-    ]
+    assert matches
+      == [
+        vfs.GrepMatch(path: "/a.txt", line_number: 0, line: "findme here"),
+        vfs.GrepMatch(path: "/b.txt", line_number: 1, line: "findme too"),
+      ]
   })
 }
 
@@ -168,9 +170,10 @@ pub fn grep_with_include_filter_test() {
     let assert Ok(Nil) = vfs.write_file(conn, "/a.txt", "findme")
     let assert Ok(Nil) = vfs.write_file(conn, "/b.py", "findme")
     let assert Ok(matches) = vfs.grep(conn, "findme", "", "*.py", 0)
-    assert matches == [
-      vfs.GrepMatch(path: "/b.py", line_number: 0, line: "findme"),
-    ]
+    assert matches
+      == [
+        vfs.GrepMatch(path: "/b.py", line_number: 0, line: "findme"),
+      ]
   })
 }
 
@@ -180,9 +183,10 @@ pub fn grep_with_path_filter_test() {
     let assert Ok(Nil) = vfs.write_file(conn, "/src/app.gleam", "findme")
     let assert Ok(Nil) = vfs.write_file(conn, "/test.gleam", "findme")
     let assert Ok(matches) = vfs.grep(conn, "findme", "/src", "", 0)
-    assert matches == [
-      vfs.GrepMatch(path: "/src/app.gleam", line_number: 0, line: "findme"),
-    ]
+    assert matches
+      == [
+        vfs.GrepMatch(path: "/src/app.gleam", line_number: 0, line: "findme"),
+      ]
   })
 }
 

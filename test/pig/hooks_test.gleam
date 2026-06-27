@@ -288,8 +288,8 @@ pub fn decide_tool_call_blocked_carries_attribution_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h], event)
-  assert decision ==
-    hooks.ToolBlocked(hook_name: "safety-guard", reason: "dangerous")
+  assert decision
+    == hooks.ToolBlocked(hook_name: "safety-guard", reason: "dangerous")
 }
 
 pub fn decide_tool_call_first_block_wins_test() {
@@ -323,8 +323,7 @@ pub fn decide_tool_call_allow_then_block_blocks_test() {
       arguments_json: "{}",
     )
   let decision = hooks.decide_tool_call([h1, h2], event)
-  assert decision ==
-    hooks.ToolBlocked(hook_name: "blocker", reason: "stop")
+  assert decision == hooks.ToolBlocked(hook_name: "blocker", reason: "stop")
 }
 
 // decide_tool_result returns ToolResultDecision with attribution
@@ -453,11 +452,12 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
   let decision = hooks.decide_messages([h1, h2], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
   // Only proper chaining produces: [System("ctx"), User("hello"), User("suffix")]
-  assert final_messages == [
-    message.System("ctx"),
-    message.User("hello"),
-    message.User("suffix"),
-  ]
+  assert final_messages
+    == [
+      message.System("ctx"),
+      message.User("hello"),
+      message.User("suffix"),
+    ]
   assert transformers == ["first", "second"]
 }
 

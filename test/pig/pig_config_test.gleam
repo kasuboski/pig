@@ -261,7 +261,8 @@ pub fn with_initial_history_chains_with_session_writer_test() {
 // Test 16: provider sees initial history messages on first run
 pub fn with_initial_history_provider_sees_messages_test() {
   let seen = process.new_subject()
-  let mock_response = message.Assistant("mock response", [], option.None, option.None)
+  let mock_response =
+    message.Assistant("mock response", [], option.None, option.None)
   let provider_fn = fn(msgs, _tools) {
     let user_contents =
       msgs
@@ -301,7 +302,8 @@ pub fn with_initial_history_provider_sees_messages_test() {
 // cause duplication.
 pub fn with_initial_history_strips_system_messages_test() {
   let seen = process.new_subject()
-  let mock_response = message.Assistant("mock response", [], option.None, option.None)
+  let mock_response =
+    message.Assistant("mock response", [], option.None, option.None)
   let provider_fn = fn(msgs, _tools) {
     let system_msgs =
       msgs

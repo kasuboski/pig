@@ -14,9 +14,9 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
-import gleam/result
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
+import gleam/result
 import logging
 import pig/agent/effect
 import pig/agent/msg
@@ -59,6 +59,8 @@ pub type RuntimeMsg {
   Run(prompt: String, reply_to: process.Subject(Result(Message, AiError)))
   /// Resume the agent loop from its current history.
   Continue(reply_to: process.Subject(Result(Message, AiError)))
+  /// Get the agent's current message history.
+  GetHistory(reply_to: process.Subject(List(Message)))
   /// Stop the actor.
   Stop
 }
@@ -139,6 +141,14 @@ pub fn stop(subject: process.Subject(RuntimeMsg)) -> Nil {
   actor.send(subject, Stop)
 }
 
+/// Get the agent's current message history.
+pub fn history(
+  subject: process.Subject(RuntimeMsg),
+  timeout: Int,
+) -> List(Message) {
+  actor.call(subject, timeout, fn(reply_to) { GetHistory(reply_to) })
+}
+
 /// Send a prompt to the runtime and wait for a response.
 /// Returns `Error(Nil)` if the call times out or the runtime crashes.
 pub fn try_run(
@@ -215,10 +225,13 @@ fn handle_message(
           history: st.agent_state.history,
           iterations: 0,
         )
-      let #(final_state, outcome) =
-        resume_from_history(st.config, agent_st)
+      let #(final_state, outcome) = resume_from_history(st.config, agent_st)
       process.send(reply_to, outcome)
       actor.continue(RuntimeState(agent_state: final_state, config: st.config))
+    }
+    GetHistory(reply_to) -> {
+      process.send(reply_to, st.agent_state.history)
+      actor.continue(st)
     }
     Stop -> actor.stop()
   }
@@ -285,8 +298,7 @@ fn resume_from_history(
           tool_calls: tool_calls,
           thinking: _,
           stop_reason: sr,
-        ) ->
-          resume_from_assistant(config, st, tool_calls, sr)
+        ) -> resume_from_assistant(config, st, tool_calls, sr)
 
         // User or Tool message — call provider (through hooks pipeline)
         message.User(_) | message.Tool(_, _) -> {
@@ -304,11 +316,10 @@ fn resume_from_history(
         }
 
         // System message at end of history — shouldn't happen
-        message.System(_) ->
-          #(
-            st,
-            Error(error.ApiError("unexpected system message at end of history")),
-          )
+        message.System(_) -> #(
+          st,
+          Error(error.ApiError("unexpected system message at end of history")),
+        )
       }
     }
   }
@@ -326,12 +337,9 @@ fn resume_from_assistant(
     // Tool calls pending — execute them, then continue loop
     option.Some(stop_reason.ToolUse) -> {
       let #(_new_st, agent_msg) =
-        execute_tools_effect(
-          config,
-          st,
-          tool_calls,
-          fn(results) { msg.ToolResults(results) },
-        )
+        execute_tools_effect(config, st, tool_calls, fn(results) {
+          msg.ToolResults(results)
+        })
       do_loop(config, st, agent_msg)
     }
 
@@ -342,18 +350,16 @@ fn resume_from_assistant(
     }
 
     // Hit token limit or error — re-call provider (through hooks pipeline)
-    option.Some(stop_reason.Length) | option.Some(stop_reason.Error) | option.Some(
-      stop_reason.Unknown(_),
-    ) -> {
+    option.Some(stop_reason.Length)
+    | option.Some(stop_reason.Error)
+    | option.Some(stop_reason.Unknown(_)) -> {
       let #(st_after, provider_msg) =
         execute_call_provider(
           config,
           st,
           state.messages_for_provider(st),
           state.tool_definitions(st),
-          fn(r) {
-            msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
-          },
+          fn(r) { msg.ProviderResponded(result.map(r, fn(ir) { ir.message })) },
         )
       do_loop(config, st_after, provider_msg)
     }
@@ -369,12 +375,9 @@ fn resume_from_assistant(
         calls -> {
           // Has tool calls but no stop_reason — execute them
           let #(_new_st, agent_msg) =
-            execute_tools_effect(
-              config,
-              st,
-              calls,
-              fn(results) { msg.ToolResults(results) },
-            )
+            execute_tools_effect(config, st, calls, fn(results) {
+              msg.ToolResults(results)
+            })
           do_loop(config, st, agent_msg)
         }
       }

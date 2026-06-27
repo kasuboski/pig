@@ -787,8 +787,7 @@ fn start_with_history(
     |> state.with_tools(registry)
     |> state.with_model("test-model")
     |> state.with_max_iterations(50)
-  let agent_st =
-    list.fold(history, state.new(agent_config), state.add_message)
+  let agent_st = list.fold(history, state.new(agent_config), state.add_message)
   let runtime_config =
     runtime.RuntimeConfig(
       provider: provider_fn,
@@ -820,13 +819,10 @@ pub fn run_continue_empty_history_returns_error_test() {
 
 /// run_continue with history ending in completed assistant returns it immediately.
 pub fn run_continue_completed_assistant_returns_immediately_test() {
-  let completed =
-    message.Assistant("done", [], None, Some(stop_reason.Stop))
+  let completed = message.Assistant("done", [], None, Some(stop_reason.Stop))
   let #(subject, disp) =
     start_with_history(
-      fn(_, _) {
-        Error(error.ApiError("should not be called"))
-      },
+      fn(_, _) { Error(error.ApiError("should not be called")) },
       [],
       [message.User("hi"), completed],
     )
@@ -838,13 +834,10 @@ pub fn run_continue_completed_assistant_returns_immediately_test() {
 /// run_continue with history ending in assistant with no stop_reason (legacy)
 /// treats it as done.
 pub fn run_continue_legacy_assistant_returns_immediately_test() {
-  let completed =
-    message.Assistant("legacy done", [], None, None)
+  let completed = message.Assistant("legacy done", [], None, None)
   let #(subject, disp) =
     start_with_history(
-      fn(_, _) {
-        Error(error.ApiError("should not be called"))
-      },
+      fn(_, _) { Error(error.ApiError("should not be called")) },
       [],
       [message.User("hi"), completed],
     )
@@ -890,8 +883,7 @@ pub fn run_continue_pending_tool_calls_test() {
       name: "echo",
       arguments_json: "{\"msg\":\"hello\"}",
     )
-  let tool_resp =
-    message.Assistant("", [tc], None, Some(stop_reason.ToolUse))
+  let tool_resp = message.Assistant("", [tc], None, Some(stop_reason.ToolUse))
   let final = message.Assistant("tool done!", [], None, None)
   let #(subject, disp) =
     start_with_history(
@@ -913,11 +905,10 @@ pub fn run_continue_length_stop_reason_recalls_provider_test() {
     message.Assistant("truncated...", [], None, Some(stop_reason.Length))
   let final = message.Assistant("full response", [], None, None)
   let #(subject, disp) =
-    start_with_history(
-      fixed_provider(final),
-      [],
-      [message.User("tell me a story"), truncated],
-    )
+    start_with_history(fixed_provider(final), [], [
+      message.User("tell me a story"),
+      truncated,
+    ])
   let assert Ok(msg) = runtime.run_continue(subject, 5000)
   assert msg == final
   process.send(disp, dispatcher.Stop)

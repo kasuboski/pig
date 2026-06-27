@@ -278,7 +278,9 @@ fn usage_decoder() -> decode.Decoder(Usage) {
   decode.success(Usage(prompt_tokens:, completion_tokens:, total_tokens:))
 }
 
-fn choice_decoder() -> decode.Decoder(#(Message, Option(stop_reason.StopReason))) {
+fn choice_decoder() -> decode.Decoder(
+  #(Message, Option(stop_reason.StopReason)),
+) {
   use raw_msg <- decode.field("message", message_decoder())
   use raw_finish_reason <- decode.optional_field(
     "finish_reason",

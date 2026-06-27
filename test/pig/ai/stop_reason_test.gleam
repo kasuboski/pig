@@ -24,9 +24,8 @@ pub fn from_openai_content_filter_test() {
 }
 
 pub fn from_openai_unknown_test() {
-  assert stop_reason.from_openai("new_future_value") == stop_reason.Unknown(
-    "new_future_value",
-  )
+  assert stop_reason.from_openai("new_future_value")
+    == stop_reason.Unknown("new_future_value")
 }
 
 pub fn from_openai_empty_string_test() {
@@ -100,7 +99,9 @@ pub fn to_string_from_string_round_trip_error_test() {
 }
 
 pub fn to_string_from_string_round_trip_unknown_test() {
-  assert stop_reason.from_string(stop_reason.to_string(stop_reason.Unknown("x")))
+  assert stop_reason.from_string(
+      stop_reason.to_string(stop_reason.Unknown("x")),
+    )
     == stop_reason.Unknown("x")
 }
 
@@ -108,18 +109,16 @@ pub fn to_string_from_string_round_trip_unknown_test() {
 
 pub fn from_openai_to_string_round_trip_test() {
   // Known OpenAI values round-trip through from_openai → to_string → from_string
-  assert stop_reason.from_string(stop_reason.to_string(
-    stop_reason.from_openai("stop"),
-  ))
+  assert stop_reason.from_string(
+      stop_reason.to_string(stop_reason.from_openai("stop")),
+    )
     == stop_reason.Stop
-  assert stop_reason.from_string(stop_reason.to_string(
-    stop_reason.from_openai("tool_calls"),
-  ))
+  assert stop_reason.from_string(
+      stop_reason.to_string(stop_reason.from_openai("tool_calls")),
+    )
     == stop_reason.ToolUse
-  assert stop_reason.from_string(stop_reason.to_string(
-    stop_reason.from_openai("length"),
-  ))
+  assert stop_reason.from_string(
+      stop_reason.to_string(stop_reason.from_openai("length")),
+    )
     == stop_reason.Length
 }
-
-

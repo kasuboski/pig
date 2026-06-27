@@ -348,13 +348,19 @@ pub fn stop(agent: Agent) -> Nil {
   runtime.stop(agent.subject)
 }
 
+/// Get the agent's current conversation history (all messages).
+pub fn history(agent: Agent) -> List(message.Message) {
+  runtime.history(agent.subject, 5000)
+}
+
 /// Return a PigConfig with a deterministic mock provider.
 ///
 /// The mock provider always returns
 /// `Assistant("mock response", [], None, None)`.
 /// Useful for testing code that uses pig without hitting a real API.
 pub fn test_harness() -> PigConfig {
-  let response = message.Assistant("mock response", [], option.None, option.None)
+  let response =
+    message.Assistant("mock response", [], option.None, option.None)
   new(fn(_msgs, _tools) { Ok(from_message(response)) })
 }
 

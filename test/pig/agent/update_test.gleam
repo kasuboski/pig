@@ -211,7 +211,8 @@ pub fn tool_results_adds_tool_messages_test() {
   let result = update.update(st, msg.ToolResults(results))
   let assert step_result.Continue(state: new_st, effects: _) = result
   let history = state.history(new_st)
-  assert list.last(history) == Ok(message.Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"))
+  assert list.last(history)
+    == Ok(message.Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"))
 }
 
 /// ToolResults increments iterations.
