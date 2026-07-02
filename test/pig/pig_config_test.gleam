@@ -1,12 +1,16 @@
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option
+import gleam/otp/actor
+import gleam/otp/supervision
 import gleam/string
 import gleeunit
 import pig
 import pig/ai/message
 import pig/ai/provider
 import pig/hooks
+import pig/obs/consumer_spec
+import pig/obs/events.{type SessionEvent}
 import simplifile
 import temporary
 
@@ -79,6 +83,124 @@ pub fn multiple_consumers_accumulate_test() {
 
   // Config should be usable to start an agent
   let assert Ok(agent) = pig.start(config_with_both)
+  pig.stop(agent)
+}
+
+// ── Custom Consumer Tests ──────────────────────────────────────────────
+//
+// `add_consumer` and `with_consumer_specs` let a host runtime (e.g. yard)
+// bridge pig's SessionEvent stream into its own store, correlated by
+// run_id. These are the seam called out by the Pig Bridge work.
+
+/// A consumer spec that captures every SessionEvent into a subject for
+/// test assertions. Mirrors the shape a host runtime would build.
+fn capturing_consumer_spec(
+  capture: Subject(SessionEvent),
+) -> consumer_spec.ConsumerSpec {
+  let name = process.new_name("test_capture")
+  let spec = supervision.worker(fn() { start_capture_named(capture, name) })
+  let start_fn = fn() { start_capture(capture) }
+  consumer_spec.ConsumerSpec(spec:, name:, start_fn:)
+}
+
+fn start_capture(capture: Subject(SessionEvent)) {
+  let builder =
+    actor.new(Nil)
+    |> actor.on_message(capture_handler(capture))
+  case actor.start(builder) {
+    Ok(started) -> Ok(started.data)
+    Error(e) -> Error(e)
+  }
+}
+
+fn start_capture_named(
+  capture: Subject(SessionEvent),
+  name: process.Name(SessionEvent),
+) {
+  let builder =
+    actor.new(Nil)
+    |> actor.on_message(capture_handler(capture))
+    |> actor.named(name)
+  case actor.start(builder) {
+    Ok(started) -> Ok(actor.Started(data: Nil, pid: started.pid))
+    Error(e) -> Error(e)
+  }
+}
+
+fn capture_handler(
+  capture: Subject(SessionEvent),
+) -> fn(Nil, SessionEvent) -> actor.Next(Nil, SessionEvent) {
+  fn(state, msg) {
+    process.send(capture, msg)
+    actor.continue(state)
+  }
+}
+
+// Test 4a: add_consumer registers a custom consumer that receives events
+pub fn add_consumer_registers_custom_consumer_test() {
+  let capture = process.new_subject()
+  let spec = capturing_consumer_spec(capture)
+  let config = pig.test_harness() |> pig.add_consumer(spec)
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_response) = pig.run(agent, "test")
+
+  // The custom consumer should receive at least one SessionEvent
+  // (SessionStarted is emitted on start, InferenceStarted on run).
+  let assert Ok(_event) = process.receive(capture, 2000)
+
+  pig.stop(agent)
+}
+
+// Test 4b: add_consumer accumulates alongside existing consumers
+pub fn add_consumer_accumulates_with_existing_test() {
+  let capture = process.new_subject()
+  let spec = capturing_consumer_spec(capture)
+  let config =
+    pig.test_harness()
+    |> pig.with_terminal_output()
+    |> pig.add_consumer(spec)
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_response) = pig.run(agent, "test")
+
+  // The custom consumer still receives events despite the terminal
+  // consumer also being registered — proving consumers accumulate.
+  let assert Ok(_event) = process.receive(capture, 2000)
+
+  pig.stop(agent)
+}
+
+// Test 4c: with_consumer_specs replaces the entire consumer list
+pub fn with_consumer_specs_replaces_list_test() {
+  let capture = process.new_subject()
+  let spec = capturing_consumer_spec(capture)
+  // Start with a session writer, then REPLACE it with only the capture spec.
+  let config =
+    pig.test_harness()
+    |> pig.with_terminal_output()
+    |> pig.with_consumer_specs([spec])
+
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_response) = pig.run(agent, "test")
+
+  // Only the capture consumer should be registered and receive events.
+  let assert Ok(_event) = process.receive(capture, 2000)
+
+  pig.stop(agent)
+}
+
+// Test 4d: with_consumer_specs with an empty list clears all consumers
+pub fn with_consumer_specs_empty_clears_consumers_test() {
+  let config =
+    pig.test_harness()
+    |> pig.with_terminal_output()
+    |> pig.with_consumer_specs([])
+
+  // Should start fine with no consumers.
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(response) = pig.run(agent, "test")
+  assert get_content(response) == "mock response"
   pig.stop(agent)
 }
 

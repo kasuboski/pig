@@ -174,6 +174,34 @@ pub fn with_terminal_output(config: PigConfig) -> PigConfig {
   ])
 }
 
+/// Register a custom consumer specification.
+///
+/// Appends to the list of consumer specs. Consumers receive pig's
+/// `SessionEvent` stream — useful for bridging events into an external
+/// store (e.g. a host runtime's observability table keyed by `run_id`).
+///
+/// This is the seam host runtimes use to capture pig's agent-internal
+/// events (token usage, tool calls, inference timing) without pig ever
+/// depending on them.
+pub fn add_consumer(config: PigConfig, spec: ConsumerSpec) -> PigConfig {
+  PigConfig(
+    ..config,
+    consumer_specs: list.append(config.consumer_specs, [spec]),
+  )
+}
+
+/// Replace the list of consumer specifications.
+///
+/// Overwrites any previously registered consumers (including those added
+/// by `with_session_writer` / `with_terminal_output` / `add_consumer`).
+/// Pass an empty list to clear all consumers.
+pub fn with_consumer_specs(
+  config: PigConfig,
+  specs: List(ConsumerSpec),
+) -> PigConfig {
+  PigConfig(..config, consumer_specs: specs)
+}
+
 /// Seed the conversation with initial messages.
 ///
 /// Messages are appended to the agent's history after session replay
