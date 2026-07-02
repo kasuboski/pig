@@ -184,7 +184,10 @@ pub fn with_terminal_output(config: PigConfig) -> PigConfig {
 /// events (token usage, tool calls, inference timing) without pig ever
 /// depending on them.
 pub fn add_consumer(config: PigConfig, spec: ConsumerSpec) -> PigConfig {
-  PigConfig(..config, consumer_specs: [spec, ..config.consumer_specs])
+  PigConfig(
+    ..config,
+    consumer_specs: list.append(config.consumer_specs, [spec]),
+  )
 }
 
 /// Replace the list of consumer specifications.
