@@ -29,6 +29,7 @@ The agent loop handles tool calls automatically — define a tool and it will be
 ```gleam
 import gleam/dynamic/decode
 import gleam/json
+import jscheam/schema
 import pig/ai/tool_definition
 import pig/tool
 
