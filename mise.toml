@@ -25,3 +25,8 @@ run = "for dir in packages/*/; do echo \"→ Testing $dir\" && (cd \"$dir\" && g
 description = "Run integration tests against an OpenAI-compatible provider"
 run = "cd packages/pig && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
+
+[tasks.test-integration-protocol]
+description = "Run pig_protocol integration tests (chat + codex responses) against an OpenAI-compatible provider"
+run = "cd packages/pig_protocol && gleam test"
+env = { PIG_RUN_INTEGRATION = "1" }
