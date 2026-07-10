@@ -1,3 +1,11 @@
+//// The provider abstraction and metadata setters used by `pig` and its
+//// generated consumers.
+////
+//// A `Provider` is just a function from messages + tools to an
+//// `InferenceResult`. Concrete providers (Chat Completions, Codex
+//// Responses, etc.) live behind constructors that hide their transport
+//// details. `pig/openai` provides the standard OpenAI-shaped one.
+
 import pig_protocol/error.{type AiError}
 import pig_protocol/inference
 import pig_protocol/message.{type Message}

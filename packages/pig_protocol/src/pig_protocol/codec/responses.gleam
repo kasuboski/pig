@@ -1,3 +1,9 @@
+//// Codec for the OpenAI Responses API (`/v1/responses`) and the
+//// equivalent ChatGPT Codex route (`/codex/responses`).
+////
+//// Pure JSON in, structured Gleam out. No IO. Composed by callers
+//// with `pig_protocol/auth`, `pig_protocol/transport`, and `pig_protocol/sse`.
+
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -134,12 +140,13 @@ fn tool_call_to_json(tc: ToolCall) -> json.Json {
 }
 
 fn tool_to_json(td: ToolDefinition) -> json.Json {
+  // The Responses API treats `strict` as optional and defaults to false,
+  // so we omit it rather than send `false`/`null`.
   json.object([
     #("type", json.string("function")),
     #("name", json.string(td.name)),
     #("description", json.string(td.description)),
     #("parameters", schema.to_json(td.parameters)),
-    #("strict", json.null()),
   ])
 }
 

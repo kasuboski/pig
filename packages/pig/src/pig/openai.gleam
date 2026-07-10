@@ -55,16 +55,12 @@ pub fn provider_with_base_url_and_timeout(
   base_url: String,
   http_timeout_ms: Int,
 ) -> OpenAIProvider {
-  let config = OpenAIConfig(api_key:, model:, base_url:, http_timeout_ms:)
-  OpenAIProvider(
-    config:,
-    call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
-      InferenceResult,
-      AiError,
-    ) {
-      do_inference(config, messages, tools)
-    },
-  )
+  build_provider(OpenAIConfig(
+    api_key: api_key,
+    model: model,
+    base_url: base_url,
+    http_timeout_ms: http_timeout_ms,
+  ))
 }
 
 /// Set the HTTP timeout in milliseconds on an OpenAI provider.
@@ -72,9 +68,17 @@ pub fn with_http_timeout(
   provider: OpenAIProvider,
   timeout_ms: Int,
 ) -> OpenAIProvider {
-  let config = OpenAIConfig(..provider.config, http_timeout_ms: timeout_ms)
+  build_provider(OpenAIConfig(
+    ..provider.config,
+    http_timeout_ms: timeout_ms,
+  ))
+}
+
+/// Wrap an `OpenAIConfig` in an `OpenAIProvider` whose `call` closure
+/// invokes `do_inference` with that config.
+fn build_provider(config: OpenAIConfig) -> OpenAIProvider {
   OpenAIProvider(
-    config:,
+    config: config,
     call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
       InferenceResult,
       AiError,

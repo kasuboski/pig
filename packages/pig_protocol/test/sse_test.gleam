@@ -93,6 +93,11 @@ pub fn parse_responses_event_error_test() {
 }
 
 pub fn parse_responses_event_unknown_returns_other_test() {
-  let event = sse.parse_responses_event("{\"type\": \"response.created\"}")
+  // Use a type that the parser doesn't recognize (note: `response.created`
+  // and `response.completed` *are* recognized — see `responses_event_decoder`).
+  let event =
+    sse.parse_responses_event(
+      "{\"type\": \"response.audio.delta\", \"delta\": \"x\"}",
+    )
   assert event == sse.OtherResponseEvent
 }

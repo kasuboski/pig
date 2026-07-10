@@ -1,3 +1,13 @@
+//// Parsers for OpenAI Server-Sent Events (SSE) streams.
+////
+//// Handles two streams:
+////   - Chat Completions: `parse_chat_line` decodes per-token deltas.
+////   - Responses API (Codex): `parse_responses_event` decodes typed events
+////     keyed off the event's `type` field.
+////
+//// Pure — no IO. The transport layer (`pig_protocol/transport/httpc`)
+//// is responsible for delivering the raw bytes.
+
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -170,11 +180,23 @@ fn completed_response_decoder() -> decode.Decoder(InferenceMetadata) {
   use id <- decode.subfield(["response", "id"], decode.string)
   use model <- decode.subfield(["response", "model"], decode.string)
   use status <- decode.subfield(["response", "status"], decode.string)
+  // `incomplete_details` is only meaningful when the response was cut short,
+  // but some providers include it on completed responses too. We read it
+  // optionally and let it override the status-based stop reason when present.
+  use incomplete_reason <- decode.optional_field(
+    "incomplete_details",
+    None,
+    decode.optional(decode.at(["reason"], decode.string)),
+  )
   use usage <- decode.subfield(
     ["response", "usage"],
     decode.optional(usage_decoder()),
   )
-  let stop = stop_reason.from_responses_status(status)
+  let stop = case incomplete_reason {
+    Some("content_filter") -> stop_reason.Error
+    Some("max_output_tokens") -> stop_reason.Length
+    _ -> stop_reason.from_responses_status(status)
+  }
   decode.success(
     inference.InferenceMetadata(
       response_id: Some(id),
