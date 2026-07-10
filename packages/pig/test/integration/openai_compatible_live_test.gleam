@@ -14,11 +14,11 @@ import gleeunit
 import integration/config
 import integration/gate
 import jscheam/schema
-import pig/ai/error.{type AiError}
-import pig/ai/message
-import pig/ai/openai
-import pig/ai/provider.{InferenceResult}
-import pig/ai/tool_definition
+import pig_protocol/error.{type AiError}
+import pig_protocol/message
+import pig/openai
+import pig_protocol/inference.{InferenceResult}
+import pig_protocol/tool_definition
 import pig/tool
 
 pub fn main() -> Nil {

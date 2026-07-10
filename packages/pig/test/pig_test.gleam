@@ -9,7 +9,7 @@ import gleam/string
 import gleeunit
 import pig
 import pig/agent/state
-import pig/ai/message
+import pig_protocol/message
 import pig/skill
 import support/harness
 

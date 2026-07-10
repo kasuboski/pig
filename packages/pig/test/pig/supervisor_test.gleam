@@ -9,7 +9,7 @@ import gleam/option.{None}
 import gleeunit
 import pig
 import pig/agent/state
-import pig/ai/message
+import pig_protocol/message
 import pig/obs/consumer_spec
 import pig/obs/session
 import pig/obs/terminal

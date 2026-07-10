@@ -8,8 +8,8 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
 import gleeunit
-import pig/ai/error
-import pig/ai/message
+import pig_protocol/error
+import pig_protocol/message
 import pig/hooks
 
 pub fn main() -> Nil {

@@ -1,7 +1,7 @@
 import gleeunit
 import jscheam/schema
 import pig
-import pig/ai/tool_definition
+import pig_protocol/tool_definition
 import pig/tool
 
 pub fn main() {

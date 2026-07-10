@@ -8,7 +8,7 @@ import gleam/dynamic
 import gleam/json
 import gleeunit
 import jscheam/schema
-import pig/ai/tool_definition
+import pig_protocol/tool_definition
 import pig/tool
 
 pub fn main() -> Nil {

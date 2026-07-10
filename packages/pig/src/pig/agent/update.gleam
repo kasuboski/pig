@@ -12,8 +12,8 @@ import pig/agent/effect
 import pig/agent/msg.{type AgentMsg}
 import pig/agent/state.{type AgentState}
 import pig/agent/step_result.{type StepResult}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
 import pig/tool.{type ToolError}
 
 /// Pure state transition: given current state and a message, return

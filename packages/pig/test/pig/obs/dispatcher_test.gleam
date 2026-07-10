@@ -1,9 +1,9 @@
 import gleam/erlang/process
 import gleam/option.{Some}
 import gleeunit
-import pig/ai/error.{ApiError}
-import pig/ai/message.{ToolCall, User}
-import pig/ai/stop_reason
+import pig_protocol/error.{ApiError}
+import pig_protocol/message.{ToolCall, User}
+import pig_protocol/stop_reason
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,

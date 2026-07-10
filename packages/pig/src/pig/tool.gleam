@@ -8,7 +8,7 @@ import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/json.{type Json}
 import gleam/list
-import pig/ai/tool_definition.{type ToolDefinition}
+import pig_protocol/tool_definition.{type ToolDefinition}
 
 /// Structured error from tool execution.
 pub type ToolError {

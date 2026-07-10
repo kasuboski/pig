@@ -25,7 +25,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import jscheam/schema
-import pig/ai/tool_definition
+import pig_protocol/tool_definition
 import pig/tool
 import pig/workspace/kv
 import pig/workspace/vfs

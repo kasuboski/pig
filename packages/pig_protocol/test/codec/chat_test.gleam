@@ -6,11 +6,11 @@ import gleam/result
 import gleam/string
 import gleeunit
 import jscheam/schema
-import pig/ai/error
-import pig/ai/message
-import pig/ai/openai
-import pig/ai/stop_reason
-import pig/ai/tool_definition
+import pig_protocol/error
+import pig_protocol/message
+import pig_protocol/codec/chat as chat
+import pig_protocol/stop_reason
+import pig_protocol/tool_definition
 import simplifile
 
 pub fn main() -> Nil {
@@ -74,7 +74,7 @@ fn decode_tool_names(body: String) -> Result(List(String), Nil) {
 
 pub fn parse_text_response_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert message.Assistant(
     content: "The answer is 4.",
     tool_calls: [],
@@ -91,7 +91,7 @@ pub fn parse_text_response_test() {
 
 pub fn parse_tool_call_response_test() {
   let raw = read_golden("./test_data/providers/openai_tool_call_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [tc],
@@ -113,7 +113,7 @@ pub fn parse_tool_call_response_test() {
 pub fn parse_multi_tool_call_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_multi_tool_call_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [tc1, tc2, tc3],
@@ -138,7 +138,7 @@ pub fn parse_multi_tool_call_response_test() {
 pub fn parse_null_content_response_test() {
   let raw =
     read_golden("./test_data/providers/openai_null_content_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert message.Assistant(
     content: "",
     tool_calls: [],
@@ -157,25 +157,25 @@ pub fn parse_null_content_response_test() {
 
 pub fn parse_response_captures_response_id_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert Some("chatcmpl-abc123") = result.metadata.response_id
 }
 
 pub fn parse_response_captures_response_model_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert Some("gpt-4o") = result.metadata.response_model
 }
 
 pub fn parse_response_captures_stop_reason_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert Some(stop_reason.Stop) = result.metadata.stop_reason
 }
 
 pub fn parse_response_captures_token_usage_test() {
   let raw = read_golden("./test_data/providers/openai_text_response.json")
-  let assert Ok(result) = openai.parse_response(raw)
+  let assert Ok(result) = chat.parse_response(raw)
   let assert Some(25) = result.metadata.input_tokens
   let assert Some(6) = result.metadata.output_tokens
 }
@@ -183,20 +183,20 @@ pub fn parse_response_captures_token_usage_test() {
 // === parse_response error cases (inline) ===
 
 pub fn parse_malformed_json_returns_invalid_response_test() {
-  let result = openai.parse_response("not json at all")
+  let result = chat.parse_response("not json at all")
   let assert Error(error.InvalidResponse(detail:)) = result
   assert string.contains(detail, "JSON")
 }
 
 pub fn parse_missing_choices_returns_invalid_response_test() {
   let result =
-    openai.parse_response("{\"id\":\"x\",\"object\":\"chat.completion\"}")
+    chat.parse_response("{\"id\":\"x\",\"object\":\"chat.completion\"}")
   let assert Error(error.InvalidResponse(detail:)) = result
   assert string.contains(detail, "choices")
 }
 
 pub fn parse_empty_choices_returns_invalid_response_test() {
-  let result = openai.parse_response("{\"choices\":[]}")
+  let result = chat.parse_response("{\"choices\":[]}")
   let assert Error(error.InvalidResponse(detail: _)) = result
 }
 
@@ -207,7 +207,7 @@ pub fn build_request_body_simple_messages_test() {
     message.System("you are helpful"),
     message.User("hello"),
   ]
-  let body = openai.build_request_body(messages, [], "gpt-4o")
+  let body = chat.build_request_body(messages, [], "gpt-4o")
 
   let model_dec = {
     use m <- decode.field("model", decode.string)
@@ -240,7 +240,7 @@ pub fn build_request_body_with_tools_test() {
       ]),
     ),
   ]
-  let body = openai.build_request_body(messages, tools, "gpt-4o")
+  let body = chat.build_request_body(messages, tools, "gpt-4o")
 
   let assert Ok(names) = decode_tool_names(body)
   assert names == ["calculator"]
@@ -258,7 +258,7 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
     message.Assistant("", [tc], None, None),
     message.Tool(tool_call_id: "call_123", content: "4"),
   ]
-  let body = openai.build_request_body(messages, [], "gpt-4o")
+  let body = chat.build_request_body(messages, [], "gpt-4o")
 
   // No top-level "tools" — tool calls are in the messages array
   let assert True =
@@ -270,7 +270,7 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
 
 pub fn build_request_body_no_tools_field_when_empty_test() {
   let messages = [message.User("hello")]
-  let body = openai.build_request_body(messages, [], "gpt-4o")
+  let body = chat.build_request_body(messages, [], "gpt-4o")
 
   assert body_has_key(body, "tools") == False
 }
@@ -284,7 +284,7 @@ pub fn build_request_body_tool_parameters_injected_as_json_test() {
       parameters: schema.object([]),
     ),
   ]
-  let body = openai.build_request_body(messages, tools, "gpt-4o")
+  let body = chat.build_request_body(messages, tools, "gpt-4o")
 
   // Decode parameters as a dict — proves it's a JSON object, not a string
   let decoder = {
@@ -299,27 +299,4 @@ pub fn build_request_body_tool_parameters_injected_as_json_test() {
     decode.success(True)
   }
   let assert True = json.parse(from: body, using: decoder) == Ok(True)
-}
-
-// === provider construction tests ===
-
-pub fn provider_with_default_base_url_test() {
-  let openai.OpenAIProvider(config:, call: _) =
-    openai.provider("sk-test", "gpt-4o")
-  let assert True =
-    config.base_url == "https://api.openai.com/v1"
-    && config.api_key == "sk-test"
-    && config.model == "gpt-4o"
-}
-
-pub fn provider_with_custom_base_url_test() {
-  let openai.OpenAIProvider(config:, call: _) =
-    openai.provider_with_base_url(
-      "key",
-      "qwen3:0.6b",
-      "http://localhost:11434/v1",
-    )
-  let assert True =
-    config.base_url == "http://localhost:11434/v1"
-    && config.model == "qwen3:0.6b"
 }

@@ -34,9 +34,9 @@ import gleam/io
 import gleam/result
 import gleam/string
 import pig
-import pig/ai/error
-import pig/ai/message
-import pig/ai/openai
+import pig_protocol/error
+import pig_protocol/message
+import pig/openai
 import pig/workspace
 import pig/workspace/tools
 import simplifile

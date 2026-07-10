@@ -1,5 +1,5 @@
 import gleam/option.{type Option}
-import pig/ai/stop_reason.{type StopReason}
+import pig_protocol/stop_reason.{type StopReason}
 
 /// A tool call requested by the assistant.
 pub type ToolCall {

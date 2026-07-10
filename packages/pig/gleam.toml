@@ -9,6 +9,7 @@ links = [{ title = "GitHub", href = "https://github.com/kasuboski/pig" }]
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 telemetry = ">= 1.4.1 and < 2.0.0"
+pig_protocol = { path = "../pig_protocol" }
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
 logging = ">= 1.5.0 and < 2.0.0"

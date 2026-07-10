@@ -12,10 +12,10 @@ import gleam/int
 import gleam/json
 import gleam/list
 import jscheam/schema
-import pig/ai/error
-import pig/ai/message
-import pig/ai/provider
-import pig/ai/tool_definition
+import pig_protocol/error
+import pig_protocol/message
+import pig/provider
+import pig_protocol/tool_definition
 import pig/tool
 
 // ── Public: test tools ───────────────────────────────────────────

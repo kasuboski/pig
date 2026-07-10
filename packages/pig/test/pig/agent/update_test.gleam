@@ -19,10 +19,10 @@ import pig/agent/msg
 import pig/agent/state
 import pig/agent/step_result
 import pig/agent/update
-import pig/ai/error
-import pig/ai/message
-import pig/ai/provider
-import pig/ai/tool_definition
+import pig_protocol/error
+import pig_protocol/message
+import pig/provider
+import pig_protocol/tool_definition
 import pig/tool
 
 pub fn main() -> Nil {

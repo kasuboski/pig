@@ -9,8 +9,8 @@
 //// Composition functions run handlers in order with per-event semantics.
 
 import gleam/list
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
 
 // ── Event Types ─────────────────────────────────────────────────────
 

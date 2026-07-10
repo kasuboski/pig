@@ -1,5 +1,5 @@
 import gleeunit
-import pig/ai/stop_reason
+import pig_protocol/stop_reason
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -121,4 +121,37 @@ pub fn from_openai_to_string_round_trip_test() {
       stop_reason.to_string(stop_reason.from_openai("length")),
     )
     == stop_reason.Length
+}
+
+// ── from_responses_status mapping ─────────────────────────────────
+
+pub fn from_responses_status_completed_test() {
+  assert stop_reason.from_responses_status("completed") == stop_reason.Stop
+}
+
+pub fn from_responses_status_incomplete_test() {
+  assert stop_reason.from_responses_status("incomplete") == stop_reason.Length
+}
+
+pub fn from_responses_status_failed_test() {
+  assert stop_reason.from_responses_status("failed") == stop_reason.Error
+}
+
+pub fn from_responses_status_cancelled_test() {
+  assert stop_reason.from_responses_status("cancelled") == stop_reason.Error
+}
+
+pub fn from_responses_status_queued_test() {
+  assert stop_reason.from_responses_status("queued")
+    == stop_reason.Unknown("queued")
+}
+
+pub fn from_responses_status_in_progress_test() {
+  assert stop_reason.from_responses_status("in_progress")
+    == stop_reason.Unknown("in_progress")
+}
+
+pub fn from_responses_status_arbitrary_unknown_test() {
+  assert stop_reason.from_responses_status("server_overloaded_504")
+    == stop_reason.Unknown("server_overloaded_504")
 }
