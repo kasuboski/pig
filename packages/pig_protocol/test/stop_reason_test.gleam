@@ -1,5 +1,5 @@
 import gleeunit
-import pig/ai/stop_reason
+import pig_protocol/stop_reason
 
 pub fn main() -> Nil {
   gleeunit.main()

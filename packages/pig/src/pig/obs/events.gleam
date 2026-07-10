@@ -11,9 +11,9 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message, type ToolCall}
-import pig/ai/stop_reason.{type StopReason}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message, type ToolCall}
+import pig_protocol/stop_reason.{type StopReason}
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
 

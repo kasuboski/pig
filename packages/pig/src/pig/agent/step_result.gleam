@@ -10,8 +10,8 @@
 
 import pig/agent/effect.{type Effect}
 import pig/agent/state.{type AgentState}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
 
 /// Result of a single state transition in the agent loop.
 pub type StepResult(msg) {

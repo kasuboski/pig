@@ -3,8 +3,8 @@ import gleam/dynamic/decode
 import gleam/json
 import gleeunit
 import jscheam/schema
-import pig/ai/message
-import pig/ai/tool_definition
+import pig_protocol/message
+import pig_protocol/tool_definition
 import pig/tool
 import pig/tool/execution
 

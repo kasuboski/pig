@@ -16,11 +16,11 @@ import gleeunit
 import jscheam/schema
 import pig/agent/runtime
 import pig/agent/state
-import pig/ai/error
-import pig/ai/message
-import pig/ai/provider
-import pig/ai/stop_reason
-import pig/ai/tool_definition
+import pig_protocol/error
+import pig_protocol/message
+import pig/provider
+import pig_protocol/stop_reason
+import pig_protocol/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/events

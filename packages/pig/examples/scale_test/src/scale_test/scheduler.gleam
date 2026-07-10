@@ -10,8 +10,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import pig
-import pig/ai/message
-import pig/ai/openai
+import pig_protocol/message
+import pig/openai
 import scale_test/grid.{
   type Grid, type Organism, type OrganismType, type Position, Herbivore, Plant,
   Predator, get, wrap_position,

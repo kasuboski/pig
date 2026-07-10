@@ -15,7 +15,7 @@ import gleam/result
 import gleam/string
 import jscheam/schema
 import logging
-import pig/ai/tool_definition
+import pig_protocol/tool_definition
 import pig/tool
 
 /// Create a `web_fetch` tool.

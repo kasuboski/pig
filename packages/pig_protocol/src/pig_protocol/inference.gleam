@@ -1,8 +1,6 @@
 import gleam/option.{type Option, None}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
-import pig/ai/stop_reason.{type StopReason}
-import pig/ai/tool_definition.{type ToolDefinition}
+import pig_protocol/message.{type Message}
+import pig_protocol/stop_reason.{type StopReason}
 
 /// Metadata returned by the provider alongside the message.
 pub type InferenceMetadata {
@@ -19,11 +17,6 @@ pub type InferenceMetadata {
 pub type InferenceResult {
   InferenceResult(message: Message, metadata: InferenceMetadata)
 }
-
-/// A provider is a function that takes messages and tool definitions,
-/// calls an LLM, and returns either an inference result or an error.
-pub type Provider =
-  fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)
 
 /// Create an InferenceMetadata with all fields set to None.
 pub fn default_metadata() -> InferenceMetadata {

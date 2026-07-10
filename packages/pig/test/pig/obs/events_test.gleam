@@ -3,7 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
-import pig/ai/stop_reason
+import pig_protocol/stop_reason
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}

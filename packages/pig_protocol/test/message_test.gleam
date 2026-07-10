@@ -6,7 +6,7 @@
 
 import gleam/option.{None}
 import gleeunit
-import pig/ai/message
+import pig_protocol/message
 
 pub fn main() -> Nil {
   gleeunit.main()

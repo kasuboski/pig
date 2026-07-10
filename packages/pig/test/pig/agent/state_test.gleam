@@ -8,8 +8,8 @@ import gleam/list
 import gleam/option.{None}
 import gleeunit
 import pig/agent/state
-import pig/ai/message
-import pig/ai/provider
+import pig_protocol/message
+import pig/provider
 import pig/tool
 import support/harness
 

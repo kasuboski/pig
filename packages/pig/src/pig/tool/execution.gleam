@@ -6,7 +6,7 @@
 
 import gleam/dynamic/decode
 import gleam/json
-import pig/ai/message.{type ToolCall}
+import pig_protocol/message.{type ToolCall}
 import pig/tool.{type ToolError, type ToolRegistry}
 
 /// Execute a tool call against the registry.

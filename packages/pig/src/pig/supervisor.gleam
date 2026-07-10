@@ -10,8 +10,8 @@ import gleam/otp/actor as otp_actor
 import gleam/otp/static_supervisor
 import pig/agent/runtime
 import pig/agent/state
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
 import pig/obs/consumer_spec
 import pig/obs/dispatcher
 

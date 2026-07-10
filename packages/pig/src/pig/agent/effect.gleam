@@ -12,10 +12,10 @@
 //// how the effects were executed.
 
 import gleam/json.{type Json}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message, type ToolCall}
-import pig/ai/provider.{type InferenceResult}
-import pig/ai/tool_definition.{type ToolDefinition}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message, type ToolCall}
+import pig/provider.{type InferenceResult}
+import pig_protocol/tool_definition.{type ToolDefinition}
 import pig/tool.{type ToolError}
 
 /// An effect request from the pure core. The runtime interprets these.

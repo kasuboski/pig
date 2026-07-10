@@ -14,9 +14,9 @@ import gleam/string
 import logging
 import pig/agent/runtime
 import pig/agent/state
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
-import pig/ai/provider.{type Provider, from_message}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
+import pig/provider.{type Provider, from_message}
 import pig/hooks.{type Hooks}
 import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher

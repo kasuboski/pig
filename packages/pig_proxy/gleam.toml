@@ -8,6 +8,7 @@ repository = { type = "github", user = "kasuboski", repo = "pig" }
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 pig = { path = "../pig" }
+pig_protocol = { path = "../pig_protocol" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

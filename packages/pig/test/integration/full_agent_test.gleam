@@ -16,10 +16,10 @@ import integration/config
 import integration/gate
 import jscheam/schema
 import pig
-import pig/ai/message
-import pig/ai/openai
-import pig/ai/provider.{type Provider}
-import pig/ai/tool_definition
+import pig_protocol/message
+import pig/openai
+import pig/provider.{type Provider}
+import pig_protocol/tool_definition
 import pig/obs/events
 import pig/obs/listener
 import pig/tool

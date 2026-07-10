@@ -8,8 +8,8 @@
 ////   - `ToolResults`       — tool execution outcomes
 
 import gleam/json.{type Json}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message, type ToolCall}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message, type ToolCall}
 import pig/tool.{type ToolError}
 
 /// Messages that drive the agent state machine.

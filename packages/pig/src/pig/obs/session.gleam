@@ -13,14 +13,14 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
 import gleam/string
-import pig/ai/error.{
+import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
-import pig/ai/message.{
+import pig_protocol/message.{
   type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
   ToolCall, User,
 }
-import pig/ai/stop_reason
+import pig_protocol/stop_reason
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
   AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,

@@ -9,10 +9,10 @@ import gleam/io
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
-import pig/ai/error.{
+import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
-import pig/ai/stop_reason
+import pig_protocol/stop_reason
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
   Interrupted, MaxIterationsExceeded, NormalEnd,

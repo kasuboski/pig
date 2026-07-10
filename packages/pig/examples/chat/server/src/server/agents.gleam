@@ -2,7 +2,7 @@ import envoy
 import gleam/list
 import gleam/result
 import pig
-import pig/ai/openai
+import pig/openai
 import shared
 
 pub type AgentPersona {

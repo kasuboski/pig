@@ -10,7 +10,7 @@ import gleam/json
 import gleam/list
 import gleam/string
 import jscheam/schema
-import pig/ai/tool_definition
+import pig_protocol/tool_definition
 import pig/skill
 import pig/tool
 import simplifile

@@ -7,7 +7,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import gleeunit
-import pig/ai/message.{Assistant, Tool, ToolCall, User}
+import pig_protocol/message.{Assistant, Tool, ToolCall, User}
 import pig/obs/events.{
   InferenceCompleted, InferenceStarted, ToolBlocked, ToolExecuted,
 }

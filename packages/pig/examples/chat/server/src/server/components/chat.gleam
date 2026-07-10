@@ -3,7 +3,7 @@ import gleam/result
 import lustre/effect
 import omnimessage/server as omniserver
 import pig
-import pig/ai/message
+import pig_protocol/message
 import server/context.{type Context}
 import shared.{type ClientMessage, type ServerMessage}
 

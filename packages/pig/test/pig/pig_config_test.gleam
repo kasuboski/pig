@@ -6,8 +6,8 @@ import gleam/otp/supervision
 import gleam/string
 import gleeunit
 import pig
-import pig/ai/message
-import pig/ai/provider
+import pig_protocol/message
+import pig/provider
 import pig/hooks
 import pig/obs/consumer_spec
 import pig/obs/events.{type SessionEvent}

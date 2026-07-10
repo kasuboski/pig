@@ -44,6 +44,19 @@ pub fn from_openai(raw: String) -> StopReason {
   }
 }
 
+/// Map an OpenAI Responses API status string to a StopReason.
+pub fn from_responses_status(raw: String) -> StopReason {
+  case raw {
+    "completed" -> Stop
+    "incomplete" -> Length
+    "failed" -> Error
+    "cancelled" -> Error
+    "queued" -> Unknown("queued")
+    "in_progress" -> Unknown("in_progress")
+    other -> Unknown(other)
+  }
+}
+
 // ── String Conversion ───────────────────────────────────────────────
 
 /// Convert a StopReason to its canonical string representation.

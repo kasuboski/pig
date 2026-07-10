@@ -11,10 +11,10 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message}
-import pig/ai/provider.{type Provider}
-import pig/ai/tool_definition.{type ToolDefinition}
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
+import pig/provider.{type Provider}
+import pig_protocol/tool_definition.{type ToolDefinition}
 import pig/tool.{type ToolRegistry}
 
 /// Configuration for creating an agent. Immutable once constructed.

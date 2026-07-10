@@ -23,11 +23,11 @@ import pig/agent/msg
 import pig/agent/state
 import pig/agent/step_result
 import pig/agent/update
-import pig/ai/error.{type AiError}
-import pig/ai/message.{type Message, type ToolCall}
-import pig/ai/provider
-import pig/ai/stop_reason
-import pig/ai/tool_definition
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message, type ToolCall}
+import pig/provider
+import pig_protocol/stop_reason
+import pig_protocol/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
