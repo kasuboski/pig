@@ -65,9 +65,27 @@ let my_tool = tool.Tool(
 
 `pig` is designed to run within an OTP supervision tree. It separates the model-specific logic from the execution loop, allowing users to swap providers or adjust persistence strategies without changing the core agent definitions. Since the state is immutable, conversation history can be branched or replayed for debugging and testing.
 
+## Repository Structure
+
+This is a monorepo containing multiple packages under `packages/`:
+
+| Package | Description |
+|---|---|
+| `packages/pig` | The core agent orchestrator library (with `examples/` inside) |
+| `packages/pig_protocol` | Shared codecs and message types (planned) |
+| `packages/pig_proxy` | Standalone executable proxy server (planned) |
+
 ## Development
 
 ```sh
-gleam run   # Run the project
-gleam test  # Run the tests
+mise run build   # Build all packages and self-contained examples
+mise run test    # Run unit tests for all packages
+```
+
+To work on a single package:
+
+```sh
+cd packages/pig
+gleam build   # Build the package
+gleam test    # Run the tests
 ```

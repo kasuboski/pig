@@ -4,20 +4,24 @@ erlang = "latest"
 rebar = "latest"
 
 [tasks.build]
-description = "Build the library and all examples"
+description = "Build all packages and self-contained examples"
 run = [
-  "gleam build --warnings-as-errors",
-  "for dir in examples/*/; do echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; done",
+  "for dir in packages/*/; do echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; done",
+  "for dir in packages/*/examples/*/ packages/*/examples/*/*/; do if [ -f \"$dir/gleam.toml\" ]; then if grep -q 'knowledge/repos/' \"$dir/gleam.toml\" && [ ! -d knowledge/repos ]; then echo \"→ Skipping $dir (missing knowledge/repos dependencies)\"; else echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; fi; fi; done",
 ]
 
 [tasks.check]
-description = "Check the library and all examples compile without warnings"
+description = "Check all packages and self-contained examples compile without warnings"
 run = [
-  "gleam check",
-  "for dir in examples/*/; do echo '→ Checking '$dir && (cd \"$dir\" && gleam check) || exit $?; done",
+  "for dir in packages/*/; do echo \"→ Checking $dir\" && (cd \"$dir\" && gleam check) || exit $?; done",
+  "for dir in packages/*/examples/*/ packages/*/examples/*/*/; do if [ -f \"$dir/gleam.toml\" ]; then if grep -q 'knowledge/repos/' \"$dir/gleam.toml\" && [ ! -d knowledge/repos ]; then echo \"→ Skipping $dir (missing knowledge/repos dependencies)\"; else echo \"→ Checking $dir\" && (cd \"$dir\" && gleam check) || exit $?; fi; fi; done",
 ]
+
+[tasks.test]
+description = "Run unit tests for all packages"
+run = "for dir in packages/*/; do echo \"→ Testing $dir\" && (cd \"$dir\" && gleam test) || exit $?; done"
 
 [tasks.test-integration]
 description = "Run integration tests against an OpenAI-compatible provider"
-run = "gleam test"
+run = "cd packages/pig && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
