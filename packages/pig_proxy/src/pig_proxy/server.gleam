@@ -17,6 +17,7 @@ import gleam/http/response
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import logging
 import mist
 import pig_proxy/config.{type ProxyConfig, type UpstreamTarget}
@@ -50,7 +51,9 @@ pub type ServerState {
 }
 
 /// Start the proxy server with the given state.
-/// Blocks forever after mist starts.
+/// Returns after mist starts and logs the listening address.
+/// The caller is responsible for keeping the process alive (e.g. via
+/// `process.sleep_forever()` in `main`).
 pub fn start(state: ServerState) -> Nil {
   logging.configure()
   hackney.ensure_started()
@@ -169,7 +172,9 @@ fn forward_with_retry(
 
   case should_retry(resp, attempt, config.max_retries) {
     True -> {
-      let delay = retry.backoff_delay(attempt, retry_base_ms, retry_max_ms)
+      let retry_after = extract_retry_after(resp)
+      let delay =
+        retry.retry_delay(attempt, retry_base_ms, retry_max_ms, retry_after)
       logging.log(
         logging.Debug,
         "proxy: retrying attempt " <> int.to_string(attempt + 1) <> " after "
@@ -196,6 +201,23 @@ fn should_retry(
         hackney.OkResponse(status:, ..) -> retry.is_retryable_status(status)
         hackney.ErrorResponse(..) -> True
       }
+  }
+}
+
+/// Extract the Retry-After header value from a hackney response, if present.
+/// HTTP headers are case-insensitive, so we compare lowercased.
+fn extract_retry_after(
+  resp: hackney.HackneyResponse,
+) -> Option(String) {
+  case resp {
+    hackney.OkResponse(headers:, ..) ->
+      case list.find(headers, fn(h) {
+        string.lowercase(h.0) == "retry-after"
+      }) {
+        Ok(#(_, value)) -> Some(value)
+        Error(_) -> None
+      }
+    hackney.ErrorResponse(..) -> None
   }
 }
 

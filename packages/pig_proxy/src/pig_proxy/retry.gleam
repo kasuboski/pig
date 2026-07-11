@@ -6,6 +6,7 @@
 //// to wait between attempts.
 
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
@@ -16,7 +17,7 @@ fn retryable_statuses() -> List(Int) {
 
 /// Whether an HTTP status code is transient and worth retrying.
 pub fn is_retryable_status(status: Int) -> Bool {
-  list_contains(retryable_statuses(), status)
+  list.contains(retryable_statuses(), status)
 }
 
 /// Integer power: base^exponent (exponent >= 0).
@@ -88,17 +89,5 @@ pub fn retry_delay(
         None -> backoff_delay(attempt, base_ms, max_ms)
       }
     None -> backoff_delay(attempt, base_ms, max_ms)
-  }
-}
-
-// ── Internal ────────────────────────────────────────────────────
-
-fn list_contains(list: List(Int), value: Int) -> Bool {
-  case list {
-    [] -> False
-    [head, ..rest] -> case head == value {
-      True -> True
-      False -> list_contains(rest, value)
-    }
   }
 }

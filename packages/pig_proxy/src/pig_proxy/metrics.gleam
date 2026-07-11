@@ -210,8 +210,8 @@ fn nth(list: List(a), index: Int) -> Result(a, Nil) {
   }
 }
 
-fn parse_int(dict: Dict(String, String), key: String) -> Int {
-  case dict.get(dict, key) {
+fn parse_int(values: Dict(String, String), key: String) -> Int {
+  case dict.get(values, key) {
     Ok(val) -> case int.parse(val) {
       Ok(n) -> n
       Error(_) -> 0

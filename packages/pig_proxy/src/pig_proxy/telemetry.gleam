@@ -14,6 +14,9 @@ import gleam/string
 
 // ── FFI Bindings ────────────────────────────────────────────────
 
+@external(erlang, "pig_proxy_telemetry_ffi", "ensure_started")
+pub fn ensure_started() -> Nil
+
 @external(erlang, "pig_proxy_telemetry_ffi", "execute")
 fn ffi_execute(
   name: List(String),

@@ -4,7 +4,14 @@
 %% Converts string-keyed maps to atom-keyed maps and string event
 %% name segments to atoms.
 
--export([execute/3, system_time/0, attach_forwarder/2, detach_forwarder/1]).
+-export([ensure_started/0, execute/3, system_time/0, attach_forwarder/2, detach_forwarder/1]).
+
+%% Ensure the telemetry application is running.
+ensure_started() ->
+    case application:ensure_all_started(telemetry) of
+        {ok, _} -> nil;
+        {error, _} -> nil
+    end.
 
 execute(NameStrs, Measurements, Metadata) ->
     NameAtoms = [binary_to_atom(S, utf8) || S <- NameStrs],
