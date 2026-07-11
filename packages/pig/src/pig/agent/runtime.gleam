@@ -23,17 +23,17 @@ import pig/agent/msg
 import pig/agent/state
 import pig/agent/step_result
 import pig/agent/update
-import pig_protocol/error.{type AiError}
-import pig_protocol/message.{type Message, type ToolCall}
-import pig/provider
-import pig_protocol/stop_reason
-import pig_protocol/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
+import pig/provider
 import pig/tool
 import pig/tool/execution
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message, type ToolCall}
+import pig_protocol/stop_reason
+import pig_protocol/tool_definition
 
 // ── Configuration ────────────────────────────────────────────────
 
@@ -157,6 +157,15 @@ pub fn try_run(
   timeout: Int,
 ) -> Result(Result(Message, AiError), Nil) {
   try_call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
+}
+
+/// Resume the agent loop from its current history and wait for a response.
+/// Returns `Error(Nil)` if the call times out or the runtime crashes.
+pub fn try_run_continue(
+  subject: process.Subject(RuntimeMsg),
+  timeout: Int,
+) -> Result(Result(Message, AiError), Nil) {
+  try_call(subject, timeout, fn(reply_to) { Continue(reply_to) })
 }
 
 @external(erlang, "pig_agent_try_call_ffi", "try_call")

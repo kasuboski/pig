@@ -16,16 +16,16 @@ import gleeunit
 import jscheam/schema
 import pig/agent/runtime
 import pig/agent/state
-import pig_protocol/error
-import pig_protocol/message
-import pig/provider
-import pig_protocol/stop_reason
-import pig_protocol/tool_definition
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/events
 import pig/obs/session as session_writer
+import pig/provider
 import pig/tool
+import pig_protocol/error
+import pig_protocol/message
+import pig_protocol/stop_reason
+import pig_protocol/tool_definition
 import simplifile
 import temporary
 
@@ -911,5 +911,34 @@ pub fn run_continue_length_stop_reason_recalls_provider_test() {
     ])
   let assert Ok(msg) = runtime.run_continue(subject, 5000)
   assert msg == final
+  process.send(disp, dispatcher.Stop)
+}
+
+/// try_run_continue preserves the runtime's successful response.
+pub fn try_run_continue_returns_message_test() {
+  let final = message.Assistant("continued", [], None, None)
+  let #(subject, disp) =
+    start_with_history(fixed_provider(final), [], [message.User("resume")])
+  let assert Ok(Ok(msg)) = runtime.try_run_continue(subject, 5000)
+  assert msg == final
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// try_run_continue returns Error(Nil) when a continuation times out.
+pub fn try_run_continue_timeout_returns_error_test() {
+  let blocked_provider = fn(_, _) {
+    process.sleep_forever()
+    panic as "blocked provider resumed"
+  }
+  let #(subject, disp) =
+    start_with_history(blocked_provider, [], [message.User("resume")])
+  let assert Ok(pid) = process.subject_owner(subject)
+
+  let assert Error(Nil) = runtime.try_run_continue(subject, 50)
+  assert process.is_alive(pid)
+
+  process.unlink(pid)
+  process.kill(pid)
   process.send(disp, dispatcher.Stop)
 }
