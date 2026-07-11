@@ -14,17 +14,17 @@ import gleam/string
 import logging
 import pig/agent/runtime
 import pig/agent/state
-import pig_protocol/error.{type AiError}
-import pig_protocol/message.{type Message}
-import pig/provider.{type Provider, from_message}
 import pig/hooks.{type Hooks}
 import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher
 import pig/obs/session
 import pig/obs/terminal
+import pig/provider.{type Provider, from_message}
 import pig/skill
 import pig/skill/librarian
 import pig/tool
+import pig_protocol/error.{type AiError}
+import pig_protocol/message.{type Message}
 
 /// Opaque configuration builder. Construct with `new`, customize with
 /// `with_*` functions, then `start` to spawn an agent actor.
@@ -364,6 +364,20 @@ pub fn run_continue_with_timeout(
   timeout_ms: Int,
 ) -> Result(Message, AiError) {
   runtime.run_continue(agent.subject, timeout_ms)
+}
+
+/// Resume the agent loop from its current history with an explicit timeout.
+///
+/// Returns `Error(Nil)` if the call times out or the agent crashes, instead of
+/// panicking. The inner result preserves the agent's response or `AiError`.
+///
+/// A timeout does not cancel in-flight provider or tool work, which may continue
+/// in the background.
+pub fn try_run_continue_with_timeout(
+  agent: Agent,
+  timeout_ms: Int,
+) -> Result(Result(Message, AiError), Nil) {
+  runtime.try_run_continue(agent.subject, timeout_ms)
 }
 
 /// Resume the agent loop with a 120-second default timeout.
