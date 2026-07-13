@@ -1,0 +1,54 @@
+{
+  "openai": {
+    "id": "openai",
+    "models": {
+      "openai/gpt-4o": {
+        "id": "openai/gpt-4o",
+        "cost": {
+          "input": 5,
+          "output": 15,
+          "cache_read": 2.5
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "tool_call": true,
+        "structured_output": true
+      },
+      "openai/gpt-4o-mini": {
+        "id": "openai/gpt-4o-mini",
+        "cost": {
+          "input": 0.15,
+          "output": 0.6
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "tool_call": true,
+        "structured_output": true
+      }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "models": {
+      "anthropic/claude-3-5-sonnet": {
+        "id": "anthropic/claude-3-5-sonnet",
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.3,
+          "cache_write": 3.75
+        },
+        "limit": {
+          "context": 200000,
+          "output": 8192
+        },
+        "tool_call": true,
+        "structured_output": false
+      }
+    }
+  }
+}

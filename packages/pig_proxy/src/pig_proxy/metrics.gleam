@@ -23,6 +23,8 @@ pub type MetricSnapshot {
     latency_p95_ms: Int,
     latency_p99_ms: Int,
     bytes_streamed: Int,
+    input_tokens: Int,
+    output_tokens: Int,
     last_status: Int,
   )
 }
@@ -50,6 +52,8 @@ type ModelMetrics {
     error_count: Int,
     latency_samples: List(Int),
     bytes_streamed: Int,
+    input_tokens: Int,
+    output_tokens: Int,
     last_status: Int,
   )
 }
@@ -79,6 +83,8 @@ fn fresh_model_metrics() -> ModelMetrics {
     error_count: 0,
     latency_samples: [],
     bytes_streamed: 0,
+    input_tokens: 0,
+    output_tokens: 0,
     last_status: 0,
   )
 }
@@ -113,12 +119,16 @@ fn process_event(
     ["pig_proxy", "request", "stop"] -> {
       let duration = parse_int(measurements, "duration_ms")
       let status = parse_int(measurements, "status")
+      let input_tokens = parse_int(metadata, "input_tokens")
+      let output_tokens = parse_int(metadata, "output_tokens")
       let updated = update_model(state.models, model, fn(m) {
         ModelMetrics(
           request_count: m.request_count + 1,
           error_count: m.error_count,
           latency_samples: cap_samples([duration, ..m.latency_samples]),
           bytes_streamed: m.bytes_streamed,
+          input_tokens: m.input_tokens + input_tokens,
+          output_tokens: m.output_tokens + output_tokens,
           last_status: status,
         )
       })
@@ -126,27 +136,31 @@ fn process_event(
     }
 
     ["pig_proxy", "request", "error"] -> {
-      let updated = update_model(state.models, model, fn(m) {
+      let updated = update_model(state.models, model, fn(model_metrics) {
         ModelMetrics(
-          request_count: m.request_count,
-          error_count: m.error_count + 1,
-          latency_samples: m.latency_samples,
-          bytes_streamed: m.bytes_streamed,
-          last_status: m.last_status,
+          request_count: model_metrics.request_count,
+          error_count: model_metrics.error_count + 1,
+          latency_samples: model_metrics.latency_samples,
+          bytes_streamed: model_metrics.bytes_streamed,
+          input_tokens: model_metrics.input_tokens,
+          output_tokens: model_metrics.output_tokens,
+          last_status: model_metrics.last_status,
         )
       })
       MetricsState(models: updated)
     }
 
     ["pig_proxy", "stream", "chunk"] -> {
-      let bytes = parse_int(measurements, "chunk_bytes")
-      let updated = update_model(state.models, model, fn(m) {
+      let chunk_bytes = parse_int(measurements, "chunk_bytes")
+      let updated = update_model(state.models, model, fn(model_metrics) {
         ModelMetrics(
-          request_count: m.request_count,
-          error_count: m.error_count,
-          latency_samples: m.latency_samples,
-          bytes_streamed: m.bytes_streamed + bytes,
-          last_status: m.last_status,
+          request_count: model_metrics.request_count,
+          error_count: model_metrics.error_count,
+          latency_samples: model_metrics.latency_samples,
+          bytes_streamed: model_metrics.bytes_streamed + chunk_bytes,
+          input_tokens: model_metrics.input_tokens,
+          output_tokens: model_metrics.output_tokens,
+          last_status: model_metrics.last_status,
         )
       })
       MetricsState(models: updated)
@@ -176,6 +190,8 @@ fn to_snapshot(m: ModelMetrics) -> MetricSnapshot {
     latency_p95_ms: percentile(m.latency_samples, 95),
     latency_p99_ms: percentile(m.latency_samples, 99),
     bytes_streamed: m.bytes_streamed,
+    input_tokens: m.input_tokens,
+    output_tokens: m.output_tokens,
     last_status: m.last_status,
   )
 }

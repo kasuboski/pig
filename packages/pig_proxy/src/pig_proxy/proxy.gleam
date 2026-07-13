@@ -15,7 +15,7 @@ import gleam/http/request
 import gleam/http/response
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import logging
 import mist
@@ -28,6 +28,12 @@ pub type ProxyMessage {
   Chunk(BitArray)
   StreamDone
   StreamError(String)
+}
+
+/// State held by the streaming chunked loop: accumulated token usage and
+/// the upstream relay PID so it can be killed if the client disconnects.
+type StreamState {
+  StreamState(usage: Usage, relay: process.Pid)
 }
 
 // ── Header scrubbing & injection ────────────────────────────────
@@ -139,6 +145,80 @@ pub fn extract_model(body: String) -> String {
   }
 }
 
+// ── Usage extraction ────────────────────────────────────────────
+
+/// Token usage extracted from a response body or SSE chunk.
+pub type Usage {
+  Usage(prompt: Option(Int), completion: Option(Int))
+}
+
+fn usage_fields_decoder() -> decode.Decoder(Usage) {
+  use prompt <- decode.optional_field("prompt_tokens", None, decode.optional(decode.int))
+  use completion <- decode.optional_field("completion_tokens", None, decode.optional(decode.int))
+  decode.success(Usage(prompt:, completion:))
+}
+
+fn usage_decoder() -> decode.Decoder(Usage) {
+  use usage <- decode.field("usage", usage_fields_decoder())
+  decode.success(usage)
+}
+
+/// Parse token usage from a non-streaming JSON response body.
+pub fn parse_usage(body: String) -> Usage {
+  case json.parse(from: body, using: usage_decoder()) {
+    Ok(usage) -> usage
+    Error(_) -> Usage(None, None)
+  }
+}
+
+/// Parse token usage from an SSE chunk string.
+///
+/// Scans `data:` lines and returns the last valid usage object found.
+pub fn parse_usage_from_sse(chunk: String) -> Usage {
+  chunk
+  |> string.split("\n")
+  |> list.filter_map(fn(line) {
+    case string.starts_with(line, "data: ") {
+      True -> {
+        let json_str = string.drop_start(line, 6)
+        case json.parse(from: json_str, using: usage_decoder()) {
+          Ok(usage) -> Ok(usage)
+          Error(_) -> Error(Nil)
+        }
+      }
+      False -> Error(Nil)
+    }
+  })
+  |> list.last
+  |> option.from_result
+  |> option.unwrap(Usage(None, None))
+}
+
+/// Merge usage extracted from a single chunk into the running stream state.
+/// Only overwrites a field when the chunk provides a concrete token count,
+/// so non-usage chunks (content deltas, pings, [DONE]) do not erase prior
+/// usage.
+fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
+  Usage(
+    prompt: case chunk.prompt {
+      Some(tokens) -> Some(tokens)
+      None -> existing.prompt
+    },
+    completion: case chunk.completion {
+      Some(tokens) -> Some(tokens)
+      None -> existing.completion
+    },
+  )
+}
+
+/// Ensure a request body asks for streaming usage.
+///
+/// If the body is a JSON object, injects `stream_options.include_usage: true`
+/// while preserving any existing fields. On malformed JSON, returns the body
+/// unchanged so the upstream can reject it.
+@external(erlang, "pig_proxy_json_ffi", "ensure_stream_usage")
+pub fn ensure_stream_usage(body: String) -> String
+
 // ── Non-streaming forward ───────────────────────────────────────
 
 /// Forward a non-streaming request to the upstream target and return
@@ -196,7 +276,7 @@ pub fn forward_stream(
     req,
     initial_response,
     init: fn(subj) {
-      let _relay =
+      let relay =
         hackney.stream_request(
           method,
           url,
@@ -206,9 +286,9 @@ pub fn forward_stream(
           fn(_) { process.send(subj, StreamDone) },
           fn(reason) { process.send(subj, StreamError(reason)) },
         )
-      Nil
+      StreamState(usage: Usage(None, None), relay: relay)
     },
-    loop: fn(_state, message, conn) {
+    loop: fn(state, message, conn) {
       case message {
         Chunk(data) -> {
           case mist.send_chunk(conn, data) {
@@ -218,13 +298,23 @@ pub fn forward_stream(
                 model: model,
                 chunk_bytes: bit_array.byte_size(data),
               ))
-              mist.chunk_continue(Nil)
+
+              let chunk_usage = case bit_array.to_string(data) {
+                Ok(text) -> parse_usage_from_sse(text)
+                Error(_) -> Usage(None, None)
+              }
+
+              mist.chunk_continue(StreamState(
+                usage: merge_usage(state.usage, chunk_usage),
+                relay: state.relay,
+              ))
             }
             Error(_) -> {
               logging.log(
                 logging.Debug,
                 "proxy: client disconnected during stream, stopping relay",
               )
+              process.kill(state.relay)
               mist.chunk_stop()
             }
           }
@@ -237,8 +327,8 @@ pub fn forward_stream(
             model: model,
             status: 200,
             duration_ms: duration,
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens: state.usage.prompt,
+            output_tokens: state.usage.completion,
           ))
           mist.chunk_stop()
         }

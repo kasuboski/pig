@@ -38,6 +38,16 @@ fn request_stop_event(
   duration_ms: Int,
   status: Int,
 ) -> metrics.MetricsMsg {
+  request_stop_event_with_tokens(model, duration_ms, status, 0, 0)
+}
+
+fn request_stop_event_with_tokens(
+  model: String,
+  duration_ms: Int,
+  status: Int,
+  input_tokens: Int,
+  output_tokens: Int,
+) -> metrics.MetricsMsg {
   metrics.ProxyMetricsEvent(
     name: ["pig_proxy", "request", "stop"],
     measurements: dict.from_list([
@@ -48,8 +58,8 @@ fn request_stop_event(
     metadata: dict.from_list([
       #("target_id", "test"),
       #("model", model),
-      #("input_tokens", ""),
-      #("output_tokens", ""),
+      #("input_tokens", int.to_string(input_tokens)),
+      #("output_tokens", int.to_string(output_tokens)),
     ]),
   )
 }
@@ -166,5 +176,17 @@ pub fn request_stop_and_error_events_track_independently_test() {
   let assert Ok(m) = dict.get(snapshot.models, "gpt-4")
   assert m.request_count == 2
   assert m.error_count == 1
+  cleanup()
+}
+
+pub fn request_stop_event_accumulates_tokens_test() {
+  let #(subject, cleanup) = setup()
+  let _ =
+    send_event_and_snapshot(subject, request_stop_event_with_tokens("gpt-4", 200, 200, 10, 20))
+  let snapshot =
+    send_event_and_snapshot(subject, request_stop_event_with_tokens("gpt-4", 200, 200, 5, 7))
+  let assert Ok(m) = dict.get(snapshot.models, "gpt-4")
+  assert m.input_tokens == 15
+  assert m.output_tokens == 27
   cleanup()
 }

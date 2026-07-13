@@ -10,6 +10,7 @@
 
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/dict
 import gleam/erlang/process
 import gleam/http
 import gleam/http/request
@@ -24,6 +25,7 @@ import pig_proxy/config.{type ProxyConfig, type UpstreamTarget}
 import pig_proxy/hackney
 import pig_proxy/metrics
 import pig_proxy/metrics_endpoint
+import pig_proxy/model_catalog
 import pig_proxy/proxy
 import pig_proxy/retry
 import pig_proxy/routes.{type VirtualRoute}
@@ -47,6 +49,7 @@ pub type ServerState {
     config: ProxyConfig,
     routes: List(VirtualRoute),
     metrics: Option(process.Subject(metrics.MetricsMsg)),
+    catalog: Option(process.Subject(model_catalog.CatalogMsg)),
   )
 }
 
@@ -115,8 +118,10 @@ fn proxy_request(
       let start_time = telemetry.system_time()
 
       case streaming {
-        True ->
-          proxy.forward_stream(req, target, method, path, req.headers, body)
+        True -> {
+          let body_with_usage = proxy.ensure_stream_usage(body)
+          proxy.forward_stream(req, target, method, path, req.headers, body_with_usage)
+        }
         False -> {
           let resp =
             forward_with_retry(
@@ -131,15 +136,17 @@ fn proxy_request(
           let duration = telemetry.system_time() - start_time
 
           case resp {
-            hackney.OkResponse(status:, ..) ->
+            hackney.OkResponse(status:, body: resp_body, ..) -> {
+              let usage = proxy.parse_usage(bit_array_to_string(resp_body))
               telemetry.emit(telemetry.RequestStop(
                 target_id: target.id,
                 model: model,
                 status: status,
                 duration_ms: duration,
-                input_tokens: None,
-                output_tokens: None,
+                input_tokens: usage.prompt,
+                output_tokens: usage.completion,
               ))
+            }
             hackney.ErrorResponse(reason:) ->
               telemetry.emit(telemetry.RequestError(
                 target_id: target.id,
@@ -252,7 +259,11 @@ fn metrics_response(
   case state.metrics {
     Some(metrics_subject) -> {
       let snapshot = metrics.get_snapshot(metrics_subject)
-      metrics_endpoint.response(snapshot)
+      let catalog = case state.catalog {
+        Some(catalog_subject) -> model_catalog.snapshot(catalog_subject)
+        None -> model_catalog.Catalog(dict.new())
+      }
+      metrics_endpoint.response(snapshot, catalog)
     }
     None ->
       response.new(503)
