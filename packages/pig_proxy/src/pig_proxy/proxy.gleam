@@ -30,10 +30,11 @@ pub type ProxyMessage {
   StreamError(String)
 }
 
-/// State held by the streaming chunked loop: accumulated token usage and
-/// the upstream relay PID so it can be killed if the client disconnects.
+/// State held by the streaming chunked loop: accumulated token usage, a
+/// buffer of incomplete SSE data across network fragments, and the upstream
+/// relay PID so it can be killed if the client disconnects.
 type StreamState {
-  StreamState(usage: Usage, relay: process.Pid)
+  StreamState(usage: Usage, buffer: String, relay: process.Pid)
 }
 
 // ── Header scrubbing & injection ────────────────────────────────
@@ -107,12 +108,13 @@ fn trim_trailing_slash(url: String) -> String {
 /// Resolve the upstream URL for a given client path and target.
 ///
 /// The client sends to `/v1/chat/completions`; the target base_url already
-/// includes `/v1`. We strip the leading `/v1` from the client path and
-/// append the remainder to the target base_url.
+/// includes `/v1`. We strip a leading `/v1` from the client path and append
+/// the remainder to the target base_url. If the client path does not start
+/// with `/v1`, it is appended unchanged.
 pub fn resolve_upstream_url(target: UpstreamTarget, client_path: String) -> String {
-  let suffix = case string.split(client_path, "/v1") {
-    [_, rest] -> rest
-    _ -> client_path
+  let suffix = case string.starts_with(client_path, "/v1") {
+    True -> string.drop_start(client_path, 3)
+    False -> client_path
   }
   trim_trailing_slash(target.base_url) <> suffix
 }
@@ -194,6 +196,19 @@ pub fn parse_usage_from_sse(chunk: String) -> Usage {
   |> option.unwrap(Usage(None, None))
 }
 
+/// Split a raw SSE buffer into complete events and an incomplete trailing
+/// fragment. Events are delimited by a blank line (`\n\n`). Any text after
+/// the last `\n\n` is returned as the leftover buffer for the next chunk.
+fn split_sse_events(buffer: String) -> #(List(String), String) {
+  case string.split_once(buffer, "\n\n") {
+    Ok(#(event, rest)) -> {
+      let #(events, leftover) = split_sse_events(rest)
+      #([event, ..events], leftover)
+    }
+    Error(_) -> #([], buffer)
+  }
+}
+
 /// Merge usage extracted from a single chunk into the running stream state.
 /// Only overwrites a field when the chunk provides a concrete token count,
 /// so non-usage chunks (content deltas, pings, [DONE]) do not erase prior
@@ -209,6 +224,12 @@ fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
       None -> existing.completion
     },
   )
+}
+
+/// Parse usage from a complete SSE event string and merge it into the
+/// running stream state. Events without a usage object leave state intact.
+fn merge_usage_from_event(existing: Usage, event: String) -> Usage {
+  merge_usage(existing, parse_usage_from_sse(event))
 }
 
 /// Ensure a request body asks for streaming usage.
@@ -286,7 +307,7 @@ pub fn forward_stream(
           fn(_) { process.send(subj, StreamDone) },
           fn(reason) { process.send(subj, StreamError(reason)) },
         )
-      StreamState(usage: Usage(None, None), relay: relay)
+      StreamState(usage: Usage(None, None), buffer: "", relay: relay)
     },
     loop: fn(state, message, conn) {
       case message {
@@ -299,13 +320,17 @@ pub fn forward_stream(
                 chunk_bytes: bit_array.byte_size(data),
               ))
 
-              let chunk_usage = case bit_array.to_string(data) {
-                Ok(text) -> parse_usage_from_sse(text)
-                Error(_) -> Usage(None, None)
+              let new_buffer = case bit_array.to_string(data) {
+                Ok(text) -> state.buffer <> text
+                Error(_) -> state.buffer
               }
+              let #(events, leftover) = split_sse_events(new_buffer)
+              let new_usage =
+                list.fold(events, state.usage, merge_usage_from_event)
 
               mist.chunk_continue(StreamState(
-                usage: merge_usage(state.usage, chunk_usage),
+                usage: new_usage,
+                buffer: leftover,
                 relay: state.relay,
               ))
             }
@@ -321,14 +346,19 @@ pub fn forward_stream(
         }
         StreamDone -> {
           logging.log(logging.Debug, "proxy: stream complete")
+          // Flush any trailing event that never received a final delimiter.
+          let final_usage = case state.buffer {
+            "" -> state.usage
+            remaining -> merge_usage_from_event(state.usage, remaining)
+          }
           let duration = telemetry.system_time() - start_time
           telemetry.emit(telemetry.RequestStop(
             target_id: target_id,
             model: model,
             status: 200,
             duration_ms: duration,
-            input_tokens: state.usage.prompt,
-            output_tokens: state.usage.completion,
+            input_tokens: final_usage.prompt,
+            output_tokens: final_usage.completion,
           ))
           mist.chunk_stop()
         }
@@ -397,7 +427,29 @@ fn set_response_headers(
   resp: response.Response(a),
   headers: List(#(String, String)),
 ) -> response.Response(a) {
-  list.fold(headers, resp, fn(acc, h) {
+  let filtered = list.filter(headers, fn(h) { !is_hop_by_hop_header(h.0) })
+  list.fold(filtered, resp, fn(acc, h) {
     response.set_header(acc, h.0, h.1)
   })
+}
+
+/// Headers that must not be forwarded from an upstream response to the
+/// client. Hop-by-hop and framing headers are connection-specific and
+/// would corrupt the Mist-managed response if copied through.
+fn is_hop_by_hop_header(key: String) -> Bool {
+  let key_lower = string.lowercase(key)
+  list.contains(
+    [
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "upgrade",
+      "content-length",
+    ],
+    key_lower,
+  )
 }

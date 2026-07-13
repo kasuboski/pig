@@ -1,4 +1,6 @@
 import gleam/erlang/process
+import gleam/list
+import gleam/string
 import gleeunit
 import pig_proxy/vault
 
@@ -70,5 +72,6 @@ pub fn get_status_returns_correct_count_and_ids_test() {
   let v = setup()
   let status = vault.get_status(v, 2000)
   assert status.target_count == 2
-  assert status.target_ids == ["codex", "openai"]
+  let sorted_ids = list.sort(status.target_ids, by: string.compare)
+  assert sorted_ids == ["codex", "openai"]
 }

@@ -1,4 +1,7 @@
 import gleam/dict
+import gleam/float
+import gleam/int
+import gleam/option.{Some}
 import gleam/string
 import gleeunit
 import pig_proxy/metrics.{
@@ -62,7 +65,7 @@ fn multi_model_snapshot() -> MetricsSnapshot {
 }
 
 fn empty_catalog() -> model_catalog.Catalog {
-  model_catalog.Catalog(dict.new())
+  model_catalog.empty()
 }
 
 // ── render ──────────────────────────────────────────────────────
@@ -154,4 +157,37 @@ pub fn render_multiple_models_sorted_alphabetically_test() {
 pub fn render_ends_with_newline_test() {
   let output = metrics_endpoint.render(sample_snapshot(), empty_catalog())
   assert string.ends_with(output, "\n")
+}
+
+pub fn render_cost_matches_catalog_cost_usd_test() {
+  let catalog_json =
+    "{\"openai\":{\"id\":\"openai\",\"models\":{\"gpt-4\":{\"id\":\"gpt-4\",\"cost\":{\"input\":5,\"output\":15},\"limit\":{\"context\":128000,\"output\":16384}}}}}"
+  let assert Ok(catalog) = model_catalog.parse(catalog_json)
+  let snapshot = sample_snapshot()
+  let output = metrics_endpoint.render(snapshot, catalog)
+  let assert Some(info) = model_catalog.find(catalog, "gpt-4")
+  let expected_cost = model_catalog.cost_usd(info, 1000, 500)
+  assert string.contains(
+    output,
+    "pig_proxy_cost_usd_total{model=\"gpt-4\"} " <> format_cost(expected_cost),
+  )
+}
+
+fn format_cost(value: Float) -> String {
+  let whole = float.truncate(value)
+  let fraction =
+    float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0)
+  int.to_string(whole) <> "." <> pad_fraction(fraction)
+}
+
+fn pad_fraction(value: Int) -> String {
+  let s = int.to_string(value)
+  case string.length(s) {
+    1 -> "00000" <> s
+    2 -> "0000" <> s
+    3 -> "000" <> s
+    4 -> "00" <> s
+    5 -> "0" <> s
+    _ -> s
+  }
 }

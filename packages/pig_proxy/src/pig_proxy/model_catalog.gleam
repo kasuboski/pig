@@ -32,8 +32,13 @@ pub type ModelInfo {
 }
 
 /// A flat catalog keyed by model slug (e.g. "openai/gpt-4o").
-pub type Catalog {
+pub opaque type Catalog {
   Catalog(models: Dict(String, ModelInfo))
+}
+
+/// Create an empty catalog with no model entries.
+pub fn empty() -> Catalog {
+  Catalog(dict.new())
 }
 
 /// Messages handled by the catalog actor.
@@ -124,7 +129,7 @@ fn initialise(
     let _ = process.send_after(subject, 0, Refresh)
 
     actor.initialised(CatalogState(
-      catalog: Catalog(dict.new()),
+      catalog: empty(),
       url:,
       refresh_ms:,
       subject:,

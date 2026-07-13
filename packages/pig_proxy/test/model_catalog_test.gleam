@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/float
 import gleam/option.{None, Some}
 import gleeunit
@@ -121,6 +120,6 @@ pub fn cost_usd_missing_prices_are_zero_test() {
 }
 
 pub fn empty_catalog_has_no_models_test() {
-  let catalog = model_catalog.Catalog(dict.new())
+  let catalog = model_catalog.empty()
   assert model_catalog.find(catalog, "anything") == None
 }

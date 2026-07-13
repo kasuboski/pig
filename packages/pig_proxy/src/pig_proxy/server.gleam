@@ -10,7 +10,6 @@
 
 import gleam/bit_array
 import gleam/bytes_tree
-import gleam/dict
 import gleam/erlang/process
 import gleam/http
 import gleam/http/request
@@ -261,7 +260,7 @@ fn metrics_response(
       let snapshot = metrics.get_snapshot(metrics_subject)
       let catalog = case state.catalog {
         Some(catalog_subject) -> model_catalog.snapshot(catalog_subject)
-        None -> model_catalog.Catalog(dict.new())
+        None -> model_catalog.empty()
       }
       metrics_endpoint.response(snapshot, catalog)
     }
@@ -299,7 +298,13 @@ fn bad_request_response(
 fn bit_array_to_string(data: BitArray) -> String {
   case bit_array.to_string(data) {
     Ok(s) -> s
-    Error(_) -> ""
+    Error(_) -> {
+      logging.log(
+        logging.Warning,
+        "server: request body is not valid UTF-8, treating as empty",
+      )
+      ""
+    }
   }
 }
 
