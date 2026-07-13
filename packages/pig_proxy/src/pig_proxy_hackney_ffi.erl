@@ -113,21 +113,26 @@ stream_body(Ref, ChunkCb, DoneCb, ErrorCb) ->
     end.
 
 %% Read the full body for a non-2xx streaming response.
+%% Tail-recursive: accumulates chunks in an iolist, then flattens once at
+%% the end to avoid growing the process stack with deeply nested binaries.
 read_all_body(Ref) ->
+    read_all_body(Ref, []).
+
+read_all_body(Ref, Acc) ->
     receive
         {hackney_response, Ref, BinBodyPart} when is_binary(BinBodyPart) ->
-            <<BinBodyPart/binary, (read_all_body(Ref))/binary>>;
+            read_all_body(Ref, [BinBodyPart | Acc]);
         {hackney_response, Ref, done} ->
             hackney:close(Ref),
-            <<>>;
+            iolist_to_binary(lists:reverse(Acc));
         {hackney_response, Ref, {error, _Reason}} ->
             hackney:close(Ref),
-            <<>>;
+            iolist_to_binary(lists:reverse(Acc));
         _Other ->
-            read_all_body(Ref)
+            read_all_body(Ref, Acc)
     after 30000 ->
             hackney:close(Ref),
-            <<>>
+            iolist_to_binary(lists:reverse(Acc))
     end.
 
 %% Format an HTTP error (non-2xx status) for the Gleam ErrorCb.

@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit
 import pig_proxy/config
 import pig_proxy/hackney
@@ -185,4 +186,70 @@ pub fn sync_response_to_mist_error_returns_502_test() {
 
 pub fn hackney_ensure_started_does_not_crash_test() {
   hackney.ensure_started()
+}
+
+// ── Usage extraction ──────────────────────────────────────────
+
+pub fn parse_usage_reads_prompt_and_completion_tokens_test() {
+  let body = "{\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":17}}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == Some(42)
+  assert usage.completion == Some(17)
+}
+
+pub fn parse_usage_missing_usage_returns_none_test() {
+  let body = "{\"id\":\"chatcmpl-123\"}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == None
+  assert usage.completion == None
+}
+
+pub fn parse_usage_partial_tokens_test() {
+  let body = "{\"usage\":{\"completion_tokens\":9}}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == None
+  assert usage.completion == Some(9)
+}
+
+pub fn parse_usage_from_sse_extracts_final_usage_test() {
+  let chunk =
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n"
+    <> "data: [DONE]\n\n"
+  let usage = proxy.parse_usage_from_sse(chunk)
+  assert usage.prompt == Some(10)
+  assert usage.completion == Some(20)
+}
+
+pub fn parse_usage_from_sse_ignores_non_data_lines_test() {
+  let chunk =
+    "event: ping\n\n"
+    <> "data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n"
+  let usage = proxy.parse_usage_from_sse(chunk)
+  assert usage.prompt == Some(1)
+  assert usage.completion == Some(2)
+}
+
+pub fn parse_usage_from_sse_no_usage_returns_none_test() {
+  let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+  let usage = proxy.parse_usage_from_sse(chunk)
+  assert usage.prompt == None
+  assert usage.completion == None
+}
+
+pub fn ensure_stream_usage_injects_include_usage_test() {
+  let body = "{\"model\":\"gpt-4o\",\"stream\":true}"
+  let result = proxy.ensure_stream_usage(body)
+  assert string.contains(result, "\"include_usage\":true")
+  assert string.contains(result, "\"stream_options\":")
+}
+
+pub fn ensure_stream_usage_preserves_existing_stream_options_test() {
+  let body = "{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":{\"include_usage\":false}}"
+  let result = proxy.ensure_stream_usage(body)
+  assert string.contains(result, "\"include_usage\":true")
+}
+
+pub fn ensure_stream_usage_malformed_body_unchanged_test() {
+  let body = "not json"
+  assert proxy.ensure_stream_usage(body) == body
 }

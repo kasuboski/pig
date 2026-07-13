@@ -26,6 +26,7 @@ import gleam/option.{None, Some}
 import logging
 import pig_proxy/config
 import pig_proxy/metrics
+import pig_proxy/model_catalog
 import pig_proxy/server
 
 /// Entry point: load config from environment, start metrics aggregator,
@@ -46,10 +47,26 @@ pub fn main() -> Nil {
     }
   }
 
+  // Start the live models.dev catalog refresher.
+  let catalog_subject = case model_catalog.start(
+    cfg.models_dev_url,
+    cfg.models_refresh_ms,
+  ) {
+    Ok(subject) -> Some(subject)
+    Error(_) -> {
+      logging.log(
+        logging.Warning,
+        "failed to start model catalog — cost metrics will be zero",
+      )
+      None
+    }
+  }
+
   let state = server.ServerState(
     config: cfg,
     routes: [],
     metrics: metrics_subject,
+    catalog: catalog_subject,
   )
 
   server.start(state)

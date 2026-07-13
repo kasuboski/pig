@@ -41,6 +41,10 @@ pub type ProxyConfig {
     circuit_threshold: Int,
     /// Cool-down period (ms) before a half-open probe is attempted.
     circuit_cooldown_ms: Int,
+    /// URL of the models.dev catalog JSON.
+    models_dev_url: String,
+    /// How often (ms) to refresh the model catalog.
+    models_refresh_ms: Int,
   )
 }
 
@@ -53,6 +57,10 @@ pub const default_circuit_threshold = 5
 
 pub const default_circuit_cooldown_ms = 30_000
 
+pub const default_models_dev_url = "https://models.dev/api.json"
+
+pub const default_models_refresh_ms = 3600_000
+
 /// Create a config with sensible defaults and the given targets.
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
@@ -61,6 +69,8 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
     max_retries: default_max_retries,
     circuit_threshold: default_circuit_threshold,
     circuit_cooldown_ms: default_circuit_cooldown_ms,
+    models_dev_url: default_models_dev_url,
+    models_refresh_ms: default_models_refresh_ms,
   )
 }
 
@@ -72,6 +82,16 @@ pub fn with_port(config: ProxyConfig, port: Int) -> ProxyConfig {
 /// Set max retries.
 pub fn with_max_retries(config: ProxyConfig, max_retries: Int) -> ProxyConfig {
   ProxyConfig(..config, max_retries:)
+}
+
+/// Set the models.dev catalog URL.
+pub fn with_models_dev_url(config: ProxyConfig, url: String) -> ProxyConfig {
+  ProxyConfig(..config, models_dev_url: url)
+}
+
+/// Set the model catalog refresh interval in milliseconds.
+pub fn with_models_refresh_ms(config: ProxyConfig, ms: Int) -> ProxyConfig {
+  ProxyConfig(..config, models_refresh_ms: ms)
 }
 
 /// A convenience builder for a standard OpenAI-compatible target.
@@ -107,11 +127,13 @@ pub fn find_target(config: ProxyConfig, id: String) -> Option(UpstreamTarget) {
 /// Load a config from environment variables, falling back to defaults.
 ///
 /// Reads:
-///   PIG_PROXY_PORT             — listening port (default 8080)
-///   OPENAI_COMPAT_BASE_URL     — upstream base URL
-///   OPENAI_COMPAT_API_KEY      — upstream API key
-///   OPENAI_COMPAT_MODEL        — default model slug
-///   OPENAI_COMPAT_CODEX_TOKEN  — optional Codex OAuth JWT
+///   PIG_PROXY_PORT                  — listening port (default 8080)
+///   OPENAI_COMPAT_BASE_URL          — upstream base URL
+///   OPENAI_COMPAT_API_KEY           — upstream API key
+///   OPENAI_COMPAT_MODEL             — default model slug
+///   OPENAI_COMPAT_CODEX_TOKEN       — optional Codex OAuth JWT
+///   PIG_PROXY_MODELS_DEV_URL        — models.dev catalog URL
+///   PIG_PROXY_MODELS_REFRESH_MS     — catalog refresh interval in ms
 pub fn from_env() -> ProxyConfig {
   let target =
     openai_target(
@@ -123,6 +145,8 @@ pub fn from_env() -> ProxyConfig {
 
   new([target])
   |> with_port(port_env())
+  |> with_models_dev_url(models_dev_url_env())
+  |> with_models_refresh_ms(models_refresh_ms_env())
 }
 
 fn base_url_env() -> String {
@@ -150,6 +174,22 @@ fn port_env() -> Int {
         Error(_) -> default_port
       }
     Error(_) -> default_port
+  }
+}
+
+fn models_dev_url_env() -> String {
+  envoy.get("PIG_PROXY_MODELS_DEV_URL")
+  |> result.unwrap(default_models_dev_url)
+}
+
+fn models_refresh_ms_env() -> Int {
+  case envoy.get("PIG_PROXY_MODELS_REFRESH_MS") {
+    Ok(ms_str) ->
+      case int.parse(ms_str) {
+        Ok(ms) -> ms
+        Error(_) -> default_models_refresh_ms
+      }
+    Error(_) -> default_models_refresh_ms
   }
 }
 

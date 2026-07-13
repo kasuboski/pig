@@ -9,6 +9,7 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/otp/actor
+import logging
 
 /// A credential held by the vault.
 pub type Credential {
@@ -53,7 +54,24 @@ fn handle_message(state: VaultState, msg: VaultMsg) {
       let new_creds = case dict.get(state.credentials, target_id) {
         Ok(CodexToken(_)) ->
           dict.insert(state.credentials, target_id, CodexToken(new_token))
-        _ -> state.credentials
+        Ok(ApiKey(_)) -> {
+          logging.log(
+            logging.Warning,
+            "vault: ignoring rotate_token for target \""
+              <> target_id
+              <> "\" — credential is an ApiKey, not a CodexToken",
+          )
+          state.credentials
+        }
+        Error(_) -> {
+          logging.log(
+            logging.Warning,
+            "vault: ignoring rotate_token for unknown target \""
+              <> target_id
+              <> "\"",
+          )
+          state.credentials
+        }
       }
       actor.continue(VaultState(credentials: new_creds))
     }

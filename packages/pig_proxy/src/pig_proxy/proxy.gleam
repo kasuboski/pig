@@ -15,7 +15,7 @@ import gleam/http/request
 import gleam/http/response
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import logging
 import mist
@@ -28,6 +28,13 @@ pub type ProxyMessage {
   Chunk(BitArray)
   StreamDone
   StreamError(String)
+}
+
+/// State held by the streaming chunked loop: accumulated token usage, a
+/// buffer of incomplete SSE data across network fragments, and the upstream
+/// relay PID so it can be killed if the client disconnects.
+type StreamState {
+  StreamState(usage: Usage, buffer: String, relay: process.Pid)
 }
 
 // ── Header scrubbing & injection ────────────────────────────────
@@ -101,12 +108,13 @@ fn trim_trailing_slash(url: String) -> String {
 /// Resolve the upstream URL for a given client path and target.
 ///
 /// The client sends to `/v1/chat/completions`; the target base_url already
-/// includes `/v1`. We strip the leading `/v1` from the client path and
-/// append the remainder to the target base_url.
+/// includes `/v1`. We strip a leading `/v1` from the client path and append
+/// the remainder to the target base_url. If the client path does not start
+/// with `/v1`, it is appended unchanged.
 pub fn resolve_upstream_url(target: UpstreamTarget, client_path: String) -> String {
-  let suffix = case string.split(client_path, "/v1") {
-    [_, rest] -> rest
-    _ -> client_path
+  let suffix = case string.starts_with(client_path, "/v1") {
+    True -> string.drop_start(client_path, 3)
+    False -> client_path
   }
   trim_trailing_slash(target.base_url) <> suffix
 }
@@ -138,6 +146,99 @@ pub fn extract_model(body: String) -> String {
     Error(_) -> "unknown"
   }
 }
+
+// ── Usage extraction ────────────────────────────────────────────
+
+/// Token usage extracted from a response body or SSE chunk.
+pub type Usage {
+  Usage(prompt: Option(Int), completion: Option(Int))
+}
+
+fn usage_fields_decoder() -> decode.Decoder(Usage) {
+  use prompt <- decode.optional_field("prompt_tokens", None, decode.optional(decode.int))
+  use completion <- decode.optional_field("completion_tokens", None, decode.optional(decode.int))
+  decode.success(Usage(prompt:, completion:))
+}
+
+fn usage_decoder() -> decode.Decoder(Usage) {
+  use usage <- decode.field("usage", usage_fields_decoder())
+  decode.success(usage)
+}
+
+/// Parse token usage from a non-streaming JSON response body.
+pub fn parse_usage(body: String) -> Usage {
+  case json.parse(from: body, using: usage_decoder()) {
+    Ok(usage) -> usage
+    Error(_) -> Usage(None, None)
+  }
+}
+
+/// Parse token usage from an SSE chunk string.
+///
+/// Scans `data:` lines and returns the last valid usage object found.
+pub fn parse_usage_from_sse(chunk: String) -> Usage {
+  chunk
+  |> string.split("\n")
+  |> list.filter_map(fn(line) {
+    case string.starts_with(line, "data: ") {
+      True -> {
+        let json_str = string.drop_start(line, 6)
+        case json.parse(from: json_str, using: usage_decoder()) {
+          Ok(usage) -> Ok(usage)
+          Error(_) -> Error(Nil)
+        }
+      }
+      False -> Error(Nil)
+    }
+  })
+  |> list.last
+  |> option.from_result
+  |> option.unwrap(Usage(None, None))
+}
+
+/// Split a raw SSE buffer into complete events and an incomplete trailing
+/// fragment. Events are delimited by a blank line (`\n\n`). Any text after
+/// the last `\n\n` is returned as the leftover buffer for the next chunk.
+fn split_sse_events(buffer: String) -> #(List(String), String) {
+  case string.split_once(buffer, "\n\n") {
+    Ok(#(event, rest)) -> {
+      let #(events, leftover) = split_sse_events(rest)
+      #([event, ..events], leftover)
+    }
+    Error(_) -> #([], buffer)
+  }
+}
+
+/// Merge usage extracted from a single chunk into the running stream state.
+/// Only overwrites a field when the chunk provides a concrete token count,
+/// so non-usage chunks (content deltas, pings, [DONE]) do not erase prior
+/// usage.
+fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
+  Usage(
+    prompt: case chunk.prompt {
+      Some(tokens) -> Some(tokens)
+      None -> existing.prompt
+    },
+    completion: case chunk.completion {
+      Some(tokens) -> Some(tokens)
+      None -> existing.completion
+    },
+  )
+}
+
+/// Parse usage from a complete SSE event string and merge it into the
+/// running stream state. Events without a usage object leave state intact.
+fn merge_usage_from_event(existing: Usage, event: String) -> Usage {
+  merge_usage(existing, parse_usage_from_sse(event))
+}
+
+/// Ensure a request body asks for streaming usage.
+///
+/// If the body is a JSON object, injects `stream_options.include_usage: true`
+/// while preserving any existing fields. On malformed JSON, returns the body
+/// unchanged so the upstream can reject it.
+@external(erlang, "pig_proxy_json_ffi", "ensure_stream_usage")
+pub fn ensure_stream_usage(body: String) -> String
 
 // ── Non-streaming forward ───────────────────────────────────────
 
@@ -196,7 +297,7 @@ pub fn forward_stream(
     req,
     initial_response,
     init: fn(subj) {
-      let _relay =
+      let relay =
         hackney.stream_request(
           method,
           url,
@@ -206,9 +307,9 @@ pub fn forward_stream(
           fn(_) { process.send(subj, StreamDone) },
           fn(reason) { process.send(subj, StreamError(reason)) },
         )
-      Nil
+      StreamState(usage: Usage(None, None), buffer: "", relay: relay)
     },
-    loop: fn(_state, message, conn) {
+    loop: fn(state, message, conn) {
       case message {
         Chunk(data) -> {
           case mist.send_chunk(conn, data) {
@@ -218,27 +319,46 @@ pub fn forward_stream(
                 model: model,
                 chunk_bytes: bit_array.byte_size(data),
               ))
-              mist.chunk_continue(Nil)
+
+              let new_buffer = case bit_array.to_string(data) {
+                Ok(text) -> state.buffer <> text
+                Error(_) -> state.buffer
+              }
+              let #(events, leftover) = split_sse_events(new_buffer)
+              let new_usage =
+                list.fold(events, state.usage, merge_usage_from_event)
+
+              mist.chunk_continue(StreamState(
+                usage: new_usage,
+                buffer: leftover,
+                relay: state.relay,
+              ))
             }
             Error(_) -> {
               logging.log(
                 logging.Debug,
                 "proxy: client disconnected during stream, stopping relay",
               )
+              process.kill(state.relay)
               mist.chunk_stop()
             }
           }
         }
         StreamDone -> {
           logging.log(logging.Debug, "proxy: stream complete")
+          // Flush any trailing event that never received a final delimiter.
+          let final_usage = case state.buffer {
+            "" -> state.usage
+            remaining -> merge_usage_from_event(state.usage, remaining)
+          }
           let duration = telemetry.system_time() - start_time
           telemetry.emit(telemetry.RequestStop(
             target_id: target_id,
             model: model,
             status: 200,
             duration_ms: duration,
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens: final_usage.prompt,
+            output_tokens: final_usage.completion,
           ))
           mist.chunk_stop()
         }
@@ -307,7 +427,29 @@ fn set_response_headers(
   resp: response.Response(a),
   headers: List(#(String, String)),
 ) -> response.Response(a) {
-  list.fold(headers, resp, fn(acc, h) {
+  let filtered = list.filter(headers, fn(h) { !is_hop_by_hop_header(h.0) })
+  list.fold(filtered, resp, fn(acc, h) {
     response.set_header(acc, h.0, h.1)
   })
+}
+
+/// Headers that must not be forwarded from an upstream response to the
+/// client. Hop-by-hop and framing headers are connection-specific and
+/// would corrupt the Mist-managed response if copied through.
+fn is_hop_by_hop_header(key: String) -> Bool {
+  let key_lower = string.lowercase(key)
+  list.contains(
+    [
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "upgrade",
+      "content-length",
+    ],
+    key_lower,
+  )
 }
