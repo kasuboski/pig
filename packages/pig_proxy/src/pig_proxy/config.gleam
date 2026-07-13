@@ -21,6 +21,11 @@ pub type UpstreamTarget {
     api_key: String,
     /// Optional Codex OAuth JWT for the Codex Responses route.
     codex_token: Option(String),
+    /// Provider key matching models.dev (e.g. "openai", "anthropic").
+    /// When set, telemetry and metrics use `provider/model` as the
+    /// model key so cost lookups against the models.dev catalog resolve
+    /// correctly. `None` for local or unknown providers.
+    provider: Option(String),
     /// Ordered fallback chain — model slugs to try if this target fails.
     fallbacks: List(String),
     /// Whether this target supports tool definitions.
@@ -105,10 +110,21 @@ pub fn openai_target(
     base_url:,
     api_key:,
     codex_token: None,
+    provider: None,
     fallbacks: [],
     supports_tools: True,
     supports_json_schema: True,
   )
+}
+
+/// Set the provider key (matches models.dev, e.g. "openai", "anthropic").
+/// Enables provider-prefixed model keys in telemetry and metrics for
+/// correct cost lookups against the models.dev catalog.
+pub fn with_provider(
+  target: UpstreamTarget,
+  provider: String,
+) -> UpstreamTarget {
+  UpstreamTarget(..target, provider: Some(provider))
 }
 
 /// Add a fallback model slug to a target's chain.
@@ -124,6 +140,15 @@ pub fn find_target(config: ProxyConfig, id: String) -> Option(UpstreamTarget) {
   }
 }
 
+/// Extract the provider string from a target, or empty string if unset.
+/// Used by telemetry to build the `provider/model` metrics key.
+pub fn provider_string(target: UpstreamTarget) -> String {
+  case target.provider {
+    Some(p) -> p
+    None -> ""
+  }
+}
+
 /// Load a config from environment variables, falling back to defaults.
 ///
 /// Reads:
@@ -132,6 +157,7 @@ pub fn find_target(config: ProxyConfig, id: String) -> Option(UpstreamTarget) {
 ///   OPENAI_COMPAT_API_KEY           — upstream API key
 ///   OPENAI_COMPAT_MODEL             — default model slug
 ///   OPENAI_COMPAT_CODEX_TOKEN       — optional Codex OAuth JWT
+///   OPENAI_COMPAT_PROVIDER          — models.dev provider key (e.g. "openai")
 ///   PIG_PROXY_MODELS_DEV_URL        — models.dev catalog URL
 ///   PIG_PROXY_MODELS_REFRESH_MS     — catalog refresh interval in ms
 pub fn from_env() -> ProxyConfig {
@@ -142,6 +168,7 @@ pub fn from_env() -> ProxyConfig {
       api_key_env(),
     )
     |> maybe_with_codex_token(codex_token_env())
+    |> maybe_with_provider(provider_env())
 
   new([target])
   |> with_port(port_env())
@@ -200,5 +227,22 @@ fn maybe_with_codex_token(
   case token {
     Some(t) -> UpstreamTarget(..target, codex_token: Some(t))
     None -> target
+  }
+}
+
+fn maybe_with_provider(
+  target: UpstreamTarget,
+  provider: Option(String),
+) -> UpstreamTarget {
+  case provider {
+    Some(p) -> UpstreamTarget(..target, provider: Some(p))
+    None -> target
+  }
+}
+
+fn provider_env() -> Option(String) {
+  case envoy.get("OPENAI_COMPAT_PROVIDER") {
+    Ok(p) -> Some(p)
+    Error(_) -> None
   }
 }

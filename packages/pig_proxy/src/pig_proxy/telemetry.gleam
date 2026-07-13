@@ -44,10 +44,16 @@ pub type HandlerId
 /// All proxy telemetry events as typed variants.
 pub type ProxyEvent {
   /// A request was received and is about to be forwarded.
-  RequestStart(target_id: String, model: String, streaming: Bool)
+  RequestStart(
+    target_id: String,
+    provider: String,
+    model: String,
+    streaming: Bool,
+  )
   /// A request completed successfully.
   RequestStop(
     target_id: String,
+    provider: String,
     model: String,
     status: Int,
     duration_ms: Int,
@@ -55,11 +61,26 @@ pub type ProxyEvent {
     output_tokens: Option(Int),
   )
   /// A request failed (after exhausting retries).
-  RequestError(target_id: String, model: String, error_type: String)
+  RequestError(
+    target_id: String,
+    provider: String,
+    model: String,
+    error_type: String,
+  )
   /// A streaming chunk was forwarded to the client.
-  StreamChunk(target_id: String, model: String, chunk_bytes: Int)
+  StreamChunk(
+    target_id: String,
+    provider: String,
+    model: String,
+    chunk_bytes: Int,
+  )
   /// A circuit breaker changed state.
-  CircuitStateChange(target_id: String, model: String, new_state: String)
+  CircuitStateChange(
+    target_id: String,
+    provider: String,
+    model: String,
+    new_state: String,
+  )
 }
 
 // ── Event Names ─────────────────────────────────────────────────
@@ -116,12 +137,13 @@ pub fn name_to_string(name: List(String)) -> String {
 /// Emit a typed telemetry event.
 pub fn emit(event: ProxyEvent) -> Nil {
   case event {
-    RequestStart(target_id:, model:, streaming:) ->
+    RequestStart(target_id:, provider:, model:, streaming:) ->
       ffi_execute(
         request_start_name(),
         dict.from_list([#("system_time", system_time())]),
         dict.from_list([
           #("target_id", target_id),
+          #("provider", provider),
           #("model", model),
           #("streaming", bool_to_string(streaming)),
         ]),
@@ -129,6 +151,7 @@ pub fn emit(event: ProxyEvent) -> Nil {
 
     RequestStop(
       target_id:,
+      provider:,
       model:,
       status:,
       duration_ms:,
@@ -144,24 +167,26 @@ pub fn emit(event: ProxyEvent) -> Nil {
         ]),
         dict.from_list([
           #("target_id", target_id),
+          #("provider", provider),
           #("model", model),
           #("input_tokens", option_to_string(input_tokens)),
           #("output_tokens", option_to_string(output_tokens)),
         ]),
       )
 
-    RequestError(target_id:, model:, error_type:) ->
+    RequestError(target_id:, provider:, model:, error_type:) ->
       ffi_execute(
         request_error_name(),
         dict.from_list([#("system_time", system_time())]),
         dict.from_list([
           #("target_id", target_id),
+          #("provider", provider),
           #("model", model),
           #("error_type", error_type),
         ]),
       )
 
-    StreamChunk(target_id:, model:, chunk_bytes:) ->
+    StreamChunk(target_id:, provider:, model:, chunk_bytes:) ->
       ffi_execute(
         stream_chunk_name(),
         dict.from_list([
@@ -170,16 +195,18 @@ pub fn emit(event: ProxyEvent) -> Nil {
         ]),
         dict.from_list([
           #("target_id", target_id),
+          #("provider", provider),
           #("model", model),
         ]),
       )
 
-    CircuitStateChange(target_id:, model:, new_state:) ->
+    CircuitStateChange(target_id:, provider:, model:, new_state:) ->
       ffi_execute(
         circuit_state_change_name(),
         dict.from_list([#("system_time", system_time())]),
         dict.from_list([
           #("target_id", target_id),
+          #("provider", provider),
           #("model", model),
           #("new_state", new_state),
         ]),

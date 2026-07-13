@@ -220,7 +220,20 @@ fn catalog_decoder() -> decode.Decoder(Catalog) {
       providers
       |> dict.values
       |> list.fold(dict.new(), dict.merge)
-    Catalog(models:)
+    Catalog(models: add_bare_aliases(models))
+  })
+}
+
+/// Index every `provider/model` slug under its bare model name too, so
+/// lookups without a provider prefix (e.g. local or unknown providers)
+/// still resolve. When two providers share a bare name the last one
+/// inserted wins — collisions are rare in the models.dev catalog.
+fn add_bare_aliases(models: Dict(String, ModelInfo)) -> Dict(String, ModelInfo) {
+  dict.fold(models, models, fn(acc, slug, info) {
+    case string.split(slug, "/") {
+      [_, name] -> dict.insert(acc, name, info)
+      _ -> acc
+    }
   })
 }
 

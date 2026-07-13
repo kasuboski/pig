@@ -176,7 +176,7 @@ pub fn render_cost_matches_catalog_cost_usd_test() {
 fn format_cost(value: Float) -> String {
   let whole = float.truncate(value)
   let fraction =
-    float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0)
+    float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0 +. 0.5)
   int.to_string(whole) <> "." <> pad_fraction(fraction)
 }
 

@@ -100,9 +100,11 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
 }
 
 /// Format a float for Prometheus text with a fixed six decimal places.
+/// Rounds to the nearest micro-dollar to avoid IEEE 754 truncation errors
+/// (e.g. 0.0003 stored as 0.00029999... would wrongly truncate to "0.000299").
 fn float_to_string(value: Float) -> String {
   let whole = float.truncate(value)
-  let fraction = float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0)
+  let fraction = float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0 +. 0.5)
   int.to_string(whole) <> "." <> pad_fraction(fraction)
 }
 

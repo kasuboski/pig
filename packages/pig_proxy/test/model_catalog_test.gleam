@@ -68,6 +68,16 @@ pub fn parse_missing_model_returns_none_test() {
   assert model_catalog.find(catalog, "openai/nonexistent") == None
 }
 
+pub fn parse_indexes_bare_model_name_test() {
+  let assert Ok(catalog) = model_catalog.parse(sample_json)
+  // Bare name (no provider prefix) should also resolve
+  let assert Some(gpt4o) = model_catalog.find(catalog, "gpt-4o")
+  assert gpt4o.input_price == Some(5.0)
+  let assert Some(sonnet) =
+    model_catalog.find(catalog, "claude-3-5-sonnet")
+  assert sonnet.input_price == Some(3.0)
+}
+
 pub fn parse_ignores_extra_fields_test() {
   let json = "{
     \"provider\": {
