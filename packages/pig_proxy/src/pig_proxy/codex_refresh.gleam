@@ -9,6 +9,7 @@
 //// the Codex CLI to keep credentials valid.
 
 import gleam/erlang/process
+import gleam/option.{type Option}
 import gleam/otp/actor
 import logging
 import pig_proxy/codex_credentials.{type CodexCredentials}
@@ -33,6 +34,10 @@ type RefreshState {
     target_id: String,
     credentials_path: String,
     creds: CodexCredentials,
+    /// Credentials that were rotated into the vault but not yet persisted
+    /// to disk. Retried before any further refresh so a consumed (and
+    /// possibly rotated) refresh token is never lost between restarts.
+    pending_write: Option(CodexCredentials),
     check_interval_ms: Int,
     refresh_buffer_ms: Int,
     subject: process.Subject(RefreshMsg),
@@ -86,13 +91,16 @@ fn initialise(
     String,
   ) {
   fn(subject) {
-    let _ = process.send_after(subject, check_interval_ms, Tick)
+    // Check expiry immediately at startup so an already-expiring token
+    // is refreshed without waiting for the full check_interval_ms.
+    let _ = process.send_after(subject, 0, Tick)
 
     actor.initialised(RefreshState(
       vault: vault_subject,
       target_id:,
       credentials_path:,
       creds:,
+      pending_write: option.None,
       check_interval_ms:,
       refresh_buffer_ms:,
       subject:,
@@ -108,21 +116,51 @@ fn handle_message(
 ) -> actor.Next(RefreshState, RefreshMsg) {
   case msg {
     Tick -> {
+      // Retry any previously failed persist before considering another
+      // refresh, so a consumed refresh token is never overwritten by a
+      // newer one while the durable copy is still stale.
+      let state = flush_pending_write(state)
       let now_ms = telemetry.system_time()
-      let new_state = case
-        codex_credentials.is_expired(
-          state.creds,
-          now_ms,
-          state.refresh_buffer_ms,
-        )
-      {
-        True -> do_refresh(state)
-        False -> state
+      let new_state = case state.pending_write {
+        option.Some(_) -> state
+        option.None ->
+          case
+            codex_credentials.is_expired(
+              state.creds,
+              now_ms,
+              state.refresh_buffer_ms,
+            )
+          {
+            True -> do_refresh(state)
+            False -> state
+          }
       }
       let _ =
-        process.send_after(state.subject, state.check_interval_ms, Tick)
+        process.send_after(new_state.subject, new_state.check_interval_ms, Tick)
       actor.continue(new_state)
     }
+  }
+}
+
+/// Retry persisting credentials whose previous write failed. The pending
+/// credentials stay in the actor (and the access token in the vault) so
+/// in-flight requests keep working; only the durable copy is retried.
+fn flush_pending_write(state: RefreshState) -> RefreshState {
+  case state.pending_write {
+    option.Some(pending) ->
+      case codex_credentials.save(state.credentials_path, pending) {
+        Ok(_) -> RefreshState(..state, pending_write: option.None)
+        Error(reason) -> {
+          logging.log(
+            logging.Warning,
+            "codex_refresh: failed to persist refreshed credentials: "
+              <> reason
+              <> " — will retry next tick",
+          )
+          state
+        }
+      }
+    option.None -> state
   }
 }
 
@@ -130,22 +168,26 @@ fn do_refresh(state: RefreshState) -> RefreshState {
   case codex_login.refresh(state.creds.refresh_token) {
     Ok(new_creds) -> {
       vault.rotate_token(state.vault, state.target_id, new_creds.access_token)
-      case codex_credentials.save(state.credentials_path, new_creds) {
-        Ok(_) -> Nil
-        Error(reason) ->
-          logging.log(
-            logging.Warning,
-            "codex_refresh: failed to persist refreshed credentials: "
-              <> reason,
-          )
-      }
+      let pending_write =
+        case codex_credentials.save(state.credentials_path, new_creds) {
+          Ok(_) -> option.None
+          Error(reason) -> {
+            logging.log(
+              logging.Warning,
+              "codex_refresh: failed to persist refreshed credentials: "
+                <> reason
+                <> " — will retry next tick",
+            )
+            option.Some(new_creds)
+          }
+        }
       logging.log(
         logging.Info,
         "codex_refresh: refreshed Codex access token for target \""
           <> state.target_id
           <> "\"",
       )
-      RefreshState(..state, creds: new_creds)
+      RefreshState(..state, creds: new_creds, pending_write:)
     }
     Error(reason) -> {
       logging.log(

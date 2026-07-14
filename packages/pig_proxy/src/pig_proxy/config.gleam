@@ -95,8 +95,15 @@ pub fn with_models_dev_url(config: ProxyConfig, url: String) -> ProxyConfig {
 }
 
 /// Set the model catalog refresh interval in milliseconds.
+/// Non-positive values are replaced with the default refresh interval so
+/// a misconfigured env var cannot starve the actor into a tight refresh
+/// loop.
 pub fn with_models_refresh_ms(config: ProxyConfig, ms: Int) -> ProxyConfig {
-  ProxyConfig(..config, models_refresh_ms: ms)
+  let effective = case ms <= 0 {
+    True -> default_models_refresh_ms
+    False -> ms
+  }
+  ProxyConfig(..config, models_refresh_ms: effective)
 }
 
 /// A convenience builder for a standard OpenAI-compatible target.

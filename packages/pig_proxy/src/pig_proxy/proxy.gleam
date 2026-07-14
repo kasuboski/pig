@@ -190,14 +190,52 @@ pub type Usage {
 }
 
 fn usage_fields_decoder() -> decode.Decoder(Usage) {
-  use prompt <- decode.optional_field("prompt_tokens", None, decode.optional(decode.int))
-  use completion <- decode.optional_field("completion_tokens", None, decode.optional(decode.int))
+  use prompt <- decode.optional_field(
+    "prompt_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use completion <- decode.optional_field(
+    "completion_tokens",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(Usage(prompt:, completion:))
 }
 
+/// Usage fields for the Responses API (incl. Codex), which reports
+/// `input_tokens`/`output_tokens` inside `response.usage` on the
+/// `response.completed`/`response.incomplete` events.
+fn responses_usage_fields_decoder() -> decode.Decoder(Usage) {
+  use prompt <- decode.optional_field(
+    "input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use completion <- decode.optional_field(
+    "output_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(Usage(prompt:, completion:))
+}
+
+/// Decode usage from either a Chat Completions chunk (`usage.prompt_tokens`)
+/// or a Responses API chunk (`response.usage.input_tokens`). Non-usage
+/// chunks (content deltas, pings, `[DONE]`) fail both and are ignored.
 fn usage_decoder() -> decode.Decoder(Usage) {
+  decode.one_of(chat_usage_decoder(), or: [responses_usage_decoder()])
+}
+
+fn chat_usage_decoder() -> decode.Decoder(Usage) {
   use usage <- decode.field("usage", usage_fields_decoder())
   decode.success(usage)
+}
+
+fn responses_usage_decoder() -> decode.Decoder(Usage) {
+  // Drill into `response.usage` (Responses API / Codex) for input/output
+  // tokens emitted on response.completed/response.incomplete events.
+  decode.at(["response", "usage"], responses_usage_fields_decoder())
 }
 
 /// Parse token usage from a non-streaming JSON response body.
@@ -235,6 +273,11 @@ pub fn parse_usage_from_sse(chunk: String) -> Usage {
 /// fragment. Events are delimited by a blank line (`\n\n`). Any text after
 /// the last `\n\n` is returned as the leftover buffer for the next chunk.
 fn split_sse_events(buffer: String) -> #(List(String), String) {
+  // Normalise CRLF to LF so CRLF-delimited SSE streams (valid per the
+  // SSE spec) split the same way as LF-delimited ones. The buffer is
+  // used only for usage parsing, so normalising never affects the bytes
+  // forwarded to the client.
+  let buffer = string.replace(buffer, "\r\n", "\n")
   case string.split_once(buffer, "\n\n") {
     Ok(#(event, rest)) -> {
       let #(events, leftover) = split_sse_events(rest)
@@ -466,10 +509,27 @@ fn set_response_headers(
   resp: response.Response(a),
   headers: List(#(String, String)),
 ) -> response.Response(a) {
-  let filtered = list.filter(headers, fn(h) { !is_hop_by_hop_header(h.0) })
+  let nominated = connection_header_tokens(headers)
+  let filtered = list.filter(headers, fn(h) {
+    !is_hop_by_hop_header(h.0) && !list.contains(nominated, string.lowercase(h.0))
+  })
   list.fold(filtered, resp, fn(acc, h) {
     response.set_header(acc, h.0, h.1)
   })
+}
+
+/// Header names nominated by the upstream `Connection` header (RFC 7230
+/// §6.1). These are per-hop and must not be forwarded to the client;
+/// returned lowercased and trimmed for case-insensitive comparison.
+fn connection_header_tokens(headers: List(#(String, String))) -> List(String) {
+  case list.find(headers, fn(h) { string.lowercase(h.0) == "connection" }) {
+    Ok(#(_, value)) ->
+      value
+      |> string.split(",")
+      |> list.map(fn(t) { string.trim(string.lowercase(t)) })
+      |> list.filter(fn(t) { t != "" })
+    Error(_) -> []
+  }
 }
 
 /// Headers that must not be forwarded from an upstream response to the

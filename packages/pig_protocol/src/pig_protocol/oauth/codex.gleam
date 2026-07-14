@@ -15,6 +15,7 @@ import gleam/crypto
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/uri
 
@@ -41,8 +42,23 @@ pub fn token_url() -> String {
 }
 
 /// A PKCE verifier/challenge pair (RFC 7636).
-pub type Pkce {
+///
+/// Opaque so callers cannot construct mismatched verifier/challenge
+/// pairs (which would break the PKCE security guarantee). Use
+/// `generate_pkce` to create a pair and `verifier`/`challenge` to read
+/// the components.
+pub opaque type Pkce {
   Pkce(verifier: String, challenge: String)
+}
+
+/// The verifier to send in the token exchange request.
+pub fn verifier(pkce: Pkce) -> String {
+  pkce.verifier
+}
+
+/// The challenge embedded in the authorization URL.
+pub fn challenge(pkce: Pkce) -> String {
+  pkce.challenge
 }
 
 /// Generate a fresh PKCE verifier and its SHA-256 challenge.
@@ -123,13 +139,25 @@ pub fn refresh_request_body(refresh_token: String) -> String {
 }
 
 /// A parsed OAuth token endpoint response.
+///
+/// `refresh_token` is optional: per RFC 6749 §6 the authorization server
+/// MAY issue a new refresh token on refresh but is not required to. When
+/// absent, callers must retain their existing refresh token.
 pub type TokenResponse {
-  TokenResponse(access_token: String, refresh_token: String, expires_in: Int)
+  TokenResponse(
+    access_token: String,
+    refresh_token: Option(String),
+    expires_in: Int,
+  )
 }
 
 fn token_response_decoder() -> decode.Decoder(TokenResponse) {
   use access_token <- decode.field("access_token", decode.string)
-  use refresh_token <- decode.field("refresh_token", decode.string)
+  use refresh_token <- decode.optional_field(
+    "refresh_token",
+    option.None,
+    decode.optional(decode.string),
+  )
   use expires_in <- decode.field("expires_in", decode.int)
   decode.success(TokenResponse(access_token:, refresh_token:, expires_in:))
 }

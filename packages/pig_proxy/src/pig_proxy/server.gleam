@@ -126,8 +126,15 @@ fn proxy_request(
 
       case streaming {
         True -> {
-          let body_with_usage = proxy.ensure_stream_usage(body)
-          proxy.forward_stream(req, target, method, path, req.headers, body_with_usage)
+          // stream_options.include_usage is a Chat Completions feature;
+          // the Responses API emits usage in response.completed regardless.
+          let body_with_usage = case path == "/v1/chat/completions" {
+            True -> proxy.ensure_stream_usage(body)
+            False -> body
+          }
+          proxy.forward_stream(
+            req, target, method, path, req.headers, body_with_usage,
+          )
         }
         False -> {
           let resp =
@@ -272,7 +279,7 @@ fn apply_live_credential(
             codex_token: Some(token),
           )
         vault.CredentialFound(vault.ApiKey(key)) ->
-          config.UpstreamTarget(..target, api_key: key)
+          config.UpstreamTarget(..target, api_key: key, codex_token: None)
         vault.CredentialNotFound -> target
       }
     None -> target

@@ -96,50 +96,55 @@ fn bootstrap_codex_credentials(
 ) {
   let path = codex_credentials.default_path()
   case codex_credentials.load(path) {
-    Ok(creds) -> {
-      // Find the target that should receive the Codex credential: prefer
-      // one already carrying a `codex_token`, otherwise the env-provided
-      // `OPENAI_COMPAT_CODEX_TOKEN` target, otherwise the first target.
-      let target_id =
-        find_codex_target_id(cfg)
-        |> option.unwrap("default")
-
-      let initial =
-        vault
-        .initial_credentials([#(target_id, vault.CodexToken(creds.access_token))])
-      case vault.start(initial) {
-        Ok(v) -> {
-          case
-            codex_refresh.start(
-              v,
-              target_id,
-              path,
-              creds,
-              codex_refresh.default_check_interval_ms,
-              codex_refresh.default_refresh_buffer_ms,
-            )
-          {
-            Ok(refresh) -> #(Some(v), Some(refresh))
+    Ok(creds) ->
+      case find_codex_target_id(cfg) {
+        Some(target_id) -> {
+          let initial =
+            vault
+            .initial_credentials([
+              #(target_id, vault.CodexToken(creds.access_token)),
+            ])
+          case vault.start(initial) {
+            Ok(v) ->
+              case
+                codex_refresh.start(
+                  v,
+                  target_id,
+                  path,
+                  creds,
+                  codex_refresh.default_check_interval_ms,
+                  codex_refresh.default_refresh_buffer_ms,
+                )
+              {
+                Ok(refresh) -> #(Some(v), Some(refresh))
+                Error(_) -> {
+                  logging.log(
+                    logging.Warning,
+                    "failed to start Codex token refresh actor — tokens will"
+                      <> " not be refreshed automatically",
+                  )
+                  #(Some(v), None)
+                }
+              }
             Error(_) -> {
               logging.log(
                 logging.Warning,
-                "failed to start Codex token refresh actor — tokens will not"
-                  <> " be refreshed automatically",
+                "failed to start credential vault — live credential rotation"
+                  <> " disabled",
               )
-              #(Some(v), None)
+              #(None, None)
             }
           }
         }
-        Error(_) -> {
+        None -> {
           logging.log(
             logging.Warning,
-            "failed to start credential vault — live credential rotation"
-              <> " disabled",
+            "no target is configured with a codex_token — live Codex token"
+              <> " rotation disabled",
           )
           #(None, None)
         }
       }
-    }
     Error(reason) -> {
       logging.log(
         logging.Warning,
@@ -155,15 +160,12 @@ fn bootstrap_codex_credentials(
 }
 
 /// Find the target id that should hold the Codex credential: the first
-/// target with a non-None `codex_token`, or the first target overall as
-/// a fallback.
+/// target explicitly configured with a `codex_token`. Returns `None`
+/// when no such target exists, so the caller can disable Codex bootstrap
+/// rather than injecting an OAuth token into a non-Codex target.
 fn find_codex_target_id(cfg: config.ProxyConfig) -> option.Option(String) {
   case list.find(cfg.targets, fn(t) { t.codex_token != None }) {
     Ok(t) -> Some(t.id)
-    Error(_) ->
-      case list.first(cfg.targets) {
-        Ok(t) -> Some(t.id)
-        Error(_) -> None
-      }
+    Error(_) -> None
   }
 }

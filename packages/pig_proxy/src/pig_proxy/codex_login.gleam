@@ -41,18 +41,28 @@ pub fn main() -> Nil {
   let url = codex_oauth.authorize_url(pkce, state, redirect_uri, originator)
 
   let subject = process.new_subject()
-  start_callback_server(subject, state)
+  case start_callback_server(subject, state) {
+    Ok(_) -> {
+      io.println(
+        "Open this URL in your browser to log in to Codex:\n\n" <> url <> "\n",
+      )
+      io.println("Waiting for the browser callback on " <> redirect_uri <> " ...")
 
-  io.println(
-    "Open this URL in your browser to log in to Codex:\n\n" <> url <> "\n",
-  )
-  io.println("Waiting for the browser callback on " <> redirect_uri <> " ...")
-
-  case process.receive(subject, callback_wait_ms) {
-    Error(_) -> io.println_error("Timed out waiting for the OAuth callback.")
-    Ok(CallbackError(reason)) -> io.println_error("Login failed: " <> reason)
-    Ok(CallbackOk(code)) -> finish_login(code, pkce.verifier, redirect_uri)
+      case process.receive(subject, callback_wait_ms) {
+        Error(_) -> io.println_error("Timed out waiting for the OAuth callback.")
+        Ok(CallbackError(reason)) ->
+          io.println_error("Login failed: " <> reason)
+        Ok(CallbackOk(code)) ->
+          finish_login(code, codex_oauth.verifier(pkce), redirect_uri)
+      }
+    }
+    Error(_) ->
+      io.println_error(
+        "Failed to start the OAuth callback server on 127.0.0.1:1455"
+          <> " — is the port already in use?",
+      )
   }
+  Nil
 }
 
 fn finish_login(code: String, verifier: String, redirect_uri: String) -> Nil {
@@ -85,18 +95,21 @@ pub fn exchange_code(
 ) -> Result(CodexCredentials, String) {
   let body = codex_oauth.exchange_request_body(code, verifier, redirect_uri)
   use resp_body <- result.try(post_token(body))
-  token_response_to_credentials(resp_body)
+  token_response_to_credentials(resp_body, "")
 }
 
 /// Exchange a refresh token for a fresh Codex token pair.
 pub fn refresh(refresh_token: String) -> Result(CodexCredentials, String) {
   let body = codex_oauth.refresh_request_body(refresh_token)
   use resp_body <- result.try(post_token(body))
-  token_response_to_credentials(resp_body)
+  // RFC 6749 §6: a refresh response may omit refresh_token; retain the
+  // one we just used so the next refresh can proceed.
+  token_response_to_credentials(resp_body, refresh_token)
 }
 
 fn token_response_to_credentials(
   resp_body: String,
+  fallback_refresh_token: String,
 ) -> Result(CodexCredentials, String) {
   use token <- result.try(
     codex_oauth.parse_token_response(resp_body)
@@ -111,7 +124,7 @@ fn token_response_to_credentials(
   let now_ms = telemetry.system_time()
   Ok(CodexCredentials(
     access_token: token.access_token,
-    refresh_token: token.refresh_token,
+    refresh_token: option.unwrap(token.refresh_token, fallback_refresh_token),
     expires_at_ms: now_ms + token.expires_in * 1000,
     account_id:,
   ))
@@ -144,15 +157,18 @@ fn post_token(body: String) -> Result(String, String) {
 fn start_callback_server(
   subject: process.Subject(CallbackResult),
   expected_state: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   let handler = fn(req) { handle_callback(req, subject, expected_state) }
-  let assert Ok(_) =
+  case
     handler
     |> mist.new
     |> mist.port(1455)
     |> mist.bind("127.0.0.1")
     |> mist.start
-  Nil
+  {
+    Ok(_) -> Ok(Nil)
+    Error(_) -> Error(Nil)
+  }
 }
 
 fn handle_callback(
