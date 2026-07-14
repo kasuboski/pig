@@ -174,8 +174,27 @@ fn walk(
   start: Int,
   attempt_fn: AttemptFn,
 ) -> Outcome {
+  walk_with(executor, request, targets, start, attempt_fn, None)
+}
+
+/// Walk the chain carrying the last `Exhausted` outcome seen. If the chain
+/// ends with every remaining target circuit-skipped, the prior exhaustion
+/// is reported (a 502 attributed to the last attempted target) rather than
+/// `NoTargets` — exhaustion must not be masked by skipped targets.
+fn walk_with(
+  executor: Executor,
+  request: ProxyRequest,
+  targets: List(UpstreamTarget),
+  start: Int,
+  attempt_fn: AttemptFn,
+  last_exhausted: Option(Outcome),
+) -> Outcome {
   case targets {
-    [] -> NoTargets(telemetry.system_time() - start)
+    [] ->
+      case last_exhausted {
+        Some(exhausted) -> exhausted
+        None -> NoTargets(telemetry.system_time() - start)
+      }
     [target, ..rest] ->
       case admit(executor, target.id) {
         False -> {
@@ -183,18 +202,15 @@ fn walk(
             logging.Debug,
             "execution: skipping target \"" <> target.id <> "\" — circuit open",
           )
-          walk(executor, request, rest, start, attempt_fn)
+          walk_with(executor, request, rest, start, attempt_fn, last_exhausted)
         }
         True -> {
           let outcome = attempt_target(executor, request, target, start, attempt_fn)
           case outcome {
             Committed(..) -> outcome
             CommittedStream(..) -> outcome
-            Exhausted(..) | NoTargets(..) ->
-              case rest {
-                [] -> outcome
-                _ -> walk(executor, request, rest, start, attempt_fn)
-              }
+            exhausted ->
+              walk_with(executor, request, rest, start, attempt_fn, Some(exhausted))
           }
         }
       }

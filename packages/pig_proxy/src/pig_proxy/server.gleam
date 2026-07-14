@@ -15,12 +15,11 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/int
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import logging
 import mist
 import pig_proxy/circuit_actor
-import pig_proxy/config.{type ProxyConfig, type UpstreamTarget}
+import pig_proxy/config.{type ProxyConfig}
 import pig_proxy/execution
 import pig_proxy/hackney
 import pig_proxy/metrics
@@ -106,15 +105,8 @@ fn proxy_request(
       let model = proxy.extract_model(body)
       let streaming = proxy.is_streaming(body)
       let method = method_to_string(req.method)
-      let primary = select_target(state, model)
-      let provider = config.provider_string(primary)
 
-      telemetry.emit(telemetry.RequestStart(
-        target_id: primary.id,
-        provider:,
-        model:,
-        streaming:,
-      ))
+      telemetry.emit(telemetry.RequestStart(model:, streaming:))
 
       let exec =
         execution.executor(hackney.transport(), state.circuit)
@@ -219,21 +211,6 @@ fn render_outcome(outcome: execution.Outcome) -> response.Response(mist.Response
       |> response.set_body(mist.Bytes(
         bytes_tree.from_string("streaming response was not driven onto the connection"),
       ))
-  }
-}
-
-/// Select the upstream target using route resolution.
-/// Falls back to the first configured target if no route matches.
-fn select_target(state: ServerState, model: String) -> UpstreamTarget {
-  let resolved = routes.resolve(state.config, state.routes, model)
-  case routes.primary_target(resolved) {
-    Some(target) -> target
-    None ->
-      case list.first(state.config.targets) {
-        Ok(target) -> target
-        Error(_) ->
-          panic as "no upstream targets configured — add at least one target"
-      }
   }
 }
 

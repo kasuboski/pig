@@ -175,6 +175,27 @@ pub fn all_targets_exhausted_test() {
   assert reason == "upstream_500"
 }
 
+/// When a target exhausts its budget and the rest are circuit-skipped, the
+/// outcome is the prior `Exhausted` (502, last attempted target) — NOT
+/// `NoTargets`, which would mask the exhaustion.
+pub fn exhaustion_not_masked_by_skipped_targets_test() {
+  let assert Ok(c) = circuit_actor.start(1, 1_000_000)
+  circuit_actor.record_failure(c, "ollama")
+  let assert Ok(s) =
+    in_memory_transport.start(
+      [status500(), status500()],
+      transport.TransportError("x"),
+    )
+  let outcome =
+    execution.orchestrate(
+      exec_with(in_memory_transport.transport(s), Some(c)),
+      req(),
+      execution.FallbackChain([openai(), ollama()]),
+    )
+  let assert execution.Exhausted(target_id:, ..) = outcome
+  let assert Some("openai") = target_id
+}
+
 // ── Circuit admission ───────────────────────────────────────────
 
 pub fn open_circuit_target_is_skipped_test() {
