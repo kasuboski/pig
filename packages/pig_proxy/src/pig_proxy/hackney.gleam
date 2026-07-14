@@ -5,6 +5,7 @@
 ////   - `stream_request`: async, invokes callbacks for each SSE chunk.
 
 import gleam/erlang/process
+import pig_proxy/transport
 
 /// Result of a synchronous hackney request.
 pub type HackneyResponse {
@@ -67,5 +68,21 @@ pub fn stream_request(
   ensure_started()
   process.spawn(fn() {
     ffi_stream_request_loop(method, url, headers, body, on_chunk, on_done, on_error)
+  })
+}
+
+/// The production transport adapter: wraps `sync_request` in the
+/// `transport.Transport` port so request execution can talk to upstream
+/// without knowing about hackney. Maps the hackney response into a
+/// `transport.Response` (any status) or `transport.TransportError`.
+pub fn transport() -> transport.Transport {
+  transport.Transport(sync: fn(req) {
+    case
+      sync_request(req.method, req.url, req.headers, req.body, req.timeout_ms)
+    {
+      OkResponse(status:, headers:, body:) ->
+        transport.Response(status:, headers:, body:)
+      ErrorResponse(reason:) -> transport.TransportError(reason:)
+    }
   })
 }
