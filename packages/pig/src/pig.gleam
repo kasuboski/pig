@@ -9,7 +9,8 @@
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option
-import gleam/otp/actor.{type StartError}
+import gleam/otp/actor.{type StartError as ActorStartError}
+import gleam/result
 import gleam/string
 import logging
 import pig/agent/runtime
@@ -20,10 +21,11 @@ import pig/obs/dispatcher
 import pig/obs/session
 import pig/obs/terminal
 import pig/provider.{type Provider, from_message}
+import pig/run_error.{type RunError}
+import pig/session_store.{type Session, type SessionError, type SessionStore}
 import pig/skill
 import pig/skill/librarian
 import pig/tool
-import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
 /// Opaque configuration builder. Construct with `new`, customize with
@@ -35,12 +37,23 @@ pub opaque type PigConfig {
     consumer_specs: List(ConsumerSpec),
     hooks: List(Hooks),
     initial_history: List(Message),
+    session_store: option.Option(SessionStore),
   )
 }
 
 /// Opaque handle to a running agent actor.
 pub opaque type Agent {
   Agent(subject: Subject(runtime.RuntimeMsg))
+}
+
+/// Errors that can prevent an agent from starting.
+pub type StartError {
+  /// The configuration combines options that cannot be used together.
+  InvalidConfiguration(message: String)
+  /// An OTP actor or configured consumer failed to start.
+  ActorStart(error: ActorStartError)
+  /// The configured durable session could not be loaded.
+  SessionLoad(error: SessionError)
 }
 
 /// Create a new PigConfig with a provider and sensible defaults.
@@ -54,6 +67,7 @@ pub fn new(provider: Provider) -> PigConfig {
     consumer_specs: [],
     hooks: [],
     initial_history: [],
+    session_store: option.None,
   )
 }
 
@@ -163,6 +177,14 @@ pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
   )
 }
 
+/// Configure synchronous durable storage for accepted agent transitions.
+///
+/// The store is loaded before the agent starts. Each newly accepted message
+/// delta is committed before Pig executes its effects or returns success.
+pub fn with_session_store(config: PigConfig, store: SessionStore) -> PigConfig {
+  PigConfig(..config, session_store: option.Some(store))
+}
+
 /// Register a terminal output consumer that prints formatted events to stdout.
 pub fn with_terminal_output(config: PigConfig) -> PigConfig {
   let name = process.new_name("pig_terminal")
@@ -208,6 +230,10 @@ pub fn with_consumer_specs(
 /// (if any) when the agent starts via `start()`. This allows resuming
 /// a previous conversation or providing context before the first prompt.
 ///
+/// A non-empty initial history cannot be combined with `with_session_store`:
+/// a configured durable store is authoritative, so `start` rejects that
+/// configuration. Persist the history in the store instead.
+///
 /// The provider will see these messages on the first `run()` call,
 /// along with any messages accumulated from session replay and the
 /// new user prompt.
@@ -230,6 +256,31 @@ pub fn agent_config(config: PigConfig) -> state.AgentConfig {
 /// Also creates a dispatcher actor and registers all configured consumers.
 /// Returns an `Agent` handle for sending prompts.
 pub fn start(config: PigConfig) -> Result(Agent, StartError) {
+  case config.session_store, config.initial_history {
+    option.Some(_), [_first, ..] ->
+      Error(InvalidConfiguration(
+        "SessionStore cannot be combined with non-empty initial_history",
+      ))
+    _, _ -> {
+      let loaded = case config.session_store {
+        option.None -> Ok(option.None)
+        option.Some(store) -> {
+          let session_store.SessionStore(load:, ..) = store
+          result.map(load(), option.Some)
+        }
+      }
+      case loaded {
+        Error(error) -> Error(SessionLoad(error))
+        Ok(session) -> start_with_session(config, session)
+      }
+    }
+  }
+}
+
+fn start_with_session(
+  config: PigConfig,
+  loaded_session: option.Option(Session),
+) -> Result(Agent, StartError) {
   let final_config = build_agent_config(config)
 
   // Start dispatcher
@@ -252,7 +303,7 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
         Ok(Error(e)) -> {
           // A consumer failed — shut down dispatcher
           process.send(dispatcher_subject, dispatcher.Stop)
-          Error(e)
+          Error(ActorStart(e))
         }
         _ -> {
           // All consumers started OK — register them
@@ -273,33 +324,40 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
               model: final_config.model,
               max_iterations: final_config.max_iterations,
             )
-          // Create initial state with system prompt and session replay.
-          // System messages are stripped from both replay and initial history
-          // because `messages_for_provider()` always prepends the configured
-          // system prompt. Keeping them would cause duplication.
-          let agent_st = case final_config.session_path {
-            option.Some(path) -> {
-              let st = state.new(final_config)
-              case session.replay(path) {
-                Ok(replayed) ->
-                  list.fold(
-                    strip_system_messages(replayed),
-                    st,
-                    state.add_message,
-                  )
-                Error(err) -> {
-                  logging.log(
-                    logging.Warning,
-                    "Session replay failed for "
-                      <> path
-                      <> ": "
-                      <> string.inspect(err),
-                  )
-                  st
+          // A durable store is authoritative when configured. Otherwise retain
+          // the legacy best-effort event-trace replay behavior.
+          let agent_st = case loaded_session {
+            option.Some(loaded) ->
+              list.fold(
+                strip_system_messages(loaded.messages),
+                state.new(final_config),
+                state.add_message,
+              )
+            option.None ->
+              case final_config.session_path {
+                option.Some(path) -> {
+                  let st = state.new(final_config)
+                  case session.replay(path) {
+                    Ok(replayed) ->
+                      list.fold(
+                        strip_system_messages(replayed),
+                        st,
+                        state.add_message,
+                      )
+                    Error(err) -> {
+                      logging.log(
+                        logging.Warning,
+                        "Session replay failed for "
+                          <> path
+                          <> ": "
+                          <> string.inspect(err),
+                      )
+                      st
+                    }
+                  }
                 }
+                option.None -> state.new(final_config)
               }
-            }
-            option.None -> state.new(final_config)
           }
           // Apply initial history on top of session replay
           let agent_st =
@@ -308,25 +366,34 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
               agent_st,
               state.add_message,
             )
+          let runtime_session = case config.session_store, loaded_session {
+            option.Some(store), option.Some(loaded) ->
+              runtime.SessionReady(store:, head: loaded.head)
+            _, _ -> runtime.SessionDisabled
+          }
           let rt_state =
-            runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
+            runtime.RuntimeState(
+              agent_state: agent_st,
+              config: runtime_config,
+              session: runtime_session,
+            )
           case runtime.start_with_state(runtime_config, rt_state) {
             Ok(subject) -> Ok(Agent(subject))
             Error(e) -> {
               // Runtime failed — shut down consumers and dispatcher
               process.send(dispatcher_subject, dispatcher.Stop)
-              Error(e)
+              Error(ActorStart(e))
             }
           }
         }
       }
     }
-    Error(e) -> Error(e)
+    Error(e) -> Error(ActorStart(e))
   }
 }
 
 /// Run a prompt against the agent with a 120-second default timeout.
-pub fn run(agent: Agent, prompt: String) -> Result(Message, AiError) {
+pub fn run(agent: Agent, prompt: String) -> Result(Message, RunError) {
   run_with_timeout(agent, prompt, 120_000)
 }
 
@@ -335,7 +402,7 @@ pub fn run_with_timeout(
   agent: Agent,
   prompt: String,
   timeout_ms: Int,
-) -> Result(Message, AiError) {
+) -> Result(Message, RunError) {
   runtime.run(agent.subject, prompt, timeout_ms)
 }
 
@@ -347,7 +414,7 @@ pub fn try_run_with_timeout(
   agent: Agent,
   prompt: String,
   timeout_ms: Int,
-) -> Result(Result(Message, AiError), Nil) {
+) -> Result(Result(Message, RunError), Nil) {
   runtime.try_run(agent.subject, prompt, timeout_ms)
 }
 
@@ -362,26 +429,26 @@ pub fn try_run_with_timeout(
 pub fn run_continue_with_timeout(
   agent: Agent,
   timeout_ms: Int,
-) -> Result(Message, AiError) {
+) -> Result(Message, RunError) {
   runtime.run_continue(agent.subject, timeout_ms)
 }
 
 /// Resume the agent loop from its current history with an explicit timeout.
 ///
 /// Returns `Error(Nil)` if the call times out or the agent crashes, instead of
-/// panicking. The inner result preserves the agent's response or `AiError`.
+/// panicking. The inner result preserves the agent's response or `RunError`.
 ///
 /// A timeout does not cancel in-flight provider or tool work, which may continue
 /// in the background.
 pub fn try_run_continue_with_timeout(
   agent: Agent,
   timeout_ms: Int,
-) -> Result(Result(Message, AiError), Nil) {
+) -> Result(Result(Message, RunError), Nil) {
   runtime.try_run_continue(agent.subject, timeout_ms)
 }
 
 /// Resume the agent loop with a 120-second default timeout.
-pub fn run_continue(agent: Agent) -> Result(Message, AiError) {
+pub fn run_continue(agent: Agent) -> Result(Message, RunError) {
   run_continue_with_timeout(agent, 120_000)
 }
 

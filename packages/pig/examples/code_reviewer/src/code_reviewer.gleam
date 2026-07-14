@@ -34,11 +34,12 @@ import gleam/io
 import gleam/result
 import gleam/string
 import pig
-import pig_protocol/error
-import pig_protocol/message
 import pig/openai
+import pig/run_error
 import pig/workspace
 import pig/workspace/tools
+import pig_protocol/error
+import pig_protocol/message
 import simplifile
 
 // ── CLI Args ────────────────────────────────────────────────────────
@@ -195,21 +196,29 @@ pub fn main() {
       io.println(string.inspect(other))
       "(summary generation failed)"
     }
-    Error(error.Timeout) -> {
+    Error(run_error.Inference(error.Timeout)) -> {
       io.println("   Warning: Summary timed out.")
       "(summary timed out)"
     }
-    Error(error.ApiError(msg)) -> {
+    Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("   Warning: API error: " <> msg)
       "(api error)"
     }
-    Error(error.RateLimited) -> {
+    Error(run_error.Inference(error.RateLimited)) -> {
       io.println("   Warning: Rate limited.")
       "(rate limited)"
     }
-    Error(error.InvalidResponse(detail)) -> {
+    Error(run_error.Inference(error.InvalidResponse(detail))) -> {
       io.println("   Warning: Invalid response: " <> detail)
       "(invalid response)"
+    }
+    Error(run_error.Session(session_error)) -> {
+      io.println("   Warning: Session error: " <> string.inspect(session_error))
+      "(session error)"
+    }
+    Error(run_error.Runtime(message)) -> {
+      io.println("   Warning: Runtime error: " <> message)
+      "(runtime error)"
     }
   }
 
@@ -272,18 +281,24 @@ pub fn main() {
       io.println("\nWarning: Unexpected response:")
       io.println(string.inspect(other))
     }
-    Error(error.Timeout) -> {
+    Error(run_error.Inference(error.Timeout)) -> {
       io.println("\nWarning: Review timed out (5 minute limit).")
       io.println("Try a faster model or increase the timeout.")
     }
-    Error(error.ApiError(msg)) -> {
+    Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("\nWarning: API error: " <> msg)
     }
-    Error(error.RateLimited) -> {
+    Error(run_error.Inference(error.RateLimited)) -> {
       io.println("\nWarning: Rate limited - wait a moment and try again.")
     }
-    Error(error.InvalidResponse(detail)) -> {
+    Error(run_error.Inference(error.InvalidResponse(detail))) -> {
       io.println("\nWarning: Invalid response from provider: " <> detail)
+    }
+    Error(run_error.Session(session_error)) -> {
+      io.println("\nWarning: Session error: " <> string.inspect(session_error))
+    }
+    Error(run_error.Runtime(message)) -> {
+      io.println("\nWarning: Runtime error: " <> message)
     }
   }
 

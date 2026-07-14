@@ -5,15 +5,21 @@
 //// Per TESTING_STRATEGY §Axiom 1: test features, not implementation.
 
 import gleam/erlang/process
-import gleam/option.{None}
+import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleeunit
 import pig
+import pig/agent/runtime
 import pig/agent/state
-import pig_protocol/message
 import pig/obs/consumer_spec
 import pig/obs/session
 import pig/obs/terminal
+import pig/provider
+import pig/session_store
+import pig/session_store/memory
 import pig/supervisor
+import pig_protocol/message
+import pig_protocol/stop_reason
 import support/harness
 import temporary
 
@@ -35,6 +41,53 @@ pub fn main() -> Nil {
 
 fn agent_config(config: pig.PigConfig) -> state.AgentConfig {
   pig.build_agent_config(config)
+}
+
+type CounterMessage {
+  Increment(process.Subject(Nil))
+  Count(process.Subject(Int))
+}
+
+fn start_counter() -> process.Subject(CounterMessage) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(counter_handler)
+    |> actor.start()
+  started.data
+}
+
+fn counter_handler(
+  count: Int,
+  msg: CounterMessage,
+) -> actor.Next(Int, CounterMessage) {
+  case msg {
+    Increment(reply_to) -> {
+      process.send(reply_to, Nil)
+      actor.continue(count + 1)
+    }
+    Count(reply_to) -> {
+      process.send(reply_to, count)
+      actor.continue(count)
+    }
+  }
+}
+
+fn increment(counter: process.Subject(CounterMessage)) -> Nil {
+  actor.call(counter, 1000, Increment)
+}
+
+fn count(counter: process.Subject(CounterMessage)) -> Int {
+  actor.call(counter, 1000, Count)
+}
+
+fn await_subject_owner(
+  subject: process.Subject(runtime.RuntimeMsg),
+  reply_to: process.Subject(process.Pid),
+) -> Nil {
+  case process.subject_owner(subject) {
+    Ok(pid) -> process.send(reply_to, pid)
+    Error(Nil) -> await_subject_owner(subject, reply_to)
+  }
 }
 
 // ── start_supervised ─────────────────────────────────────────────
@@ -262,4 +315,134 @@ pub fn multiple_runs_with_consumers_test() {
   let assert True = msg2 == response
 
   supervisor.stop(sup)
+}
+
+// ── Durable supervised sessions ──────────────────────────────────
+
+/// Session load errors are distinct from OTP startup errors and do not run inference.
+pub fn supervised_session_load_failure_is_distinct_test() {
+  let provider_calls = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Error(session_store.Unavailable("offline")) },
+      commit: fn(_commit) { Ok(session_store.Session(None, [])) },
+    )
+  let provider_fn = fn(_messages, _tools) {
+    increment(provider_calls)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let config = pig.new(provider_fn) |> agent_config
+
+  let assert Error(supervisor.SessionLoad(session_store.Unavailable("offline"))) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  assert count(provider_calls) == 0
+}
+
+/// A completed assistant loaded into a supervised runtime needs no provider call.
+pub fn supervised_loaded_terminal_assistant_returns_without_provider_test() {
+  let provider_calls = start_counter()
+  let completed =
+    message.Assistant("already complete", [], None, Some(stop_reason.Stop))
+  let store =
+    session_store.SessionStore(
+      load: fn() {
+        Ok(
+          session_store.Session(Some("loaded-head"), [
+            message.User("previous question"),
+            completed,
+          ]),
+        )
+      },
+      commit: fn(_commit) { Ok(session_store.Session(None, [])) },
+    )
+  let provider_fn = fn(_messages, _tools) {
+    increment(provider_calls)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let config = pig.new(provider_fn) |> agent_config
+
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  let assert Ok(response) = supervisor.run_continue_with_timeout(sup, 5000)
+  assert response == completed
+  assert count(provider_calls) == 0
+  supervisor.stop(sup)
+}
+
+/// Continuing loaded work commits just the new assistant against the loaded head.
+pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
+  let provider_calls = start_counter()
+  let provider_messages = process.new_subject()
+  let commits = process.new_subject()
+  let loaded = [message.System("discarded"), message.User("resume from here")]
+  let final = message.Assistant("continued", [], None, Some(stop_reason.Stop))
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(Some("loaded-head"), loaded)) },
+      commit: fn(commit) {
+        process.send(commits, commit)
+        Ok(session_store.Session(Some(commit.id), commit.messages))
+      },
+    )
+  let provider_fn = fn(messages, _tools) {
+    increment(provider_calls)
+    process.send(provider_messages, messages)
+    Ok(provider.from_message(final))
+  }
+  let config = pig.new(provider_fn) |> agent_config
+
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  let assert Ok(response) = supervisor.run_continue(sup)
+  assert response == final
+  let assert Ok(sent_to_provider) = process.receive(provider_messages, 1000)
+  assert sent_to_provider == [message.User("resume from here")]
+  let assert Ok(commit) = process.receive(commits, 1000)
+  assert commit.parent == Some("loaded-head")
+  assert commit.messages == [final]
+  assert count(provider_calls) == 1
+  supervisor.stop(sup)
+}
+
+/// A restarted durable runtime reloads the committed transcript instead of its
+/// startup snapshot, so continuing does not repeat completed inference.
+pub fn supervised_durable_runtime_restart_reloads_latest_session_test() {
+  let provider_calls = start_counter()
+  let completed =
+    message.Assistant("durably complete", [], None, Some(stop_reason.Stop))
+  let assert Ok(memory_store) = memory.start(session_store.Session(None, []))
+  let store = memory.store(memory_store)
+  let provider_fn = fn(_messages, _tools) {
+    increment(provider_calls)
+    Ok(provider.from_message(completed))
+  }
+  let config = pig.new(provider_fn) |> agent_config
+
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  let assert Ok(response) = supervisor.run_with_timeout(sup, "complete", 5000)
+  assert response == completed
+  assert count(provider_calls) == 1
+
+  let assert Ok(original_pid) = process.subject_owner(sup.subject)
+  let monitor = process.monitor(original_pid)
+  process.kill(original_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+
+  // Wait for the permanent worker to register its replacement; no whole-tree
+  // restart or timing sleep is involved.
+  let restarted = process.new_subject()
+  let _ = process.spawn(fn() { await_subject_owner(sup.subject, restarted) })
+  let assert Ok(restarted_pid) = process.receive(restarted, 5000)
+  assert restarted_pid != original_pid
+  let assert Ok(resumed) = supervisor.run_continue_with_timeout(sup, 5000)
+  assert resumed == completed
+  assert count(provider_calls) == 1
+
+  supervisor.stop(sup)
+  memory.stop(memory_store)
 }

@@ -11,6 +11,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleam/string
 import gleeunit
 import jscheam/schema
@@ -21,6 +22,9 @@ import pig/obs/dispatcher
 import pig/obs/events
 import pig/obs/session as session_writer
 import pig/provider
+import pig/run_error
+import pig/session_store
+import pig/session_store/memory
 import pig/tool
 import pig_protocol/error
 import pig_protocol/message
@@ -152,6 +156,42 @@ fn start_simple(
   #(subject, disp)
 }
 
+/// Start a runtime whose transitions are durably committed to `store`.
+fn start_with_session_store(
+  provider_fn: provider.Provider,
+  tools: List(tool.Tool),
+  store: session_store.SessionStore,
+  loaded_head: option.Option(String),
+) -> #(
+  process.Subject(runtime.RuntimeMsg),
+  process.Subject(dispatcher.DispatcherMessage),
+) {
+  let assert Ok(disp) = dispatcher.start()
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  let agent_config =
+    state.config(provider_fn)
+    |> state.with_tools(registry)
+    |> state.with_model("test-model")
+    |> state.with_max_iterations(50)
+  let config =
+    runtime.RuntimeConfig(
+      provider: provider_fn,
+      tools: registry,
+      hooks: [],
+      dispatcher: disp,
+      model: "test-model",
+      max_iterations: 50,
+    )
+  let initial_state =
+    runtime.RuntimeState(
+      agent_state: state.new(agent_config),
+      config:,
+      session: runtime.SessionReady(store, loaded_head),
+    )
+  let assert Ok(subject) = runtime.start_with_state(config, initial_state)
+  #(subject, disp)
+}
+
 fn collect_events(
   subject: process.Subject(events.SessionEvent),
   count: Int,
@@ -190,6 +230,104 @@ fn find_indices(haystack: List(String), needle: String) -> List(Int) {
     let assert Some(v) = x
     v
   })
+}
+
+type CounterMessage {
+  Increment
+  Count(process.Subject(Int))
+  StopCounter
+}
+
+fn start_counter() -> process.Subject(CounterMessage) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(counter_handler)
+    |> actor.start()
+  started.data
+}
+
+fn counter_handler(
+  count: Int,
+  message: CounterMessage,
+) -> actor.Next(Int, CounterMessage) {
+  case message {
+    Increment -> actor.continue(count + 1)
+    Count(reply_to) -> {
+      process.send(reply_to, count)
+      actor.continue(count)
+    }
+    StopCounter -> actor.stop()
+  }
+}
+
+fn count(counter: process.Subject(CounterMessage)) -> Int {
+  let reply_to = process.new_subject()
+  process.send(counter, Count(reply_to))
+  let assert Ok(value) = process.receive(reply_to, 1000)
+  value
+}
+
+fn stop_counter(counter: process.Subject(CounterMessage)) -> Nil {
+  process.send(counter, StopCounter)
+}
+
+type StoreControlMessage {
+  Next(process.Subject(Bool))
+}
+
+fn start_store_control(
+  commands: List(Bool),
+) -> process.Subject(StoreControlMessage) {
+  let assert Ok(started) =
+    actor.new(commands)
+    |> actor.on_message(store_control_handler)
+    |> actor.start()
+  started.data
+}
+
+fn store_control_handler(
+  commands: List(Bool),
+  message: StoreControlMessage,
+) -> actor.Next(List(Bool), StoreControlMessage) {
+  let Next(reply_to) = message
+  let assert [next, ..rest] = commands
+  process.send(reply_to, next)
+  actor.continue(rest)
+}
+
+fn controlled_store(
+  control: process.Subject(StoreControlMessage),
+  commits: process.Subject(session_store.SessionCommit),
+) -> session_store.SessionStore {
+  session_store.SessionStore(
+    load: fn() { Ok(session_store.Session(None, [])) },
+    commit: fn(commit) {
+      process.send(commits, commit)
+      case actor.call(control, 1000, Next) {
+        True -> Ok(session_store.Session(Some(commit.id), commit.messages))
+        False -> Error(session_store.Unavailable("offline"))
+      }
+    },
+  )
+}
+
+/// Returns an unrelated head after successful commits, modelling another writer
+/// advancing the session before the caller observes the commit result.
+fn foreign_head_controlled_store(
+  control: process.Subject(StoreControlMessage),
+  commits: process.Subject(session_store.SessionCommit),
+  foreign_head: String,
+) -> session_store.SessionStore {
+  session_store.SessionStore(
+    load: fn() { Ok(session_store.Session(None, [])) },
+    commit: fn(commit) {
+      process.send(commits, commit)
+      case actor.call(control, 1000, Next) {
+        True -> Ok(session_store.Session(Some(foreign_head), commit.messages))
+        False -> Error(session_store.Unavailable("offline"))
+      }
+    },
+  )
 }
 
 fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
@@ -675,7 +813,7 @@ pub fn max_iterations_circuit_breaker_test() {
     )
   let assert Ok(subject) = runtime.start(config)
   let assert Error(e) = runtime.run(subject, "loop", 5000)
-  let assert error.ApiError(message:) = e
+  let assert run_error.Inference(error.ApiError(message:)) = e
   assert string.contains(message, "exceeded maximum iterations")
   process.send(disp, dispatcher.Stop)
 }
@@ -768,6 +906,663 @@ pub fn parallel_tools_produces_correct_results_test() {
 }
 
 // ══════════════════════════════════════════════════════════════════
+//  Durable Session Commits
+// ══════════════════════════════════════════════════════════════════
+
+/// A terminal run commits its user prompt followed by its assistant reply.
+pub fn session_terminal_run_commits_ordered_transitions_test() {
+  let commits = process.new_subject()
+  let commit_count = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        process.send(commits, commit)
+        process.send(commit_count, Increment)
+        Ok(session_store.Session(Some(commit.id), commit.messages))
+      },
+    )
+  let reply = message.Assistant("hello", [], None, None)
+  let #(subject, disp) =
+    start_with_session_store(fixed_provider(reply), [], store, None)
+
+  let assert Ok(reply) = runtime.run(subject, "hi", 5000)
+  let assert [first, second] = [
+    process.receive(commits, 1000),
+    process.receive(commits, 1000),
+  ]
+  let assert Ok(first_commit) = first
+  let assert Ok(second_commit) = second
+  assert first_commit.messages == [message.User("hi")]
+  assert second_commit.messages == [reply]
+  assert second_commit.parent == Some(first_commit.id)
+  assert count(commit_count) == 2
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// A rejected user commit prevents inference and leaves runtime history unchanged.
+pub fn session_user_commit_failure_prevents_inference_test() {
+  let provider_called = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        case commit.messages {
+          [message.User(_)] -> Error(session_store.Unavailable("offline"))
+          _ -> Ok(session_store.Session(Some(commit.id), commit.messages))
+        }
+      },
+    )
+  let provider_fn = fn(_, _) {
+    process.send(provider_called, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) = start_with_session_store(provider_fn, [], store, None)
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "hi", 5000)
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_called) == 0
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// A successful commit reporting another head does not make its candidate current.
+pub fn session_commit_success_with_different_head_stays_pending_test() {
+  let commits = process.new_subject()
+  let control = start_store_control([True])
+  let provider_calls = start_counter()
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [],
+      foreign_head_controlled_store(control, commits, "newer-head"),
+      None,
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(
+    expected:,
+    actual:,
+  ))) = runtime.run(subject, "first", 5000)
+  let assert Ok(commit) = process.receive(commits, 1000)
+  assert expected == Some(commit.id)
+  assert actual == Some("newer-head")
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  // The pending candidate prevents another prompt from replacing it.
+  let assert Error(run_error.Runtime(reason)) =
+    runtime.run(subject, "second", 5000)
+  assert string.contains(reason, "pending")
+  assert runtime.history(subject, 1000) == []
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+}
+
+/// A pending retry that reports another head keeps the original commit pending.
+pub fn session_pending_retry_with_different_head_stays_pending_test() {
+  let commits = process.new_subject()
+  let control = start_store_control([False, True])
+  let provider_calls = start_counter()
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [],
+      foreign_head_controlled_store(control, commits, "newer-head"),
+      None,
+    )
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "first", 5000)
+  let assert Ok(first) = process.receive(commits, 1000)
+
+  let assert Error(run_error.Session(session_store.ParentConflict(
+    expected:,
+    actual:,
+  ))) = runtime.run_continue(subject, 5000)
+  let assert Ok(retried) = process.receive(commits, 1000)
+  assert retried == first
+  assert expected == Some(first.id)
+  assert actual == Some("newer-head")
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  let assert Error(run_error.Runtime(reason)) =
+    runtime.run(subject, "second", 5000)
+  assert string.contains(reason, "pending")
+  assert runtime.history(subject, 1000) == []
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+}
+
+/// An ambiguous failed commit remains pending and is retried with its exact ID.
+pub fn session_pending_commit_retries_exactly_and_resumes_test() {
+  let commits = process.new_subject()
+  let control = start_store_control([False, True, True])
+  let provider_calls = start_counter()
+  let final = message.Assistant("retried", [], None, None)
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(final))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [],
+      controlled_store(control, commits),
+      None,
+    )
+
+  // The user transition is ambiguous: it may have reached the store.
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "first", 5000)
+  let assert Ok(first) = process.receive(commits, 1000)
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  // Retry that exact commit, then commit the terminal assistant transition.
+  let assert Ok(result) = runtime.run_continue(subject, 5000)
+  assert result == final
+  let assert Ok(retried) = process.receive(commits, 1000)
+  let assert Ok(assistant_commit) = process.receive(commits, 1000)
+  assert retried == first
+  assert assistant_commit.parent == Some(first.id)
+  assert count(provider_calls) == 1
+  assert runtime.history(subject, 1000) == [message.User("first"), final]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// Failed retries remain pending, and a new prompt cannot replace pending work.
+pub fn session_pending_commit_repeated_failure_rejects_new_prompt_test() {
+  let commits = process.new_subject()
+  let control = start_store_control([False, False])
+  let provider_calls = start_counter()
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [],
+      controlled_store(control, commits),
+      None,
+    )
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "first", 5000)
+  let assert Ok(first) = process.receive(commits, 1000)
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run_continue(subject, 5000)
+  let assert Ok(retried) = process.receive(commits, 1000)
+  assert retried == first
+  assert runtime.history(subject, 1000) == []
+
+  let assert Error(run_error.Runtime(message)) =
+    runtime.run(subject, "second", 5000)
+  assert string.contains(message, "pending")
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// A rejected assistant commit retains the already durable user transition only.
+pub fn session_assistant_commit_failure_retains_user_history_test() {
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        case commit.messages {
+          [message.Assistant(..)] -> Error(session_store.Unavailable("offline"))
+          _ -> Ok(session_store.Session(Some(commit.id), commit.messages))
+        }
+      },
+    )
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("hello", [], None, None)),
+      [],
+      store,
+      None,
+    )
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "hi", 5000)
+  assert runtime.history(subject, 1000) == [message.User("hi")]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// A rejected assistant tool request remains uncommitted, so its tools never start.
+pub fn session_assistant_tool_request_commit_failure_prevents_tool_start_test() {
+  let provider_calls = start_counter()
+  let tool_starts = start_counter()
+  let tool_call =
+    message.ToolCall(
+      id: "echo-1",
+      name: "echo",
+      arguments_json: "{\"msg\":\"hello\"}",
+    )
+  let tool_request = message.Assistant("", [tool_call], None, None)
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        case commit.messages {
+          [message.Assistant(..)] -> Error(session_store.Unavailable("offline"))
+          _ -> Ok(session_store.Session(Some(commit.id), commit.messages))
+        }
+      },
+    )
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(tool_request))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [counted_echo_tool(tool_starts)],
+      store,
+      None,
+    )
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "use echo", 5000)
+  assert runtime.history(subject, 1000) == [message.User("use echo")]
+  assert count(provider_calls) == 1
+  assert count(tool_starts) == 0
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+  stop_counter(tool_starts)
+}
+
+fn assert_session_commit_error_prevents_provider(
+  commit_error: session_store.SessionError,
+) -> Nil {
+  let provider_calls = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(_) { Error(commit_error) },
+    )
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) = start_with_session_store(provider_fn, [], store, None)
+
+  let assert Error(run_error.Session(actual_error)) =
+    runtime.run(subject, "hi", 5000)
+  assert actual_error == commit_error
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+}
+
+/// Store conflict and corruption errors retain their typed identity and stop inference.
+pub fn session_parent_conflict_and_corrupt_commit_errors_prevent_inference_test() {
+  assert_session_commit_error_prevents_provider(session_store.ParentConflict(
+    expected: None,
+    actual: Some("other-head"),
+  ))
+  assert_session_commit_error_prevents_provider(session_store.Corrupt(
+    "commit log damaged",
+  ))
+}
+
+/// A rejected complete tool batch retains the durable assistant tool request and
+/// prevents another inference.
+pub fn session_tool_batch_commit_failure_retains_assistant_history_test() {
+  let provider_calls = start_counter()
+  let first =
+    message.ToolCall(id: "one", name: "echo", arguments_json: "{\"msg\":\"a\"}")
+  let second =
+    message.ToolCall(id: "two", name: "echo", arguments_json: "{\"msg\":\"b\"}")
+  let tool_request = message.Assistant("", [first, second], None, None)
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        case commit.messages {
+          [message.Tool(..), message.Tool(..)] ->
+            Error(session_store.Unavailable("offline"))
+          _ -> Ok(session_store.Session(Some(commit.id), commit.messages))
+        }
+      },
+    )
+  let provider_fn = fn(_, _) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(tool_request))
+  }
+  let #(subject, disp) =
+    start_with_session_store(provider_fn, [echo_tool()], store, None)
+
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run(subject, "run both", 5000)
+  assert count(provider_calls) == 1
+  assert runtime.history(subject, 1000)
+    == [message.User("run both"), tool_request]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+/// Parallel tool results are checkpointed together as the complete tool delta.
+pub fn session_two_tool_results_commit_as_one_delta_test() {
+  let commits = process.new_subject()
+  let commit_count = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [])) },
+      commit: fn(commit) {
+        process.send(commits, commit)
+        process.send(commit_count, Increment)
+        Ok(session_store.Session(Some(commit.id), commit.messages))
+      },
+    )
+  let first =
+    message.ToolCall(id: "one", name: "echo", arguments_json: "{\"msg\":\"a\"}")
+  let second =
+    message.ToolCall(id: "two", name: "echo", arguments_json: "{\"msg\":\"b\"}")
+  let tool_request = message.Assistant("", [first, second], None, None)
+  let final = message.Assistant("done", [], None, None)
+  let #(subject, disp) =
+    start_with_session_store(
+      sequenced_provider([tool_request, final]),
+      [echo_tool()],
+      store,
+      None,
+    )
+
+  let assert Ok(result) = runtime.run(subject, "run both", 5000)
+  assert result == final
+  let assert Ok(_) = process.receive(commits, 1000)
+  let assert Ok(_) = process.receive(commits, 1000)
+  let assert Ok(tool_commit) = process.receive(commits, 1000)
+  let assert Ok(_) = process.receive(commits, 1000)
+  assert tool_commit.messages
+    == [
+      message.Tool(tool_call_id: "one", content: "{\"echo\":\"a\"}"),
+      message.Tool(tool_call_id: "two", content: "{\"echo\":\"b\"}"),
+    ]
+  assert count(commit_count) == 4
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+}
+
+// ── Crash recovery after a successful durable commit ──────────────
+
+type CrashBoundary {
+  AfterUserCommit
+  AfterToolRequestCommit
+  AfterToolBatchCommit
+  AfterTerminalAssistantCommit
+}
+
+/// Delegates the target commit to memory, confirms it is durable, then blocks
+/// before returning to model a crash in the commit-success window.
+fn crash_after_durable_commit_store(
+  handle: memory.MemoryStore,
+  persisted: process.Subject(session_store.SessionCommit),
+  boundary: CrashBoundary,
+) -> session_store.SessionStore {
+  let durable = memory.store(handle)
+  let blocker: process.Subject(Nil) = process.new_subject()
+  let session_store.SessionStore(load:, commit:) = durable
+  session_store.SessionStore(load:, commit: fn(next) {
+    case commit(next) {
+      Ok(_) as result ->
+        case is_crash_boundary(boundary, next) {
+          True -> {
+            process.send(persisted, next)
+            process.receive_forever(blocker)
+            panic as "crashed commit resumed"
+          }
+          False -> result
+        }
+      Error(_) as result -> result
+    }
+  })
+}
+
+fn is_crash_boundary(
+  boundary: CrashBoundary,
+  commit: session_store.SessionCommit,
+) -> Bool {
+  let session_store.SessionCommit(messages:, ..) = commit
+  case boundary, messages {
+    AfterUserCommit, [message.User(_)] -> True
+    AfterToolRequestCommit, [message.Assistant(tool_calls: [_, ..], ..)] -> True
+    AfterToolBatchCommit, [message.Tool(..), message.Tool(..)] -> True
+    AfterTerminalAssistantCommit, [message.Assistant(tool_calls: [], ..)] ->
+      True
+    _, _ -> False
+  }
+}
+
+fn counted_provider(
+  counter: process.Subject(CounterMessage),
+  provider_fn: provider.Provider,
+) -> provider.Provider {
+  fn(messages, tools) {
+    process.send(counter, Increment)
+    provider_fn(messages, tools)
+  }
+}
+
+fn counted_echo_tool(counter: process.Subject(CounterMessage)) -> tool.Tool {
+  let base = echo_tool()
+  tool.Tool(definition: base.definition, handler: fn(args) {
+    process.send(counter, Increment)
+    base.handler(args)
+  })
+}
+
+fn start_restored_session(
+  provider_fn: provider.Provider,
+  tools: List(tool.Tool),
+  store: session_store.SessionStore,
+  snapshot: session_store.Session,
+) -> #(
+  process.Subject(runtime.RuntimeMsg),
+  process.Subject(dispatcher.DispatcherMessage),
+) {
+  let session_store.Session(head:, messages:) = snapshot
+  let assert Ok(disp) = dispatcher.start()
+  let registry = list.fold(tools, tool.new_registry(), tool.register)
+  let agent_config =
+    state.config(provider_fn)
+    |> state.with_tools(registry)
+    |> state.with_model("test-model")
+    |> state.with_max_iterations(50)
+  let agent_state =
+    list.fold(messages, state.new(agent_config), state.add_message)
+  let config =
+    runtime.RuntimeConfig(
+      provider: provider_fn,
+      tools: registry,
+      hooks: [],
+      dispatcher: disp,
+      model: "test-model",
+      max_iterations: 50,
+    )
+  let initial_state =
+    runtime.RuntimeState(
+      agent_state:,
+      config:,
+      session: runtime.SessionReady(store, head),
+    )
+  let assert Ok(subject) = runtime.start_with_state(config, initial_state)
+  #(subject, disp)
+}
+
+/// Exercises every commit/effect boundary via the public replacement contract.
+fn check_crash_after_successful_commit(boundary: CrashBoundary) {
+  let provider_calls_before = start_counter()
+  let provider_calls_after = start_counter()
+  let tool_calls = start_counter()
+  let first_call =
+    message.ToolCall(
+      id: "echo-1",
+      name: "echo",
+      arguments_json: "{\"msg\":\"restored one\"}",
+    )
+  let second_call =
+    message.ToolCall(
+      id: "echo-2",
+      name: "echo",
+      arguments_json: "{\"msg\":\"restored two\"}",
+    )
+  let tool_request =
+    message.Assistant("", [first_call, second_call], None, None)
+  let final = message.Assistant("complete", [], None, None)
+  let original_delegate = case boundary {
+    AfterToolRequestCommit | AfterToolBatchCommit ->
+      sequenced_provider([tool_request, final])
+    AfterUserCommit | AfterTerminalAssistantCommit -> fixed_provider(final)
+  }
+  let restored_delegate = case boundary {
+    AfterToolRequestCommit | AfterToolBatchCommit ->
+      sequenced_provider([tool_request, final])
+    AfterUserCommit | AfterTerminalAssistantCommit -> fixed_provider(final)
+  }
+  let assert Ok(handle) = memory.start(session_store.Session(None, []))
+  let persisted = process.new_subject()
+  let store = crash_after_durable_commit_store(handle, persisted, boundary)
+  let #(runtime_subject, dispatcher_before) =
+    start_with_session_store(
+      counted_provider(provider_calls_before, original_delegate),
+      [counted_echo_tool(tool_calls)],
+      store,
+      None,
+    )
+  let assert Ok(runtime_pid) = process.subject_owner(runtime_subject)
+  let runtime_monitor = process.monitor(runtime_pid)
+  let caller =
+    process.spawn_unlinked(fn() {
+      let _ = runtime.try_run(runtime_subject, "restore this", 60_000)
+      Nil
+    })
+  let caller_monitor = process.monitor(caller)
+
+  let assert Ok(commit) = process.receive(persisted, 1000)
+  assert is_crash_boundary(boundary, commit)
+  process.unlink(runtime_pid)
+  process.kill(runtime_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(runtime_monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 1000)
+  let caller_selector =
+    process.new_selector()
+    |> process.select_specific_monitor(caller_monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(caller_selector, 1000)
+
+  let snapshot = memory.snapshot(handle)
+  let assert session_store.Session(head: Some(_), messages: snapshot_history) =
+    snapshot
+  let expected_history = case boundary {
+    AfterUserCommit -> [message.User("restore this")]
+    AfterToolRequestCommit -> [message.User("restore this"), tool_request]
+    AfterToolBatchCommit -> [
+      message.User("restore this"),
+      tool_request,
+      message.Tool(
+        tool_call_id: "echo-1",
+        content: "{\"echo\":\"restored one\"}",
+      ),
+      message.Tool(
+        tool_call_id: "echo-2",
+        content: "{\"echo\":\"restored two\"}",
+      ),
+    ]
+    AfterTerminalAssistantCommit -> [message.User("restore this"), final]
+  }
+  assert snapshot_history == expected_history
+
+  let #(replacement, dispatcher_after) =
+    start_restored_session(
+      counted_provider(provider_calls_after, restored_delegate),
+      [counted_echo_tool(tool_calls)],
+      memory.store(handle),
+      snapshot,
+    )
+  let assert Ok(result) = runtime.run_continue(replacement, 5000)
+  assert result == final
+  assert count(provider_calls_before)
+    == case boundary {
+      AfterUserCommit -> 0
+      _ -> 1
+    }
+  assert count(provider_calls_after)
+    == case boundary {
+      AfterTerminalAssistantCommit -> 0
+      _ -> 1
+    }
+  assert count(tool_calls)
+    == case boundary {
+      AfterToolRequestCommit | AfterToolBatchCommit -> 2
+      _ -> 0
+    }
+
+  runtime.stop(replacement)
+  process.send(dispatcher_after, dispatcher.Stop)
+  process.send(dispatcher_before, dispatcher.Stop)
+  memory.stop(handle)
+  stop_counter(provider_calls_before)
+  stop_counter(provider_calls_after)
+  stop_counter(tool_calls)
+}
+
+/// A durable user prompt resumes at the provider without replaying prior work.
+pub fn crash_after_user_commit_restores_provider_action_test() {
+  check_crash_after_successful_commit(AfterUserCommit)
+}
+
+/// A durable assistant tool request resumes by executing its pending tools.
+pub fn crash_after_tool_request_commit_restores_tool_action_test() {
+  check_crash_after_successful_commit(AfterToolRequestCommit)
+}
+
+/// A durable complete tool batch resumes at the next provider call only.
+pub fn crash_after_tool_batch_commit_restores_provider_action_test() {
+  check_crash_after_successful_commit(AfterToolBatchCommit)
+}
+
+/// A durable terminal assistant is returned without another provider call.
+pub fn crash_after_terminal_assistant_commit_returns_durably_test() {
+  check_crash_after_successful_commit(AfterTerminalAssistantCommit)
+}
+
+// ══════════════════════════════════════════════════════════════════
 //  run_continue — Durable Agent Loop
 // ══════════════════════════════════════════════════════════════════
 
@@ -798,7 +1593,11 @@ fn start_with_history(
       max_iterations: 50,
     )
   let rt_state =
-    runtime.RuntimeState(agent_state: agent_st, config: runtime_config)
+    runtime.RuntimeState(
+      agent_state: agent_st,
+      config: runtime_config,
+      session: runtime.SessionDisabled,
+    )
   let assert Ok(subject) = runtime.start_with_state(runtime_config, rt_state)
   #(subject, disp)
 }
@@ -811,8 +1610,8 @@ pub fn run_continue_empty_history_returns_error_test() {
       [],
       [],
     )
-  let assert Error(e) = runtime.run_continue(subject, 5000)
-  let assert error.ApiError(message:) = e
+  let assert Error(run_error.Runtime(message)) =
+    runtime.run_continue(subject, 5000)
   assert string.contains(message, "no history to continue")
   process.send(disp, dispatcher.Stop)
 }
