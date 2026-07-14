@@ -41,6 +41,10 @@ pub opaque type PigConfig {
   )
 }
 
+type LoadedSession {
+  LoadedSession(store: SessionStore, session: Session)
+}
+
 /// Opaque handle to a running agent actor.
 pub opaque type Agent {
   Agent(subject: Subject(runtime.RuntimeMsg))
@@ -262,14 +266,17 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
         "SessionStore cannot be combined with non-empty initial_history",
       ))
     _, _ -> {
-      let loaded = case config.session_store {
+      let loaded_session = case config.session_store {
         option.None -> Ok(option.None)
         option.Some(store) -> {
           let session_store.SessionStore(load:, ..) = store
-          result.map(load(), option.Some)
+          load()
+          |> result.map(fn(session) {
+            option.Some(LoadedSession(store:, session:))
+          })
         }
       }
-      case loaded {
+      case loaded_session {
         Error(error) -> Error(SessionLoad(error))
         Ok(session) -> start_with_session(config, session)
       }
@@ -279,7 +286,7 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
 
 fn start_with_session(
   config: PigConfig,
-  loaded_session: option.Option(Session),
+  loaded_session: option.Option(LoadedSession),
 ) -> Result(Agent, StartError) {
   let final_config = build_agent_config(config)
 
@@ -327,9 +334,9 @@ fn start_with_session(
           // A durable store is authoritative when configured. Otherwise retain
           // the legacy best-effort event-trace replay behavior.
           let agent_st = case loaded_session {
-            option.Some(loaded) ->
+            option.Some(LoadedSession(session: loaded, ..)) ->
               list.fold(
-                strip_system_messages(loaded.messages),
+                state.strip_system_messages(loaded.messages),
                 state.new(final_config),
                 state.add_message,
               )
@@ -340,7 +347,7 @@ fn start_with_session(
                   case session.replay(path) {
                     Ok(replayed) ->
                       list.fold(
-                        strip_system_messages(replayed),
+                        state.strip_system_messages(replayed),
                         st,
                         state.add_message,
                       )
@@ -362,14 +369,14 @@ fn start_with_session(
           // Apply initial history on top of session replay
           let agent_st =
             list.fold(
-              strip_system_messages(config.initial_history),
+              state.strip_system_messages(config.initial_history),
               agent_st,
               state.add_message,
             )
-          let runtime_session = case config.session_store, loaded_session {
-            option.Some(store), option.Some(loaded) ->
+          let runtime_session = case loaded_session {
+            option.Some(LoadedSession(store:, session: loaded)) ->
               runtime.SessionReady(store:, head: loaded.head)
-            _, _ -> runtime.SessionDisabled
+            option.None -> runtime.SessionDisabled
           }
           let rt_state =
             runtime.RuntimeState(
@@ -471,20 +478,6 @@ pub fn test_harness() -> PigConfig {
   let response =
     message.Assistant("mock response", [], option.None, option.None)
   new(fn(_msgs, _tools) { Ok(from_message(response)) })
-}
-
-/// Strip System messages from a list.
-///
-/// System messages are managed exclusively by `AgentConfig.system_prompt`
-/// and prepended by `messages_for_provider()`. Including them in history
-/// (from session replay or initial_history) would cause duplication.
-fn strip_system_messages(messages: List(Message)) -> List(Message) {
-  list.filter(messages, fn(msg) {
-    case msg {
-      message.System(_) -> False
-      _ -> True
-    }
-  })
 }
 
 /// Build the final AgentConfig from a PigConfig.

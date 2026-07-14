@@ -86,7 +86,10 @@ fn await_subject_owner(
 ) -> Nil {
   case process.subject_owner(subject) {
     Ok(pid) -> process.send(reply_to, pid)
-    Error(Nil) -> await_subject_owner(subject, reply_to)
+    Error(Nil) -> {
+      process.sleep(1)
+      await_subject_owner(subject, reply_to)
+    }
   }
 }
 

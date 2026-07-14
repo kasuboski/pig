@@ -248,10 +248,16 @@ pub fn supervised_with_session_store(
           agent_config,
           dispatcher_name,
           name,
-          non_system_messages(loaded.messages),
+          state.strip_system_messages(loaded.messages),
           SessionReady(store:, head: loaded.head),
         )
-      Error(error) -> Error(actor.InitFailed(string.inspect(error)))
+      Error(error) -> {
+        logging.log(
+          logging.Error,
+          "Durable session reload failed: " <> string.inspect(error),
+        )
+        Error(actor.InitFailed(string.inspect(error)))
+      }
     }
   })
 }
@@ -274,15 +280,6 @@ fn start_named_runtime(
     Ok(started) -> Ok(Started(data: Nil, pid: started.pid))
     Error(error) -> Error(error)
   }
-}
-
-fn non_system_messages(messages: List(Message)) -> List(Message) {
-  list.filter(messages, fn(message) {
-    case message {
-      message.System(_) -> False
-      _ -> True
-    }
-  })
 }
 
 fn supervised_runtime_config(
@@ -463,13 +460,13 @@ fn commit_transition(
   disposition: PostCommitDisposition,
 ) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
   let delta = list.drop(candidate.history, list.length(previous.history))
-  case delta, session {
-    [], _ -> Ok(session)
-    _, SessionDisabled -> Ok(session)
-    messages, SessionReady(store:, head:) ->
-      commit_messages(store, head, messages, candidate, disposition)
-    _, SessionPending(..) ->
+  case session, delta {
+    SessionPending(..), _ ->
       panic as "cannot commit while a session commit is pending"
+    _, [] -> Ok(session)
+    SessionDisabled, _ -> Ok(session)
+    SessionReady(store:, head:), messages ->
+      commit_messages(store, head, messages, candidate, disposition)
   }
 }
 
