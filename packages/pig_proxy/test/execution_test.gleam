@@ -171,7 +171,7 @@ pub fn all_targets_exhausted_test() {
     )
   let assert execution.Exhausted(target_id:, reason:, ..) = outcome
   let assert Some("openai") = target_id
-  assert reason == "upstream returned 500: "
+  assert reason == "upstream_500"
 }
 
 // ── Circuit admission ───────────────────────────────────────────

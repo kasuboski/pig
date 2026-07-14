@@ -277,8 +277,7 @@ fn retry_after_of(resp: transport.TransportResponse) -> Option(String) {
 fn exhaustion_reason(resp: transport.TransportResponse) -> String {
   case resp {
     transport.TransportError(reason:) -> reason
-    transport.Response(status:, body:, ..) ->
-      "upstream returned " <> int.to_string(status) <> ": " <> body_to_string(body)
+    transport.Response(status:, ..) -> "upstream_" <> int.to_string(status)
   }
 }
 
