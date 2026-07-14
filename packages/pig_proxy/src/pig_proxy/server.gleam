@@ -17,31 +17,22 @@ import gleam/http/response
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/string
 import logging
 import mist
+import pig_proxy/circuit_actor
 import pig_proxy/config.{type ProxyConfig, type UpstreamTarget}
+import pig_proxy/execution
 import pig_proxy/hackney
 import pig_proxy/metrics
 import pig_proxy/metrics_endpoint
 import pig_proxy/model_catalog
 import pig_proxy/proxy
-import pig_proxy/retry
 import pig_proxy/routes.{type VirtualRoute}
 import pig_proxy/telemetry
 import pig_proxy/vault
 
 /// Maximum request body size (10 MB).
 const max_body_bytes = 10_485_760
-
-/// Default upstream timeout for non-streaming requests (120 s).
-const default_upstream_timeout_ms = 120_000
-
-/// Base delay for retry backoff (1 second).
-const retry_base_ms = 1000
-
-/// Maximum retry backoff cap (30 seconds).
-const retry_max_ms = 30_000
 
 /// Server state captured in the handler closure.
 pub type ServerState {
@@ -51,10 +42,13 @@ pub type ServerState {
     metrics: Option(process.Subject(metrics.MetricsMsg)),
     catalog: Option(process.Subject(model_catalog.CatalogMsg)),
     /// Credential vault. When present, the live credential for a target
-    /// (kept fresh by e.g. `pig_proxy/codex_refresh`) overrides the
-    /// static `api_key`/`codex_token` baked into `config` at startup —
-    /// see `apply_live_credential`.
+    /// (kept fresh by `pig_proxy/codex_refresh`) overrides the static
+    /// `TargetAuth` baked into `config` at startup.
     vault: Option(process.Subject(vault.VaultMsg)),
+    /// Per-target circuit breaker. When present, request execution
+    /// consults it for admission and records one failure per exhausted
+    /// retry budget.
+    circuit: Option(process.Subject(circuit_actor.CircuitMsg)),
   )
 }
 
@@ -110,23 +104,21 @@ fn proxy_request(
     Ok(body_req) -> {
       let body = bit_array_to_string(body_req.body)
       let model = proxy.extract_model(body)
-      let target = select_target(state, model)
-      let auth = resolve_auth(target, state.vault)
-      let method = method_to_string(req.method)
       let streaming = proxy.is_streaming(body)
-      let provider = config.provider_string(target)
+      let method = method_to_string(req.method)
+      let primary = select_target(state, model)
+      let provider = config.provider_string(primary)
 
       telemetry.emit(telemetry.RequestStart(
-        target_id: target.id,
+        target_id: primary.id,
         provider:,
         model:,
         streaming:,
       ))
 
-      let start_time = telemetry.system_time()
-
       case streaming {
         True -> {
+          let auth = resolve_auth(primary, state.vault)
           // stream_options.include_usage is a Chat Completions feature;
           // the Responses API emits usage in response.completed regardless.
           let body_with_usage = case path == "/v1/chat/completions" {
@@ -134,116 +126,99 @@ fn proxy_request(
             False -> body
           }
           proxy.forward_stream(
-            req, target, auth, method, path, req.headers, body_with_usage,
+            req, primary, auth, method, path, req.headers, body_with_usage,
           )
         }
         False -> {
-          let resp =
-            forward_with_retry(
-              state.config,
-              target,
-              auth,
-              method,
-              path,
-              req.headers,
-              body,
-              0,
+          let exec =
+            execution.executor(hackney.transport(), state.circuit)
+            |> maybe_with_vault(state.vault)
+            |> execution.with_retries_per_target(state.config.retries_per_target)
+          let outcome =
+            execution.orchestrate(
+              exec,
+              execution.ProxyRequest(
+                method:,
+                path:,
+                headers: req.headers,
+                body:,
+                model:,
+              ),
+              resolve_chain(state, model),
             )
-          let duration = telemetry.system_time() - start_time
-
-          case resp {
-            hackney.OkResponse(status:, body: resp_body, ..) -> {
-              let usage = proxy.parse_usage(bit_array_to_string(resp_body))
-              telemetry.emit(telemetry.RequestStop(
-                target_id: target.id,
-                provider:,
-                model:,
-                status:,
-                duration_ms: duration,
-                input_tokens: usage.prompt,
-                output_tokens: usage.completion,
-              ))
-            }
-            hackney.ErrorResponse(reason:) ->
-              telemetry.emit(telemetry.RequestError(
-                target_id: target.id,
-                provider:,
-                model:,
-                error_type: reason,
-              ))
-          }
-
-          proxy.sync_response_to_mist(resp)
+          emit_outcome_telemetry(outcome, model)
+          render_outcome(outcome)
         }
       }
     }
   }
 }
 
-/// Retry loop for non-streaming requests.
-/// Retries on transient HTTP status codes (429, 500, 502, 503, 504)
-/// and network errors, with exponential backoff and jitter.
-fn forward_with_retry(
-  config: ProxyConfig,
-  target: UpstreamTarget,
-  auth: proxy.ResolvedAuth,
-  method: String,
-  path: String,
-  headers: List(#(String, String)),
-  body: String,
-  attempt: Int,
-) -> hackney.HackneyResponse {
-  let resp =
-    proxy.forward_sync(target, auth, method, path, headers, body, default_upstream_timeout_ms)
+/// Resolve the ordered fallback chain for a model from routing. Falls
+/// back to all configured targets when no route matches.
+fn resolve_chain(state: ServerState, model: String) -> execution.FallbackChain {
+  let resolved = routes.resolve(state.config, state.routes, model)
+  let targets = case resolved {
+    routes.ResolvedRoute(targets:) -> targets
+    routes.NoTargets -> state.config.targets
+  }
+  execution.FallbackChain(targets:)
+}
 
-  case should_retry(resp, attempt, config.max_retries) {
-    True -> {
-      let retry_after = extract_retry_after(resp)
-      let delay =
-        retry.retry_delay(attempt, retry_base_ms, retry_max_ms, retry_after)
-      logging.log(
-        logging.Debug,
-        "proxy: retrying attempt " <> int.to_string(attempt + 1) <> " after "
-          <> int.to_string(delay)
-          <> "ms",
-      )
-      process.sleep(delay)
-      forward_with_retry(config, target, auth, method, path, headers, body, attempt + 1)
-    }
-    False -> resp
+/// Apply the vault to an executor when one is configured.
+fn maybe_with_vault(
+  exec: execution.Executor,
+  vault: Option(process.Subject(vault.VaultMsg)),
+) -> execution.Executor {
+  case vault {
+    Some(v) -> execution.with_vault(exec, v)
+    None -> exec
   }
 }
 
-/// Whether a response warrants a retry.
-fn should_retry(
-  resp: hackney.HackneyResponse,
-  attempt: Int,
-  max_retries: Int,
-) -> Bool {
-  case attempt >= max_retries {
-    True -> False
-    False ->
-      case resp {
-        hackney.OkResponse(status:, ..) -> retry.is_retryable_status(status)
-        hackney.ErrorResponse(..) -> True
-      }
+/// Emit exactly one terminal telemetry event, attributed to the target
+/// that produced the committed outcome (or the last attempted target).
+fn emit_outcome_telemetry(outcome: execution.Outcome, model: String) -> Nil {
+  case outcome {
+    execution.Committed(
+      target_id:, provider:, status:, usage:, duration_ms:, ..
+    ) ->
+      telemetry.emit(telemetry.RequestStop(
+        target_id:, provider:, model:, status:, duration_ms:,
+        input_tokens: usage.prompt,
+        output_tokens: usage.completion,
+      ))
+    execution.Exhausted(target_id:, provider:, reason:, ..) ->
+      telemetry.emit(telemetry.RequestError(
+        target_id: option.unwrap(target_id, ""),
+        provider:, model:, error_type: reason,
+      ))
+    execution.NoTargets(..) ->
+      telemetry.emit(telemetry.RequestError(
+        target_id: "",
+        provider: "",
+        model:, error_type: "no upstream targets available",
+      ))
   }
 }
 
-/// Extract the Retry-After header value from a hackney response, if present.
-/// HTTP headers are case-insensitive, so we compare lowercased.
-fn extract_retry_after(
-  resp: hackney.HackneyResponse,
-) -> Option(String) {
-  case resp {
-    hackney.OkResponse(headers:, ..) ->
-      case list.find(headers, fn(h) {
-        string.lowercase(h.0) == "retry-after"
-      }) {
-        Ok(#(_, value)) -> Some(value)
-        Error(_) -> None
-      }
-    hackney.ErrorResponse(..) -> None
+/// Render an execution outcome as a mist response.
+fn render_outcome(outcome: execution.Outcome) -> response.Response(mist.ResponseData) {
+  case outcome {
+    execution.Committed(status:, headers:, body:, ..) ->
+      proxy.render_response(status, headers, body)
+    execution.Exhausted(reason:, ..) ->
+      response.new(502)
+      |> response.set_header("content-type", "text/plain")
+      |> response.set_body(mist.Bytes(
+        bytes_tree.from_string("upstream error: " <> reason),
+      ))
+    execution.NoTargets(..) ->
+      response.new(503)
+      |> response.set_header("content-type", "text/plain")
+      |> response.set_body(mist.Bytes(
+        bytes_tree.from_string("no upstream targets available"),
+      ))
   }
 }
 

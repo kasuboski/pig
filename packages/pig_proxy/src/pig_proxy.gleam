@@ -25,6 +25,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import logging
+import pig_proxy/circuit_actor
 import pig_proxy/codex_credentials
 import pig_proxy/codex_refresh
 import pig_proxy/config
@@ -75,12 +76,28 @@ pub fn main() -> Nil {
   // triggers an external restart instead of silently stopping rotation.
   let _ = link_refresh_actor(refresh_subject)
 
+  // Start the per-target circuit breaker actor consulted by request
+  // execution. Degrades to None (no circuit protection) if it fails.
+  let circuit_subject = case
+    circuit_actor.start(cfg.circuit_threshold, cfg.circuit_cooldown_ms)
+  {
+    Ok(subject) -> Some(subject)
+    Error(_) -> {
+      logging.log(
+        logging.Warning,
+        "failed to start circuit breaker actor — circuit protection disabled",
+      )
+      None
+    }
+  }
+
   let state = server.ServerState(
     config: cfg,
     routes: [],
     metrics: metrics_subject,
     catalog: catalog_subject,
     vault: vault_subject,
+    circuit: circuit_subject,
   )
 
   server.start(state)

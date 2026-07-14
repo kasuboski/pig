@@ -50,8 +50,9 @@ pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
     port: Int,
-    /// Max retries for transient errors before failing over.
-    max_retries: Int,
+    /// Per-Target Retry Budget: additional attempts per upstream target
+    /// before moving to the next fallback. Resets per target.
+    retries_per_target: Int,
     /// Consecutive failures before opening a circuit breaker.
     circuit_threshold: Int,
     /// Cool-down period (ms) before a half-open probe is attempted.
@@ -71,7 +72,7 @@ pub type ProxyConfig {
 /// Defaults matching the project's local ollama setup.
 pub const default_port = 8080
 
-pub const default_max_retries = 3
+pub const default_retries_per_target = 1
 
 pub const default_circuit_threshold = 5
 
@@ -86,7 +87,7 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
     port: default_port,
-    max_retries: default_max_retries,
+    retries_per_target: default_retries_per_target,
     circuit_threshold: default_circuit_threshold,
     circuit_cooldown_ms: default_circuit_cooldown_ms,
     models_dev_url: default_models_dev_url,
@@ -100,9 +101,12 @@ pub fn with_port(config: ProxyConfig, port: Int) -> ProxyConfig {
   ProxyConfig(..config, port:)
 }
 
-/// Set max retries.
-pub fn with_max_retries(config: ProxyConfig, max_retries: Int) -> ProxyConfig {
-  ProxyConfig(..config, max_retries:)
+/// Set the Per-Target Retry Budget (additional attempts after the first).
+pub fn with_retries_per_target(
+  config: ProxyConfig,
+  retries_per_target: Int,
+) -> ProxyConfig {
+  ProxyConfig(..config, retries_per_target:)
 }
 
 /// Set the models.dev catalog URL.
@@ -213,6 +217,7 @@ pub fn provider_string(target: UpstreamTarget) -> String {
 ///
 /// Reads:
 ///   PIG_PROXY_PORT                  — listening port (default 8080)
+///   PIG_PROXY_RETRIES_PER_TARGET    — Per-Target Retry Budget (default 1)
 ///   OPENAI_COMPAT_BASE_URL          — upstream base URL
 ///   OPENAI_COMPAT_API_KEY           — upstream API key
 ///   OPENAI_COMPAT_MODEL             — default model slug
@@ -233,6 +238,7 @@ pub fn from_env() -> ProxyConfig {
 
   new([target])
   |> with_port(port_env())
+  |> with_retries_per_target(retries_per_target_env())
   |> with_models_dev_url(models_dev_url_env())
   |> with_models_refresh_ms(models_refresh_ms_env())
   |> with_codex_seed_token(codex_token)
@@ -271,6 +277,17 @@ fn port_env() -> Int {
         Error(_) -> default_port
       }
     Error(_) -> default_port
+  }
+}
+
+fn retries_per_target_env() -> Int {
+  case envoy.get("PIG_PROXY_RETRIES_PER_TARGET") {
+    Ok(str) ->
+      case int.parse(str) {
+        Ok(n) -> n
+        Error(_) -> default_retries_per_target
+      }
+    Error(_) -> default_retries_per_target
   }
 }
 

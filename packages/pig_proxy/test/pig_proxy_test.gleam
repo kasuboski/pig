@@ -130,7 +130,7 @@ pub fn extract_model_absent_returns_unknown_test() {
 pub fn config_new_has_defaults_test() {
   let cfg = config.new([config.openai_target("a", "http://x/v1", "k")])
   assert cfg.port == config.default_port
-  assert cfg.max_retries == config.default_max_retries
+  assert cfg.retries_per_target == config.default_retries_per_target
   assert cfg.circuit_threshold == config.default_circuit_threshold
   assert cfg.circuit_cooldown_ms == config.default_circuit_cooldown_ms
 }

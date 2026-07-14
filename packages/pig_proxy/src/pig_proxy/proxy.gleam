@@ -515,6 +515,19 @@ pub fn sync_response_to_mist(
   }
 }
 
+/// Render an upstream response (status, headers, body) as a mist response,
+/// filtering hop-by-hop and connection-nominated headers. Used by the
+/// execution path to render a committed outcome.
+pub fn render_response(
+  status: Int,
+  headers: List(#(String, String)),
+  body: BitArray,
+) -> response.Response(mist.ResponseData) {
+  response.new(status)
+  |> set_response_headers(headers)
+  |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
+}
+
 fn set_response_headers(
   resp: response.Response(a),
   headers: List(#(String, String)),
