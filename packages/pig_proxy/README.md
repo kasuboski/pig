@@ -215,7 +215,7 @@ request/error counts, bytes streamed, and token counts per model at
 ```text
 pig_proxy_requests_total{model="gpt-4o-mini"} 42
 pig_proxy_latency_p95_ms{model="gpt-4o-mini"} 812
-pig_proxy_cost_usd_total{model="gpt-4o-mini"} 0.003120
+pig_proxy_cost_usd{model="gpt-4o-mini"} 0.003120
 ```
 
 Cost is computed from live pricing pulled from models.dev

@@ -116,24 +116,19 @@ fn handle_message(
 ) -> actor.Next(RefreshState, RefreshMsg) {
   case msg {
     Tick -> {
-      // Retry any previously failed persist before considering another
-      // refresh, so a consumed refresh token is never overwritten by a
-      // newer one while the durable copy is still stale.
+      // Retry any previously failed persist, then refresh if the current
+      // credentials are expired. Expiry is checked every tick regardless of
+      // a pending write: if the token is expiring, do_refresh produces newer
+      // credentials that replace the pending write, so the durable copy
+      // catches up and the access token never goes stale while the actor
+      // keeps running.
       let state = flush_pending_write(state)
       let now_ms = telemetry.system_time()
-      let new_state = case state.pending_write {
-        option.Some(_) -> state
-        option.None ->
-          case
-            codex_credentials.is_expired(
-              state.creds,
-              now_ms,
-              state.refresh_buffer_ms,
-            )
-          {
-            True -> do_refresh(state)
-            False -> state
-          }
+      let new_state = case
+        codex_credentials.is_expired(state.creds, now_ms, state.refresh_buffer_ms)
+      {
+        True -> do_refresh(state)
+        False -> state
       }
       let _ =
         process.send_after(new_state.subject, new_state.check_interval_ms, Tick)

@@ -30,7 +30,7 @@ import gleam/option.{None, Some}
 ///   - `pig_proxy_bytes_streamed_total` (counter)
 ///   - `pig_proxy_input_tokens_total` (counter)
 ///   - `pig_proxy_output_tokens_total` (counter)
-///   - `pig_proxy_cost_usd_total` (gauge)
+///   - `pig_proxy_cost_usd` (gauge)
 pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
   let lines = [
     "# TYPE pig_proxy_requests_total counter",
@@ -41,7 +41,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
     "# TYPE pig_proxy_bytes_streamed_total counter",
     "# TYPE pig_proxy_input_tokens_total counter",
     "# TYPE pig_proxy_output_tokens_total counter",
-    "# TYPE pig_proxy_cost_usd_total gauge",
+    "# TYPE pig_proxy_cost_usd gauge",
   ]
 
   let model_lines =
@@ -93,7 +93,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
         "pig_proxy_output_tokens_total{" <> label <> "} " <> int.to_string(
           output_tokens,
         ),
-        "pig_proxy_cost_usd_total{" <> label <> "} " <> float_to_string(cost),
+        "pig_proxy_cost_usd{" <> label <> "} " <> float_to_string(cost),
       ]
     })
 
@@ -108,7 +108,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
 /// malformed value like "0.1000000".
 fn float_to_string(value: Float) -> String {
   let micros = float.round(value *. 1_000_000.0)
-  let whole = result.unwrap(int.divide(micros, 1_000_000), 0)
+  let whole = micros |> int.divide(1_000_000) |> result.unwrap(0)
   let fraction = micros - whole * 1_000_000
   int.to_string(whole) <> "." <> pad_fraction(fraction)
 }

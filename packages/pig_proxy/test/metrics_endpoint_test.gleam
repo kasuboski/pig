@@ -143,7 +143,7 @@ pub fn render_includes_token_and_cost_series_test() {
   )
   assert string.contains(
     output,
-    "pig_proxy_cost_usd_total{model=\"gpt-4\"} 0.000000",
+    "pig_proxy_cost_usd{model=\"gpt-4\"} 0.000000",
   )
 }
 
@@ -170,7 +170,7 @@ pub fn render_cost_matches_catalog_cost_usd_test() {
   let expected_cost = model_catalog.cost_usd(info, 1000, 500)
   assert string.contains(
     output,
-    "pig_proxy_cost_usd_total{model=\"gpt-4\"} " <> format_cost(expected_cost),
+    "pig_proxy_cost_usd{model=\"gpt-4\"} " <> format_cost(expected_cost),
   )
 }
 
@@ -184,17 +184,17 @@ pub fn render_cost_carries_fractional_overflow_test() {
   let output = metrics_endpoint.render(sample_snapshot(), catalog)
   assert string.contains(
     output,
-    "pig_proxy_cost_usd_total{model=\"gpt-4\"} 1.000000",
+    "pig_proxy_cost_usd{model=\"gpt-4\"} 1.000000",
   )
   assert !string.contains(
     output,
-    "pig_proxy_cost_usd_total{model=\"gpt-4\"} 0.1000000",
+    "pig_proxy_cost_usd{model=\"gpt-4\"} 0.1000000",
   )
 }
 
 fn format_cost(value: Float) -> String {
   let micros = float.round(value *. 1_000_000.0)
-  let whole = result.unwrap(int.divide(micros, 1_000_000), 0)
+  let whole = micros |> int.divide(1_000_000) |> result.unwrap(0)
   let fraction = micros - whole * 1_000_000
   int.to_string(whole) <> "." <> pad_fraction(fraction)
 }
