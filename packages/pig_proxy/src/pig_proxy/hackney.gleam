@@ -2,7 +2,8 @@
 ////
 //// Two modes:
 ////   - `sync_request`: blocking, returns the full response (non-streaming).
-////   - `stream_request`: async, invokes callbacks for each SSE chunk.
+////   - `stream`: opens a streaming request, returns synchronously at the
+////     first byte (the commit point), then forwards the rest once started.
 
 import gleam/erlang/process
 import pig_proxy/transport
@@ -12,6 +13,10 @@ pub type HackneyResponse {
   OkResponse(status: Int, headers: List(#(String, String)), body: BitArray)
   ErrorResponse(reason: String)
 }
+
+/// How long to wait for the upstream head (status + first byte) before
+/// declaring a streaming attempt a transport failure.
+const head_timeout_ms = 30_000
 
 @external(erlang, "pig_proxy_hackney_ffi", "ensure_started")
 pub fn ensure_started() -> Nil
@@ -25,15 +30,13 @@ fn ffi_sync_request(
   timeout_ms: Int,
 ) -> HackneyResponse
 
-@external(erlang, "pig_proxy_hackney_ffi", "stream_request_loop")
-fn ffi_stream_request_loop(
+@external(erlang, "pig_proxy_hackney_ffi", "stream_connect")
+fn ffi_stream_connect(
   method: String,
   url: String,
   headers: List(#(String, String)),
   body: String,
-  chunk_cb: fn(BitArray) -> Nil,
-  done_cb: fn(Nil) -> Nil,
-  error_cb: fn(String) -> Nil,
+  head: process.Subject(transport.StreamHead),
 ) -> Nil
 
 /// Make a blocking HTTP request and return the full response.
@@ -48,41 +51,40 @@ pub fn sync_request(
   ffi_sync_request(method, url, headers, body, timeout_ms)
 }
 
-/// Start a streaming request in a dedicated relay process.
-///
-/// The relay receives upstream SSE chunks and invokes:
-///   - `on_chunk` for each binary chunk,
-///   - `on_done` when the stream completes,
-///   - `on_error` if the upstream fails.
-///
-/// Returns the relay's PID so the caller can monitor or link it.
-pub fn stream_request(
-  method: String,
-  url: String,
-  headers: List(#(String, String)),
-  body: String,
-  on_chunk: fn(BitArray) -> Nil,
-  on_done: fn(Nil) -> Nil,
-  on_error: fn(String) -> Nil,
-) -> process.Pid {
+/// Open a streaming request. A relay process connects to the upstream and
+/// reports the head (status + first byte) to a fresh subject; this returns
+/// synchronously with that head — the commit point. For a committed
+/// attempt the relay then waits to be `StartRelay`-ed by the consumer
+/// before forwarding the body.
+pub fn stream(req: transport.TransportRequest) -> transport.StreamHead {
   ensure_started()
-  process.spawn(fn() {
-    ffi_stream_request_loop(method, url, headers, body, on_chunk, on_done, on_error)
+  let head = process.new_subject()
+  let relay = process.spawn(fn() {
+    ffi_stream_connect(req.method, req.url, req.headers, req.body, head)
   })
+  case process.receive(head, head_timeout_ms) {
+    Ok(h) -> h
+    Error(Nil) -> {
+      process.kill(relay)
+      transport.StreamFailure("timeout waiting for upstream head")
+    }
+  }
 }
 
-/// The production transport adapter: wraps `sync_request` in the
-/// `transport.Transport` port so request execution can talk to upstream
-/// without knowing about hackney. Maps the hackney response into a
-/// `transport.Response` (any status) or `transport.TransportError`.
+/// The production transport adapter: wraps `sync_request` and `stream` in
+/// the `transport.Transport` port so request execution can talk to
+/// upstream without knowing about hackney.
 pub fn transport() -> transport.Transport {
-  transport.Transport(sync: fn(req) {
-    case
-      sync_request(req.method, req.url, req.headers, req.body, req.timeout_ms)
-    {
-      OkResponse(status:, headers:, body:) ->
-        transport.Response(status:, headers:, body:)
-      ErrorResponse(reason:) -> transport.TransportError(reason:)
-    }
-  })
+  transport.Transport(
+    sync: fn(req) {
+      case
+        sync_request(req.method, req.url, req.headers, req.body, req.timeout_ms)
+      {
+        OkResponse(status:, headers:, body:) ->
+          transport.Response(status:, headers:, body:)
+        ErrorResponse(reason:) -> transport.TransportError(reason:)
+      }
+    },
+    stream: fn(req) { stream(req) },
+  )
 }

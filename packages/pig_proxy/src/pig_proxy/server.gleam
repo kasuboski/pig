@@ -116,36 +116,24 @@ fn proxy_request(
         streaming:,
       ))
 
+      let exec =
+        execution.executor(hackney.transport(), state.circuit)
+        |> maybe_with_vault(state.vault)
+        |> execution.with_retries_per_target(state.config.retries_per_target)
+      let request =
+        execution.ProxyRequest(
+          method:,
+          path:,
+          headers: req.headers,
+          body:,
+          model:,
+        )
+      let chain = resolve_chain(state, model)
+
       case streaming {
-        True -> {
-          let auth = resolve_auth(primary, state.vault)
-          // stream_options.include_usage is a Chat Completions feature;
-          // the Responses API emits usage in response.completed regardless.
-          let body_with_usage = case path == "/v1/chat/completions" {
-            True -> proxy.ensure_stream_usage(body)
-            False -> body
-          }
-          proxy.forward_stream(
-            req, primary, auth, method, path, req.headers, body_with_usage,
-          )
-        }
+        True -> execute_stream(req, exec, request, chain, path, model)
         False -> {
-          let exec =
-            execution.executor(hackney.transport(), state.circuit)
-            |> maybe_with_vault(state.vault)
-            |> execution.with_retries_per_target(state.config.retries_per_target)
-          let outcome =
-            execution.orchestrate(
-              exec,
-              execution.ProxyRequest(
-                method:,
-                path:,
-                headers: req.headers,
-                body:,
-                model:,
-              ),
-              resolve_chain(state, model),
-            )
+          let outcome = execution.orchestrate(exec, request, chain)
           emit_outcome_telemetry(outcome, model)
           render_outcome(outcome)
         }
@@ -199,6 +187,10 @@ fn emit_outcome_telemetry(outcome: execution.Outcome, model: String) -> Nil {
         provider: "",
         model:, error_type: "no upstream targets available",
       ))
+    // A streaming commit is driven onto the connection by `execute_stream`;
+    // its terminal telemetry is emitted by the chunked loop. Reaching here
+    // would mean a commit was never driven — emit nothing.
+    execution.CommittedStream(..) -> Nil
   }
 }
 
@@ -219,6 +211,14 @@ fn render_outcome(outcome: execution.Outcome) -> response.Response(mist.Response
       |> response.set_body(mist.Bytes(
         bytes_tree.from_string("no upstream targets available"),
       ))
+    // Unreachable in practice: a streaming commit is driven by
+    // `execute_stream`, never rendered here. Defensive fallback.
+    execution.CommittedStream(..) ->
+      response.new(500)
+      |> response.set_header("content-type", "text/plain")
+      |> response.set_body(mist.Bytes(
+        bytes_tree.from_string("streaming response was not driven onto the connection"),
+      ))
   }
 }
 
@@ -237,45 +237,38 @@ fn select_target(state: ServerState, model: String) -> UpstreamTarget {
   }
 }
 
-/// Resolve the concrete authentication to apply for a target: the live
-/// credential from the vault when one is configured and has an entry,
-/// otherwise the target's static `TargetAuth`. A `Codex` target with no
-/// live token in the vault resolves to an empty Codex credential and logs
-/// a warning (its requests will be unauthenticated) — that is a
-/// misconfiguration rather than a normal path.
-fn resolve_auth(
-  target: UpstreamTarget,
-  vault_subject: Option(process.Subject(vault.VaultMsg)),
-) -> proxy.ResolvedAuth {
-  case vault_subject {
-    Some(v) ->
-      case vault.get_credential(v, target.id, 2000) {
-        vault.CredentialFound(cred) -> credential_to_resolved(cred)
-        vault.CredentialNotFound -> static_auth(target)
-      }
-    None -> static_auth(target)
+/// Execute a streaming request through the execution seam, then drive the
+/// committed relay onto the client connection. Retry, fallback, and circuit
+/// admission apply up to the first byte; once committed, the chunked loop
+/// owns the rest and emits the terminal streaming telemetry.
+fn execute_stream(
+  req: request.Request(mist.Connection),
+  exec: execution.Executor,
+  request: execution.ProxyRequest,
+  chain: execution.FallbackChain,
+  path: String,
+  model: String,
+) -> response.Response(mist.ResponseData) {
+  // stream_options.include_usage is a Chat Completions feature; the
+  // Responses API emits usage in response.completed regardless.
+  let body = case path == "/v1/chat/completions" {
+    True -> proxy.ensure_stream_usage(request.body)
+    False -> request.body
   }
-}
+  let stream_request = execution.ProxyRequest(..request, body:)
 
-fn credential_to_resolved(cred: vault.Credential) -> proxy.ResolvedAuth {
-  case cred {
-    vault.ApiKey(key) -> proxy.ApiKey(key)
-    vault.CodexToken(token) -> proxy.Codex(token)
-  }
-}
-
-fn static_auth(target: UpstreamTarget) -> proxy.ResolvedAuth {
-  case target.auth {
-    config.ApiKey(key) -> proxy.ApiKey(key)
-    config.Codex -> {
-      logging.log(
-        logging.Warning,
-        "proxy: Codex target \""
-          <> target.id
-          <> "\" has no live token in the vault — requests will be"
-          <> " unauthenticated",
+  let start_time = telemetry.system_time()
+  let outcome = execution.orchestrate_stream(exec, stream_request, chain)
+  case outcome {
+    execution.CommittedStream(target_id:, provider:, status:, run:) -> {
+      let assert Ok(relay) = process.subject_owner(run)
+      proxy.stream_response(
+        req, run, relay, target_id, provider, model, status, start_time,
       )
-      proxy.Codex("")
+    }
+    execution.Committed(..) | execution.Exhausted(..) | execution.NoTargets(..) -> {
+      emit_outcome_telemetry(outcome, model)
+      render_outcome(outcome)
     }
   }
 }
