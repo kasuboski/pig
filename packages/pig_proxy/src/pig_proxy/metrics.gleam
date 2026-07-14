@@ -110,10 +110,7 @@ fn process_event(
   measurements: Dict(String, String),
   metadata: Dict(String, String),
 ) -> MetricsState {
-  let model = case dict.get(metadata, "model") {
-    Ok(m) -> m
-    Error(_) -> "unknown"
-  }
+  let model = metrics_key(metadata)
 
   case name {
     ["pig_proxy", "request", "stop"] -> {
@@ -274,4 +271,20 @@ pub fn get_snapshot(
 /// Create an empty snapshot (for testing or when no aggregator is running).
 pub fn empty_snapshot() -> MetricsSnapshot {
   MetricsSnapshot(models: dict.new())
+}
+
+/// Build the metrics dict key from telemetry metadata.
+///
+/// When `provider` is present and non-empty, the key is
+/// `provider/model` (e.g. `"openai/gpt-4o"`) so it matches the
+/// models.dev catalog slug. Otherwise the bare model name is used.
+fn metrics_key(metadata: Dict(String, String)) -> String {
+  let model = case dict.get(metadata, "model") {
+    Ok(m) -> m
+    Error(_) -> "unknown"
+  }
+  case dict.get(metadata, "provider") {
+    Ok(p) if p != "" -> p <> "/" <> model
+    _ -> model
+  }
 }

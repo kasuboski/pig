@@ -29,6 +29,7 @@ import pig_proxy/proxy
 import pig_proxy/retry
 import pig_proxy/routes.{type VirtualRoute}
 import pig_proxy/telemetry
+import pig_proxy/vault
 
 /// Maximum request body size (10 MB).
 const max_body_bytes = 10_485_760
@@ -49,6 +50,11 @@ pub type ServerState {
     routes: List(VirtualRoute),
     metrics: Option(process.Subject(metrics.MetricsMsg)),
     catalog: Option(process.Subject(model_catalog.CatalogMsg)),
+    /// Credential vault. When present, the live credential for a target
+    /// (kept fresh by e.g. `pig_proxy/codex_refresh`) overrides the
+    /// static `api_key`/`codex_token` baked into `config` at startup —
+    /// see `apply_live_credential`.
+    vault: Option(process.Subject(vault.VaultMsg)),
   )
 }
 
@@ -104,22 +110,31 @@ fn proxy_request(
     Ok(body_req) -> {
       let body = bit_array_to_string(body_req.body)
       let model = proxy.extract_model(body)
-      let target = select_target(state, model)
+      let target = select_target(state, model) |> apply_live_credential(state)
       let method = method_to_string(req.method)
       let streaming = proxy.is_streaming(body)
+      let provider = config.provider_string(target)
 
       telemetry.emit(telemetry.RequestStart(
         target_id: target.id,
-        model: model,
-        streaming: streaming,
+        provider:,
+        model:,
+        streaming:,
       ))
 
       let start_time = telemetry.system_time()
 
       case streaming {
         True -> {
-          let body_with_usage = proxy.ensure_stream_usage(body)
-          proxy.forward_stream(req, target, method, path, req.headers, body_with_usage)
+          // stream_options.include_usage is a Chat Completions feature;
+          // the Responses API emits usage in response.completed regardless.
+          let body_with_usage = case path == "/v1/chat/completions" {
+            True -> proxy.ensure_stream_usage(body)
+            False -> body
+          }
+          proxy.forward_stream(
+            req, target, method, path, req.headers, body_with_usage,
+          )
         }
         False -> {
           let resp =
@@ -139,8 +154,9 @@ fn proxy_request(
               let usage = proxy.parse_usage(bit_array_to_string(resp_body))
               telemetry.emit(telemetry.RequestStop(
                 target_id: target.id,
-                model: model,
-                status: status,
+                provider:,
+                model:,
+                status:,
                 duration_ms: duration,
                 input_tokens: usage.prompt,
                 output_tokens: usage.completion,
@@ -149,7 +165,8 @@ fn proxy_request(
             hackney.ErrorResponse(reason:) ->
               telemetry.emit(telemetry.RequestError(
                 target_id: target.id,
-                model: model,
+                provider:,
+                model:,
                 error_type: reason,
               ))
           }
@@ -239,6 +256,33 @@ fn select_target(state: ServerState, model: String) -> UpstreamTarget {
         Error(_) ->
           panic as "no upstream targets configured — add at least one target"
       }
+  }
+}
+
+/// Overlay the live credential from the vault onto the target, when a
+/// vault is configured. A `vault.CodexToken` becomes the target's
+/// `codex_token` (and its `api_key`, so the Bearer header matches what
+/// the Codex Responses endpoint expects); a `vault.ApiKey` becomes the
+/// target's `api_key`. If the vault has no entry for this target, the
+/// static config target is returned unchanged.
+fn apply_live_credential(
+  target: UpstreamTarget,
+  state: ServerState,
+) -> UpstreamTarget {
+  case state.vault {
+    Some(v) ->
+      case vault.get_credential(v, target.id, 2000) {
+        vault.CredentialFound(vault.CodexToken(token)) ->
+          config.UpstreamTarget(
+            ..target,
+            api_key: token,
+            codex_token: Some(token),
+          )
+        vault.CredentialFound(vault.ApiKey(key)) ->
+          config.UpstreamTarget(..target, api_key: key, codex_token: None)
+        vault.CredentialNotFound -> target
+      }
+    None -> target
   }
 }
 

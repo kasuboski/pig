@@ -19,6 +19,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import logging
 import mist
+import pig_protocol/auth
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/hackney
 import pig_proxy/telemetry
@@ -56,6 +57,9 @@ fn is_strip_header(key: String) -> Bool {
       "transfer-encoding",
       "content-type",
       "accept",
+      "chatgpt-account-id",
+      "openai-beta",
+      "originator",
     ],
     key_lower,
   )
@@ -78,8 +82,39 @@ pub fn inject_api_key(
 
 /// Build the full header list for an upstream request: scrubbed client
 /// headers plus injected auth and JSON content headers.
+///
+/// Targets with a Codex OAuth token (`target.codex_token`) get the Codex
+/// Responses API header set — `chatgpt-account-id` derived from the JWT,
+/// plus the required `OpenAI-Beta`/`originator` headers — instead of a
+/// plain Bearer key. If the token can't be decoded (e.g. malformed JWT),
+/// this falls back to plain Bearer injection and logs a warning rather
+/// than failing the request outright.
 pub fn build_upstream_headers(
   client_headers: List(#(String, String)),
+  target: UpstreamTarget,
+  streaming: Bool,
+) -> List(#(String, String)) {
+  let scrubbed = scrub_headers(client_headers)
+  case target.codex_token {
+    Some(token) ->
+      case auth.headers(auth.CodexOAuth(token, target.base_url), streaming) {
+        Ok(codex_headers) -> list.append(scrubbed, codex_headers)
+        Error(_) -> {
+          logging.log(
+            logging.Warning,
+            "proxy: failed to derive chatgpt-account-id for target \""
+              <> target.id
+              <> "\" — falling back to plain bearer injection",
+          )
+          bearer_headers(scrubbed, target, streaming)
+        }
+      }
+    None -> bearer_headers(scrubbed, target, streaming)
+  }
+}
+
+fn bearer_headers(
+  scrubbed_headers: List(#(String, String)),
   target: UpstreamTarget,
   streaming: Bool,
 ) -> List(#(String, String)) {
@@ -87,7 +122,7 @@ pub fn build_upstream_headers(
     True -> "text/event-stream"
     False -> "application/json"
   }
-  scrub_headers(client_headers)
+  scrubbed_headers
   |> inject_api_key(target.api_key)
   |> list.append([
     #("content-type", "application/json"),
@@ -155,14 +190,52 @@ pub type Usage {
 }
 
 fn usage_fields_decoder() -> decode.Decoder(Usage) {
-  use prompt <- decode.optional_field("prompt_tokens", None, decode.optional(decode.int))
-  use completion <- decode.optional_field("completion_tokens", None, decode.optional(decode.int))
+  use prompt <- decode.optional_field(
+    "prompt_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use completion <- decode.optional_field(
+    "completion_tokens",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(Usage(prompt:, completion:))
 }
 
+/// Usage fields for the Responses API (incl. Codex), which reports
+/// `input_tokens`/`output_tokens` inside `response.usage` on the
+/// `response.completed`/`response.incomplete` events.
+fn responses_usage_fields_decoder() -> decode.Decoder(Usage) {
+  use prompt <- decode.optional_field(
+    "input_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  use completion <- decode.optional_field(
+    "output_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(Usage(prompt:, completion:))
+}
+
+/// Decode usage from either a Chat Completions chunk (`usage.prompt_tokens`)
+/// or a Responses API chunk (`response.usage.input_tokens`). Non-usage
+/// chunks (content deltas, pings, `[DONE]`) fail both and are ignored.
 fn usage_decoder() -> decode.Decoder(Usage) {
+  decode.one_of(chat_usage_decoder(), or: [responses_usage_decoder()])
+}
+
+fn chat_usage_decoder() -> decode.Decoder(Usage) {
   use usage <- decode.field("usage", usage_fields_decoder())
   decode.success(usage)
+}
+
+fn responses_usage_decoder() -> decode.Decoder(Usage) {
+  // Drill into `response.usage` (Responses API / Codex) for input/output
+  // tokens emitted on response.completed/response.incomplete events.
+  decode.at(["response", "usage"], responses_usage_fields_decoder())
 }
 
 /// Parse token usage from a non-streaming JSON response body.
@@ -200,6 +273,11 @@ pub fn parse_usage_from_sse(chunk: String) -> Usage {
 /// fragment. Events are delimited by a blank line (`\n\n`). Any text after
 /// the last `\n\n` is returned as the leftover buffer for the next chunk.
 fn split_sse_events(buffer: String) -> #(List(String), String) {
+  // Normalise CRLF to LF so CRLF-delimited SSE streams (valid per the
+  // SSE spec) split the same way as LF-delimited ones. The buffer is
+  // used only for usage parsing, so normalising never affects the bytes
+  // forwarded to the client.
+  let buffer = string.replace(buffer, "\r\n", "\n")
   case string.split_once(buffer, "\n\n") {
     Ok(#(event, rest)) -> {
       let #(events, leftover) = split_sse_events(rest)
@@ -283,6 +361,7 @@ pub fn forward_stream(
   let headers = build_upstream_headers(client_headers, target, True)
   let model = extract_model(body)
   let target_id = target.id
+  let provider = config.provider_string(target)
   logging.log(logging.Debug, "proxy: stream " <> method <> " " <> url)
 
   let initial_response =
@@ -316,6 +395,7 @@ pub fn forward_stream(
             Ok(_) -> {
               telemetry.emit(telemetry.StreamChunk(
                 target_id: target_id,
+                provider: provider,
                 model: model,
                 chunk_bytes: bit_array.byte_size(data),
               ))
@@ -354,6 +434,7 @@ pub fn forward_stream(
           let duration = telemetry.system_time() - start_time
           telemetry.emit(telemetry.RequestStop(
             target_id: target_id,
+            provider: provider,
             model: model,
             status: 200,
             duration_ms: duration,
@@ -369,6 +450,7 @@ pub fn forward_stream(
           )
           telemetry.emit(telemetry.RequestError(
             target_id: target_id,
+            provider: provider,
             model: model,
             error_type: reason,
           ))
@@ -427,10 +509,27 @@ fn set_response_headers(
   resp: response.Response(a),
   headers: List(#(String, String)),
 ) -> response.Response(a) {
-  let filtered = list.filter(headers, fn(h) { !is_hop_by_hop_header(h.0) })
+  let nominated = connection_header_tokens(headers)
+  let filtered = list.filter(headers, fn(h) {
+    !is_hop_by_hop_header(h.0) && !list.contains(nominated, string.lowercase(h.0))
+  })
   list.fold(filtered, resp, fn(acc, h) {
     response.set_header(acc, h.0, h.1)
   })
+}
+
+/// Header names nominated by the upstream `Connection` header (RFC 7230
+/// §6.1). These are per-hop and must not be forwarded to the client;
+/// returned lowercased and trimmed for case-insensitive comparison.
+fn connection_header_tokens(headers: List(#(String, String))) -> List(String) {
+  case list.find(headers, fn(h) { string.lowercase(h.0) == "connection" }) {
+    Ok(#(_, value)) ->
+      value
+      |> string.split(",")
+      |> list.map(fn(t) { string.trim(string.lowercase(t)) })
+      |> list.filter(fn(t) { t != "" })
+    Error(_) -> []
+  }
 }
 
 /// Headers that must not be forwarded from an upstream response to the

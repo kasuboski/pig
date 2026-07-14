@@ -10,7 +10,7 @@ processes for isolated, resilient agent execution.
 |---|---|---|
 | [`pig`](packages/pig) | Agent runtime, tools, skills, hooks, persistence, and observability | [README](packages/pig/README.md) |
 | [`pig_protocol`](packages/pig_protocol) | Shared message types and OpenAI-compatible codecs | [README](packages/pig_protocol/README.md) |
-| [`pig_proxy`](packages/pig_proxy) | OpenAI-compatible proxy with routing, retries, metrics, and telemetry | Package sources |
+| [`pig_proxy`](packages/pig_proxy) | OpenAI-compatible proxy with routing, retries, metrics, and telemetry | [README](packages/pig_proxy/README.md) |
 
 ## Quick start
 

@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleeunit
 import pig_proxy/config
@@ -252,4 +253,69 @@ pub fn ensure_stream_usage_preserves_existing_stream_options_test() {
 pub fn ensure_stream_usage_malformed_body_unchanged_test() {
   let body = "not json"
   assert proxy.ensure_stream_usage(body) == body
+}
+
+pub fn ensure_stream_usage_normalizes_non_map_stream_options_test() {
+  // A non-map stream_options (null, a list) must be coerced to an object
+  // so include_usage injection succeeds instead of being discarded.
+  let null_body =
+    "{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":null}"
+  assert string.contains(
+    proxy.ensure_stream_usage(null_body),
+    "\"include_usage\":true",
+  )
+
+  let list_body =
+    "{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":[1,2]}"
+  assert string.contains(
+    proxy.ensure_stream_usage(list_body),
+    "\"include_usage\":true",
+  )
+}
+
+// ── Responses API usage parsing ──────────────────────────────
+
+pub fn parse_usage_reads_responses_api_input_output_tokens_test() {
+  let body =
+    "{\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":42,\"output_tokens\":17}}}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == Some(42)
+  assert usage.completion == Some(17)
+}
+
+pub fn parse_usage_from_sse_extracts_responses_usage_test() {
+  let chunk =
+    "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":8}}}\n\n"
+  let usage = proxy.parse_usage_from_sse(chunk)
+  assert usage.prompt == Some(7)
+  assert usage.completion == Some(8)
+}
+
+// ── Response header filtering ────────────────────────────────
+
+pub fn sync_response_to_mist_strips_connection_nominated_headers_test() {
+  let resp = hackney.OkResponse(
+    status: 200,
+    headers: [
+      #("content-type", "application/json"),
+      #("connection", "x-custom, transfer-encoding"),
+      #("x-custom", "should-not-forward"),
+    ],
+    body: <<123, 125>>,)
+  let mist_resp = proxy.sync_response_to_mist(resp)
+  let found =
+    list.find(mist_resp.headers, fn(h) { string.lowercase(h.0) == "x-custom" })
+  // x-custom was nominated by the Connection header and must be stripped.
+  assert result.is_error(found)
+}
+
+// ── Config validation ────────────────────────────────────────
+
+pub fn config_with_models_refresh_ms_rejects_non_positive_test() {
+  let zero_cfg = config.new([]) |> config.with_models_refresh_ms(0)
+  assert zero_cfg.models_refresh_ms == config.default_models_refresh_ms
+  let neg_cfg = config.new([]) |> config.with_models_refresh_ms(-5)
+  assert neg_cfg.models_refresh_ms == config.default_models_refresh_ms
+  let ok_cfg = config.new([]) |> config.with_models_refresh_ms(90_000)
+  assert ok_cfg.models_refresh_ms == 90_000
 }

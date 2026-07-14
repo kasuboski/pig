@@ -8,6 +8,7 @@ import gleam/dict
 import gleam/http/response
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import mist
 import pig_proxy/metrics.{
@@ -29,7 +30,7 @@ import gleam/option.{None, Some}
 ///   - `pig_proxy_bytes_streamed_total` (counter)
 ///   - `pig_proxy_input_tokens_total` (counter)
 ///   - `pig_proxy_output_tokens_total` (counter)
-///   - `pig_proxy_cost_usd_total` (counter)
+///   - `pig_proxy_cost_usd` (gauge)
 pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
   let lines = [
     "# TYPE pig_proxy_requests_total counter",
@@ -40,7 +41,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
     "# TYPE pig_proxy_bytes_streamed_total counter",
     "# TYPE pig_proxy_input_tokens_total counter",
     "# TYPE pig_proxy_output_tokens_total counter",
-    "# TYPE pig_proxy_cost_usd_total counter",
+    "# TYPE pig_proxy_cost_usd gauge",
   ]
 
   let model_lines =
@@ -92,7 +93,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
         "pig_proxy_output_tokens_total{" <> label <> "} " <> int.to_string(
           output_tokens,
         ),
-        "pig_proxy_cost_usd_total{" <> label <> "} " <> float_to_string(cost),
+        "pig_proxy_cost_usd{" <> label <> "} " <> float_to_string(cost),
       ]
     })
 
@@ -100,9 +101,15 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
 }
 
 /// Format a float for Prometheus text with a fixed six decimal places.
+///
+/// Rounds to the nearest micro-dollar first and derives both the whole
+/// and fractional parts from that integer, so fractional overflow (e.g.
+/// 0.9999996) carries into the whole part instead of producing a
+/// malformed value like "0.1000000".
 fn float_to_string(value: Float) -> String {
-  let whole = float.truncate(value)
-  let fraction = float.truncate({ value -. int.to_float(whole) } *. 1_000_000.0)
+  let micros = float.round(value *. 1_000_000.0)
+  let whole = micros |> int.divide(1_000_000) |> result.unwrap(0)
+  let fraction = micros - whole * 1_000_000
   int.to_string(whole) <> "." <> pad_fraction(fraction)
 }
 

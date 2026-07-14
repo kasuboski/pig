@@ -16,7 +16,14 @@ ensure_stream_usage(Body) ->
         Value = json:decode(Body),
         case is_map(Value) of
             true ->
-                StreamOptions = maps:get(<<"stream_options">>, Value, #{}),
+                RawStreamOptions = maps:get(<<"stream_options">>, Value, #{}),
+                %% A client may send stream_options as null, a list, or some
+                %% other non-map value; coerce to an empty map so the update
+                %% below cannot crash and drop the whole transformation.
+                StreamOptions = case is_map(RawStreamOptions) of
+                    true -> RawStreamOptions;
+                    false -> #{}
+                end,
                 NewStreamOptions = StreamOptions#{<<"include_usage">> => true},
                 NewValue = Value#{<<"stream_options">> => NewStreamOptions},
                 iolist_to_binary(json:encode(NewValue));
