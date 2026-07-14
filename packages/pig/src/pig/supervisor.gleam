@@ -6,14 +6,16 @@
 
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
-import gleam/otp/actor as otp_actor
+import gleam/otp/actor.{type StartError as ActorStartError}
 import gleam/otp/static_supervisor
+import gleam/otp/supervision
 import pig/agent/runtime
 import pig/agent/state
-import pig_protocol/error.{type AiError}
-import pig_protocol/message.{type Message}
 import pig/obs/consumer_spec
 import pig/obs/dispatcher
+import pig/run_error.{type RunError}
+import pig/session_store.{type SessionError, type SessionStore, SessionStore}
+import pig_protocol/message.{type Message}
 
 /// Handle to a supervised agent.
 ///
@@ -24,18 +26,73 @@ pub type SupervisedAgent {
   SupervisedAgent(subject: Subject(runtime.RuntimeMsg), sup_pid: Pid)
 }
 
-/// Start a supervised agent from an AgentConfig and consumer specs.
+/// Errors that can prevent a supervised agent from starting.
+pub type StartError {
+  /// The OTP supervision tree or one of its children could not start.
+  ActorStart(error: ActorStartError)
+  /// The durable session could not be loaded before the tree was started.
+  SessionLoad(error: SessionError)
+}
+
+/// Start a supervised agent without durable session storage.
 ///
-/// Spawns a nested OneForOne static supervisor containing:
-/// - An event subtree (dispatcher + consumers)
-/// - The agent actor
-///
-/// The dispatcher and agent are named so Subjects can be recovered after
-/// supervisor start. Returns a `SupervisedAgent` handle.
+/// This convenience path starts with empty history and no durable session.
 pub fn start_supervised(
   agent_config: state.AgentConfig,
   consumer_specs: List(consumer_spec.ConsumerSpec),
-) -> Result(SupervisedAgent, otp_actor.StartError) {
+) -> Result(SupervisedAgent, StartError) {
+  start_with_session(agent_config, consumer_specs, [], runtime.SessionDisabled)
+}
+
+/// Preflight a durable session, then start a supervised agent.
+///
+/// The preflight preserves a typed `SessionLoad` error without starting the
+/// supervision tree. The runtime independently reloads the store every time
+/// its worker starts, including after OTP child restarts.
+pub fn start_supervised_with_session_store(
+  agent_config: state.AgentConfig,
+  consumer_specs: List(consumer_spec.ConsumerSpec),
+  store: SessionStore,
+) -> Result(SupervisedAgent, StartError) {
+  let SessionStore(load:, ..) = store
+  case load() {
+    Error(error) -> Error(SessionLoad(error))
+    Ok(_) ->
+      start_with_runtime(consumer_specs, fn(dispatcher_name, name) {
+        runtime.supervised_with_session_store(
+          agent_config,
+          dispatcher_name,
+          name,
+          store,
+        )
+      })
+  }
+}
+
+fn start_with_session(
+  agent_config: state.AgentConfig,
+  consumer_specs: List(consumer_spec.ConsumerSpec),
+  initial_history: List(Message),
+  session: runtime.SessionState,
+) -> Result(SupervisedAgent, StartError) {
+  start_with_runtime(consumer_specs, fn(dispatcher_name, name) {
+    runtime.supervised(
+      agent_config,
+      dispatcher_name,
+      name,
+      initial_history,
+      session,
+    )
+  })
+}
+
+fn start_with_runtime(
+  consumer_specs: List(consumer_spec.ConsumerSpec),
+  runtime_spec: fn(
+    process.Name(dispatcher.DispatcherMessage),
+    process.Name(runtime.RuntimeMsg),
+  ) -> supervision.ChildSpecification(Nil),
+) -> Result(SupervisedAgent, StartError) {
   let dispatcher_name = process.new_name("pig_event_dispatcher")
   let agent_name = process.new_name("pig_agent")
 
@@ -53,11 +110,7 @@ pub fn start_supervised(
   let app_tree =
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(static_supervisor.supervised(event_tree))
-    |> static_supervisor.add(runtime.supervised(
-      agent_config,
-      dispatcher_name,
-      agent_name,
-    ))
+    |> static_supervisor.add(runtime_spec(dispatcher_name, agent_name))
 
   case static_supervisor.start(app_tree) {
     Ok(started) -> {
@@ -75,12 +128,12 @@ pub fn start_supervised(
 
       Ok(SupervisedAgent(subject: agent_subject, sup_pid: started.pid))
     }
-    Error(e) -> Error(e)
+    Error(e) -> Error(ActorStart(e))
   }
 }
 
 /// Run a prompt against the supervised agent with a 120-second timeout.
-pub fn run(sup: SupervisedAgent, prompt: String) -> Result(Message, AiError) {
+pub fn run(sup: SupervisedAgent, prompt: String) -> Result(Message, RunError) {
   run_with_timeout(sup, prompt, 120_000)
 }
 
@@ -89,8 +142,21 @@ pub fn run_with_timeout(
   sup: SupervisedAgent,
   prompt: String,
   timeout_ms: Int,
-) -> Result(Message, AiError) {
+) -> Result(Message, RunError) {
   runtime.run(sup.subject, prompt, timeout_ms)
+}
+
+/// Resume a supervised agent's loaded or interrupted history.
+pub fn run_continue(sup: SupervisedAgent) -> Result(Message, RunError) {
+  run_continue_with_timeout(sup, 120_000)
+}
+
+/// Resume a supervised agent's history with an explicit timeout.
+pub fn run_continue_with_timeout(
+  sup: SupervisedAgent,
+  timeout_ms: Int,
+) -> Result(Message, RunError) {
+  runtime.run_continue(sup.subject, timeout_ms)
 }
 
 /// Stop the supervised agent.

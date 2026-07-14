@@ -11,11 +11,11 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
+import pig/provider.{type Provider}
+import pig/tool.{type ToolRegistry}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
-import pig/provider.{type Provider}
 import pig_protocol/tool_definition.{type ToolDefinition}
-import pig/tool.{type ToolRegistry}
 
 /// Configuration for creating an agent. Immutable once constructed.
 ///
@@ -136,6 +136,19 @@ pub fn add_message(state: AgentState, msg: Message) -> AgentState {
 /// Get the conversation history in order.
 pub fn history(state: AgentState) -> List(Message) {
   state.history
+}
+
+/// Remove System messages from conversation history.
+///
+/// System messages are owned by `AgentConfig.system_prompt` and are prepended
+/// by `messages_for_provider`, so restored or seeded copies must be discarded.
+pub fn strip_system_messages(messages: List(Message)) -> List(Message) {
+  list.filter(messages, fn(message) {
+    case message {
+      message.System(_) -> False
+      _ -> True
+    }
+  })
 }
 
 /// Increment the iteration counter. Returns new state.

@@ -6,11 +6,12 @@ import gleam/otp/supervision
 import gleam/string
 import gleeunit
 import pig
-import pig_protocol/message
-import pig/provider
 import pig/hooks
 import pig/obs/consumer_spec
 import pig/obs/events.{type SessionEvent}
+import pig/provider.{type Provider}
+import pig/session_store
+import pig_protocol/message
 import simplifile
 import temporary
 
@@ -32,6 +33,58 @@ fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
 
 fn read_file(path: String) -> Result(String, simplifile.FileError) {
   simplifile.read(path)
+}
+
+/// Configure and start Pig with a durable session store.
+fn start_with_session_store(
+  store: session_store.SessionStore,
+  provider_fn: Provider,
+) -> Result(pig.Agent, pig.StartError) {
+  pig.new(provider_fn)
+  |> pig.with_session_store(store)
+  |> pig.start
+}
+
+type CounterMessage {
+  Increment(Subject(Nil))
+  Count(Subject(Int))
+}
+
+fn start_counter() -> Subject(CounterMessage) {
+  let builder = actor.new(0) |> actor.on_message(counter_handler)
+  let assert Ok(started) = actor.start(builder)
+  started.data
+}
+
+fn counter_handler(
+  count: Int,
+  msg: CounterMessage,
+) -> actor.Next(Int, CounterMessage) {
+  case msg {
+    Increment(reply_to) -> {
+      process.send(reply_to, Nil)
+      actor.continue(count + 1)
+    }
+    Count(reply_to) -> {
+      process.send(reply_to, count)
+      actor.continue(count)
+    }
+  }
+}
+
+/// Synchronously record an operation before it completes.
+fn increment_counter(counter: Subject(CounterMessage)) -> Nil {
+  let reply_to = process.new_subject()
+  process.send(counter, Increment(reply_to))
+  let assert Ok(Nil) = process.receive(reply_to, 2000)
+  Nil
+}
+
+fn counter_count(counter: Subject(CounterMessage)) -> Int {
+  let reply_to = process.new_subject()
+  process.send(counter, Count(reply_to))
+  let assert Ok(count) = process.receive(reply_to, 2000)
+  count
 }
 
 // ── Builder Tests (Pure, No Actors) ────────────────────────────────────
@@ -455,4 +508,138 @@ pub fn with_initial_history_strips_system_messages_test() {
   // Provider should see exactly 1 System message — the one from with_system_prompt
   let assert Ok(system_count) = process.receive(seen, 2000)
   assert system_count == 1
+}
+
+// ── Durable Session Store Tests ───────────────────────────────────
+
+// Test 18: durable stores reject unpersisted initial history before side effects.
+pub fn session_store_rejects_initial_history_before_load_or_provider_test() {
+  let load_calls = start_counter()
+  let provider_calls = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() {
+        increment_counter(load_calls)
+        Ok(session_store.Session(option.None, []))
+      },
+      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+    )
+  let provider_fn = fn(_messages, _tools) {
+    increment_counter(provider_calls)
+    Ok(
+      provider.from_message(message.Assistant(
+        "unexpected",
+        [],
+        option.None,
+        option.None,
+      )),
+    )
+  }
+  let config =
+    pig.new(provider_fn)
+    |> pig.with_session_store(store)
+    |> pig.with_initial_history([message.User("unpersisted")])
+
+  let assert Error(pig.InvalidConfiguration(message)) = pig.start(config)
+  assert message
+    == "SessionStore cannot be combined with non-empty initial_history"
+  assert counter_count(load_calls) == 0
+  assert counter_count(provider_calls) == 0
+}
+
+// Test 19: session load failures prevent the provider from being used.
+pub fn session_store_load_failure_prevents_provider_use_test() {
+  let provider_calls = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Error(session_store.Unavailable("offline")) },
+      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+    )
+  let provider_fn = fn(_messages, _tools) {
+    increment_counter(provider_calls)
+    Ok(
+      provider.from_message(message.Assistant(
+        "unexpected",
+        [],
+        option.None,
+        option.None,
+      )),
+    )
+  }
+
+  let assert Error(pig.SessionLoad(session_store.Unavailable("offline"))) =
+    start_with_session_store(store, provider_fn)
+  assert counter_count(provider_calls) == 0
+}
+
+// Test 20: a loaded terminal assistant is retained and returned without inference.
+pub fn session_store_loaded_terminal_assistant_continues_without_provider_test() {
+  let provider_calls = start_counter()
+  let completed =
+    message.Assistant("already complete", [], option.None, option.None)
+  let loaded_history = [message.User("previous question"), completed]
+  let store =
+    session_store.SessionStore(
+      load: fn() {
+        Ok(session_store.Session(option.Some("loaded-head"), loaded_history))
+      },
+      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+    )
+  let provider_fn = fn(_messages, _tools) {
+    increment_counter(provider_calls)
+    Ok(
+      provider.from_message(message.Assistant(
+        "unexpected",
+        [],
+        option.None,
+        option.None,
+      )),
+    )
+  }
+
+  let assert Ok(agent) = start_with_session_store(store, provider_fn)
+  assert pig.history(agent) == loaded_history
+  let assert Ok(response) = pig.run_continue(agent)
+  assert response == completed
+  assert counter_count(provider_calls) == 0
+  pig.stop(agent)
+}
+
+// Test 21: continuing loaded user history commits only the new assistant delta.
+pub fn session_store_continue_commits_only_new_assistant_delta_test() {
+  let commits = process.new_subject()
+  let commit_counter = start_counter()
+  let provider_messages = process.new_subject()
+  let provider_calls = start_counter()
+  let loaded_history = [message.User("resume from here")]
+  let final = message.Assistant("continued", [], option.None, option.None)
+  let store =
+    session_store.SessionStore(
+      load: fn() {
+        Ok(session_store.Session(option.Some("loaded-head"), loaded_history))
+      },
+      commit: fn(commit) {
+        increment_counter(commit_counter)
+        process.send(commits, commit)
+        Ok(session_store.Session(option.Some(commit.id), commit.messages))
+      },
+    )
+  let provider_fn = fn(messages, _tools) {
+    increment_counter(provider_calls)
+    process.send(provider_messages, messages)
+    Ok(provider.from_message(final))
+  }
+
+  let assert Ok(agent) = start_with_session_store(store, provider_fn)
+  let assert Ok(response) = pig.run_continue(agent)
+  assert response == final
+  let assert Ok(messages) = process.receive(provider_messages, 2000)
+  assert messages == loaded_history
+  let assert Ok(commit) = process.receive(commits, 2000)
+  assert commit.parent == option.Some("loaded-head")
+  assert commit.messages == [final]
+  assert counter_count(commit_counter) == 1
+  assert counter_count(provider_calls) == 1
+  assert pig.history(agent) == list.append(loaded_history, [final])
+  pig.stop(agent)
 }

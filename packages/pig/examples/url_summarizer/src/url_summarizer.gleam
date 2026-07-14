@@ -21,10 +21,11 @@ import gleam/io
 import gleam/result
 import gleam/string
 import pig
+import pig/openai
+import pig/run_error
+import pig/tool/web_fetch
 import pig_protocol/error
 import pig_protocol/message
-import pig/openai
-import pig/tool/web_fetch
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -85,18 +86,24 @@ pub fn main() {
       io.println("\n⚠ Unexpected response:")
       io.println(string.inspect(other))
     }
-    Error(error.Timeout) -> {
+    Error(run_error.Inference(error.Timeout)) -> {
       io.println("\n⚠ Timed out waiting for the model to respond.")
       io.println("Try a faster model or increase the timeout.")
     }
-    Error(error.ApiError(msg)) -> {
+    Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("\n⚠ API error: " <> msg)
     }
-    Error(error.RateLimited) -> {
+    Error(run_error.Inference(error.RateLimited)) -> {
       io.println("\n⚠ Rate limited — wait a moment and try again.")
     }
-    Error(error.InvalidResponse(detail)) -> {
+    Error(run_error.Inference(error.InvalidResponse(detail))) -> {
       io.println("\n⚠ Invalid response from provider: " <> detail)
+    }
+    Error(run_error.Session(session_error)) -> {
+      io.println("\n⚠ Session error: " <> string.inspect(session_error))
+    }
+    Error(run_error.Runtime(message)) -> {
+      io.println("\n⚠ Runtime error: " <> message)
     }
   }
 

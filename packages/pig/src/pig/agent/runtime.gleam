@@ -17,6 +17,7 @@ import gleam/option
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import logging
 import pig/agent/effect
 import pig/agent/msg
@@ -28,6 +29,8 @@ import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
 import pig/provider
+import pig/run_error
+import pig/session_store
 import pig/tool
 import pig/tool/execution
 import pig_protocol/error.{type AiError}
@@ -56,9 +59,12 @@ pub type RuntimeConfig {
 /// Messages the runtime actor can receive.
 pub type RuntimeMsg {
   /// Run a prompt and reply with the result.
-  Run(prompt: String, reply_to: process.Subject(Result(Message, AiError)))
+  Run(
+    prompt: String,
+    reply_to: process.Subject(Result(Message, run_error.RunError)),
+  )
   /// Resume the agent loop from its current history.
-  Continue(reply_to: process.Subject(Result(Message, AiError)))
+  Continue(reply_to: process.Subject(Result(Message, run_error.RunError)))
   /// Get the agent's current message history.
   GetHistory(reply_to: process.Subject(List(Message)))
   /// Stop the actor.
@@ -67,9 +73,35 @@ pub type RuntimeMsg {
 
 // ── Actor State ──────────────────────────────────────────────────
 
+/// The action to take only after a pending commit succeeds.
+pub type PostCommitDisposition {
+  ResumeFromHistory
+  ReturnMessage(Message)
+  ReturnAiError(AiError)
+}
+
+/// Durable session state held by the runtime.
+pub type SessionState {
+  /// No synchronous durable transcript is configured.
+  SessionDisabled
+  /// Commits are written to `store` against the current `head`.
+  SessionReady(store: session_store.SessionStore, head: option.Option(String))
+  /// A commit failed ambiguously and must be retried unchanged before new work.
+  SessionPending(
+    store: session_store.SessionStore,
+    commit: session_store.SessionCommit,
+    candidate: state.AgentState,
+    disposition: PostCommitDisposition,
+  )
+}
+
 /// Internal state held by the runtime actor.
 pub type RuntimeState {
-  RuntimeState(agent_state: state.AgentState, config: RuntimeConfig)
+  RuntimeState(
+    agent_state: state.AgentState,
+    config: RuntimeConfig,
+    session: SessionState,
+  )
 }
 
 // ── Start ────────────────────────────────────────────────────────
@@ -93,8 +125,7 @@ pub fn start(
       provider_name: option.None,
       session_path: option.None,
     )
-  let initial_state =
-    RuntimeState(agent_state: state.new(agent_config), config:)
+  let initial_state = runtime_state(agent_config, config, [], SessionDisabled)
   start_with_state(config, initial_state)
 }
 
@@ -118,7 +149,7 @@ pub fn run(
   subject: process.Subject(RuntimeMsg),
   prompt: String,
   timeout: Int,
-) -> Result(Message, AiError) {
+) -> Result(Message, run_error.RunError) {
   actor.call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
 }
 
@@ -132,7 +163,7 @@ pub fn run(
 pub fn run_continue(
   subject: process.Subject(RuntimeMsg),
   timeout: Int,
-) -> Result(Message, AiError) {
+) -> Result(Message, run_error.RunError) {
   actor.call(subject, timeout, fn(reply_to) { Continue(reply_to) })
 }
 
@@ -155,7 +186,7 @@ pub fn try_run(
   subject: process.Subject(RuntimeMsg),
   prompt: String,
   timeout: Int,
-) -> Result(Result(Message, AiError), Nil) {
+) -> Result(Result(Message, run_error.RunError), Nil) {
   try_call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
 }
 
@@ -164,7 +195,7 @@ pub fn try_run(
 pub fn try_run_continue(
   subject: process.Subject(RuntimeMsg),
   timeout: Int,
-) -> Result(Result(Message, AiError), Nil) {
+) -> Result(Result(Message, run_error.RunError), Nil) {
   try_call(subject, timeout, fn(reply_to) { Continue(reply_to) })
 }
 
@@ -172,39 +203,114 @@ pub fn try_run_continue(
 fn try_call(
   subject: process.Subject(RuntimeMsg),
   timeout: Int,
-  make_msg: fn(process.Subject(Result(Message, AiError))) -> RuntimeMsg,
-) -> Result(Result(Message, AiError), Nil)
+  make_msg: fn(process.Subject(Result(Message, run_error.RunError))) ->
+    RuntimeMsg,
+) -> Result(Result(Message, run_error.RunError), Nil)
 
-/// Create a ChildSpecification for use with static_supervisor.
+/// Create a ChildSpecification for a named runtime actor.
 ///
-/// Starts a named actor so the Subject can be recovered after
-/// supervisor start via `process.named_subject(name)`.
+/// `initial_history` becomes current before the actor starts, and `session`
+/// carries the durable commit head associated with it. The Subject can be
+/// recovered after supervisor start with `process.named_subject(name)`.
 pub fn supervised(
   agent_config: state.AgentConfig,
   dispatcher_name: process.Name(dispatcher.DispatcherMessage),
   name: process.Name(RuntimeMsg),
+  initial_history: List(Message),
+  session: SessionState,
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
-    let runtime_config =
-      RuntimeConfig(
-        provider: agent_config.provider,
-        tools: agent_config.tools,
-        hooks: [],
-        dispatcher: process.named_subject(dispatcher_name),
-        model: agent_config.model,
-        max_iterations: agent_config.max_iterations,
-      )
-    let initial_state =
-      RuntimeState(agent_state: state.new(agent_config), config: runtime_config)
-    let builder =
-      actor.new(initial_state)
-      |> actor.on_message(handle_message)
-      |> actor.named(name)
-    case actor.start(builder) {
-      Ok(started) -> Ok(Started(data: Nil, pid: started.pid))
-      Error(e) -> Error(e)
+    start_named_runtime(
+      agent_config,
+      dispatcher_name,
+      name,
+      initial_history,
+      session,
+    )
+  })
+}
+
+/// Create a durable ChildSpecification which reloads the session on every start.
+///
+/// A load failure during a later OTP restart is reported as actor initialisation
+/// failure, allowing the supervisor to apply its usual restart policy.
+pub fn supervised_with_session_store(
+  agent_config: state.AgentConfig,
+  dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+  name: process.Name(RuntimeMsg),
+  store: session_store.SessionStore,
+) -> supervision.ChildSpecification(Nil) {
+  supervision.worker(fn() {
+    let session_store.SessionStore(load:, ..) = store
+    case load() {
+      Ok(loaded) ->
+        start_named_runtime(
+          agent_config,
+          dispatcher_name,
+          name,
+          state.strip_system_messages(loaded.messages),
+          SessionReady(store:, head: loaded.head),
+        )
+      Error(error) -> {
+        logging.log(
+          logging.Error,
+          "Durable session reload failed: " <> string.inspect(error),
+        )
+        Error(actor.InitFailed(string.inspect(error)))
+      }
     }
   })
+}
+
+fn start_named_runtime(
+  agent_config: state.AgentConfig,
+  dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+  name: process.Name(RuntimeMsg),
+  initial_history: List(Message),
+  session: SessionState,
+) -> Result(actor.Started(Nil), StartError) {
+  let runtime_config = supervised_runtime_config(agent_config, dispatcher_name)
+  let initial_state =
+    runtime_state(agent_config, runtime_config, initial_history, session)
+  let builder =
+    actor.new(initial_state)
+    |> actor.on_message(handle_message)
+    |> actor.named(name)
+  case actor.start(builder) {
+    Ok(started) -> Ok(Started(data: Nil, pid: started.pid))
+    Error(error) -> Error(error)
+  }
+}
+
+fn supervised_runtime_config(
+  agent_config: state.AgentConfig,
+  dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+) -> RuntimeConfig {
+  RuntimeConfig(
+    provider: agent_config.provider,
+    tools: agent_config.tools,
+    hooks: [],
+    dispatcher: process.named_subject(dispatcher_name),
+    model: agent_config.model,
+    max_iterations: agent_config.max_iterations,
+  )
+}
+
+fn runtime_state(
+  agent_config: state.AgentConfig,
+  config: RuntimeConfig,
+  initial_history: List(Message),
+  session: SessionState,
+) -> RuntimeState {
+  RuntimeState(
+    agent_state: list.fold(
+      initial_history,
+      state.new(agent_config),
+      state.add_message,
+    ),
+    config:,
+    session:,
+  )
 }
 
 // ── Message Handler ──────────────────────────────────────────────
@@ -214,29 +320,61 @@ fn handle_message(
   m: RuntimeMsg,
 ) -> actor.Next(RuntimeState, RuntimeMsg) {
   case m {
-    Run(prompt, reply_to) -> {
-      // Reset iterations for this run, add user message
-      let agent_st =
-        state.AgentState(
-          config: st.agent_state.config,
-          history: st.agent_state.history,
-          iterations: 0,
-        )
-      let result = execute_loop(st.config, agent_st, msg.UserPrompt(prompt))
-      let #(final_state, outcome) = result
-      process.send(reply_to, outcome)
-      actor.continue(RuntimeState(agent_state: final_state, config: st.config))
-    }
+    Run(prompt, reply_to) ->
+      case st.session {
+        SessionPending(..) -> {
+          process.send(
+            reply_to,
+            Error(run_error.Runtime(
+              "cannot run a new prompt while a session commit is pending",
+            )),
+          )
+          actor.continue(st)
+        }
+        _ -> {
+          // Reset iterations for this run, add user message
+          let agent_st =
+            state.AgentState(
+              config: st.agent_state.config,
+              history: st.agent_state.history,
+              iterations: 0,
+            )
+          let result =
+            execute_loop(
+              st.config,
+              agent_st,
+              st.session,
+              msg.UserPrompt(prompt),
+            )
+          let #(final_state, final_session, outcome) = result
+          process.send(reply_to, outcome)
+          actor.continue(RuntimeState(
+            agent_state: final_state,
+            config: st.config,
+            session: final_session,
+          ))
+        }
+      }
     Continue(reply_to) -> {
-      let agent_st =
-        state.AgentState(
-          config: st.agent_state.config,
-          history: st.agent_state.history,
-          iterations: 0,
-        )
-      let #(final_state, outcome) = resume_from_history(st.config, agent_st)
+      let #(final_state, final_session, outcome) = case st.session {
+        SessionPending(..) as pending ->
+          retry_pending(st.config, st.agent_state, pending)
+        _ -> {
+          let agent_st =
+            state.AgentState(
+              config: st.agent_state.config,
+              history: st.agent_state.history,
+              iterations: 0,
+            )
+          resume_from_history(st.config, agent_st, st.session)
+        }
+      }
       process.send(reply_to, outcome)
-      actor.continue(RuntimeState(agent_state: final_state, config: st.config))
+      actor.continue(RuntimeState(
+        agent_state: final_state,
+        config: st.config,
+        session: final_session,
+      ))
     }
     GetHistory(reply_to) -> {
       process.send(reply_to, st.agent_state.history)
@@ -253,36 +391,195 @@ fn handle_message(
 fn execute_loop(
   config: RuntimeConfig,
   agent_st: state.AgentState,
+  session: SessionState,
   initial_msg: msg.AgentMsg,
-) -> #(state.AgentState, Result(Message, AiError)) {
-  do_loop(config, agent_st, initial_msg)
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  do_loop(config, agent_st, session, initial_msg)
 }
 
 fn do_loop(
   config: RuntimeConfig,
   agent_st: state.AgentState,
+  session: SessionState,
   m: msg.AgentMsg,
-) -> #(state.AgentState, Result(Message, AiError)) {
-  let result = update.update(agent_st, m)
-  case result {
-    step_result.Done(state: final_st, message: msg) -> #(final_st, Ok(msg))
-    step_result.Failed(state: final_st, error: e) -> #(final_st, Error(e))
-    step_result.Continue(state: new_st, effects: effs) -> {
-      // Execute each effect and collect response messages
-      let #(updated_st, response_msgs) =
-        list.fold(effs, #(new_st, []), fn(acc, eff) {
-          let #(st_acc, msgs_acc) = acc
-          let #(new_st_acc, response_msg) = execute_effect(config, st_acc, eff)
-          #(new_st_acc, list.append(msgs_acc, [response_msg]))
-        })
-      // Feed first response message back into the loop
-      case response_msgs {
-        [first_msg, ..] -> do_loop(config, updated_st, first_msg)
-        [] ->
-          // No effects returned responses (shouldn't happen)
-          #(updated_st, Error(error.ApiError("no response from effects")))
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  let transition = update.update(agent_st, m)
+  case transition {
+    step_result.Done(state: final_st, message: final_message) ->
+      commit_or_pending(
+        config,
+        session,
+        agent_st,
+        final_st,
+        ReturnMessage(final_message),
+      )
+
+    step_result.Failed(state: final_st, error: inference_error) ->
+      commit_or_pending(
+        config,
+        session,
+        agent_st,
+        final_st,
+        ReturnAiError(inference_error),
+      )
+
+    step_result.Continue(state: new_st, effects: effs) ->
+      case commit_transition(session, agent_st, new_st, ResumeFromHistory) {
+        Error(#(pending, session_error)) -> #(
+          agent_st,
+          pending,
+          Error(run_error.Session(session_error)),
+        )
+        Ok(next_session) -> execute_effects(config, new_st, next_session, effs)
       }
-    }
+  }
+}
+
+fn commit_or_pending(
+  config: RuntimeConfig,
+  session: SessionState,
+  previous: state.AgentState,
+  candidate: state.AgentState,
+  disposition: PostCommitDisposition,
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  case commit_transition(session, previous, candidate, disposition) {
+    Ok(next_session) ->
+      complete_disposition(config, candidate, next_session, disposition)
+    Error(#(pending, session_error)) -> #(
+      previous,
+      pending,
+      Error(run_error.Session(session_error)),
+    )
+  }
+}
+
+fn commit_transition(
+  session: SessionState,
+  previous: state.AgentState,
+  candidate: state.AgentState,
+  disposition: PostCommitDisposition,
+) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
+  let delta = list.drop(candidate.history, list.length(previous.history))
+  case session, delta {
+    SessionPending(..), _ ->
+      panic as "cannot commit while a session commit is pending"
+    _, [] -> Ok(session)
+    SessionDisabled, _ -> Ok(session)
+    SessionReady(store:, head:), messages ->
+      commit_messages(store, head, messages, candidate, disposition)
+  }
+}
+
+fn commit_messages(
+  store: session_store.SessionStore,
+  head: option.Option(String),
+  messages: List(Message),
+  candidate: state.AgentState,
+  disposition: PostCommitDisposition,
+) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
+  let session_store.SessionStore(commit: store_commit, ..) = store
+  let commit = session_store.new_commit(head, messages)
+  case store_commit(commit) {
+    Ok(committed) ->
+      accept_committed_session(store, commit, candidate, disposition, committed)
+    Error(session_error) ->
+      Error(#(
+        SessionPending(store:, commit:, candidate:, disposition:),
+        session_error,
+      ))
+  }
+}
+
+fn accept_committed_session(
+  store: session_store.SessionStore,
+  commit: session_store.SessionCommit,
+  candidate: state.AgentState,
+  disposition: PostCommitDisposition,
+  committed: session_store.Session,
+) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
+  case committed.head == option.Some(commit.id) {
+    True -> Ok(SessionReady(store:, head: committed.head))
+    False ->
+      Error(#(
+        SessionPending(store:, commit:, candidate:, disposition:),
+        session_store.ParentConflict(
+          expected: option.Some(commit.id),
+          actual: committed.head,
+        ),
+      ))
+  }
+}
+
+fn retry_pending(
+  config: RuntimeConfig,
+  current: state.AgentState,
+  pending: SessionState,
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  let assert SessionPending(store:, commit:, candidate:, disposition:) = pending
+  let session_store.SessionStore(commit: store_commit, ..) = store
+  case store_commit(commit) {
+    Error(session_error) -> #(
+      current,
+      SessionPending(store:, commit:, candidate:, disposition:),
+      Error(run_error.Session(session_error)),
+    )
+    Ok(committed) ->
+      case
+        accept_committed_session(
+          store,
+          commit,
+          candidate,
+          disposition,
+          committed,
+        )
+      {
+        Ok(ready) -> complete_disposition(config, candidate, ready, disposition)
+        Error(#(still_pending, session_error)) -> #(
+          current,
+          still_pending,
+          Error(run_error.Session(session_error)),
+        )
+      }
+  }
+}
+
+fn complete_disposition(
+  config: RuntimeConfig,
+  candidate: state.AgentState,
+  session: SessionState,
+  disposition: PostCommitDisposition,
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  case disposition {
+    ReturnMessage(message) -> #(candidate, session, Ok(message))
+    ReturnAiError(error) -> #(
+      candidate,
+      session,
+      Error(run_error.Inference(error)),
+    )
+    ResumeFromHistory -> resume_from_history(config, candidate, session)
+  }
+}
+
+fn execute_effects(
+  config: RuntimeConfig,
+  agent_st: state.AgentState,
+  session: SessionState,
+  effs: List(effect.Effect(msg.AgentMsg)),
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
+  // Effects begin only after the complete transition delta is durable.
+  let #(updated_st, response_msgs) =
+    list.fold(effs, #(agent_st, []), fn(acc, eff) {
+      let #(st_acc, msgs_acc) = acc
+      let #(new_st_acc, response_msg) = execute_effect(config, st_acc, eff)
+      #(new_st_acc, list.append(msgs_acc, [response_msg]))
+    })
+  case response_msgs {
+    [first_msg, ..] -> do_loop(config, updated_st, session, first_msg)
+    [] -> #(
+      updated_st,
+      session,
+      Error(run_error.Runtime("no response from effects")),
+    )
   }
 }
 
@@ -294,10 +591,15 @@ fn do_loop(
 fn resume_from_history(
   config: RuntimeConfig,
   st: state.AgentState,
-) -> #(state.AgentState, Result(Message, AiError)) {
+  session: SessionState,
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   case list.last(st.history) {
     // No history — nothing to continue
-    Error(_) -> #(st, Error(error.ApiError("no history to continue")))
+    Error(_) -> #(
+      st,
+      session,
+      Error(run_error.Runtime("no history to continue")),
+    )
 
     Ok(last_msg) -> {
       case last_msg {
@@ -307,7 +609,7 @@ fn resume_from_history(
           tool_calls: tool_calls,
           thinking: _,
           stop_reason: sr,
-        ) -> resume_from_assistant(config, st, tool_calls, sr)
+        ) -> resume_from_assistant(config, st, session, tool_calls, sr)
 
         // User or Tool message — call provider (through hooks pipeline)
         message.User(_) | message.Tool(_, _) -> {
@@ -321,13 +623,14 @@ fn resume_from_history(
                 msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
               },
             )
-          do_loop(config, st_after, provider_msg)
+          do_loop(config, st_after, session, provider_msg)
         }
 
         // System message at end of history — shouldn't happen
         message.System(_) -> #(
           st,
-          Error(error.ApiError("unexpected system message at end of history")),
+          session,
+          Error(run_error.Runtime("unexpected system message at end of history")),
         )
       }
     }
@@ -339,9 +642,10 @@ fn resume_from_history(
 fn resume_from_assistant(
   config: RuntimeConfig,
   st: state.AgentState,
+  session: SessionState,
   tool_calls: List(message.ToolCall),
   sr: option.Option(stop_reason.StopReason),
-) -> #(state.AgentState, Result(Message, AiError)) {
+) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   case sr {
     // Tool calls pending — execute them, then continue loop
     option.Some(stop_reason.ToolUse) -> {
@@ -349,13 +653,13 @@ fn resume_from_assistant(
         execute_tools_effect(config, st, tool_calls, fn(results) {
           msg.ToolResults(results)
         })
-      do_loop(config, st, agent_msg)
+      do_loop(config, st, session, agent_msg)
     }
 
     // Done — completed on a previous attempt
     option.Some(stop_reason.Stop) -> {
       let assert Ok(msg) = list.last(st.history)
-      #(st, Ok(msg))
+      #(st, session, Ok(msg))
     }
 
     // Hit token limit or error — re-call provider (through hooks pipeline)
@@ -370,7 +674,7 @@ fn resume_from_assistant(
           state.tool_definitions(st),
           fn(r) { msg.ProviderResponded(result.map(r, fn(ir) { ir.message })) },
         )
-      do_loop(config, st_after, provider_msg)
+      do_loop(config, st_after, session, provider_msg)
     }
 
     // No stop_reason (legacy messages) — decide by tool_calls presence
@@ -379,7 +683,7 @@ fn resume_from_assistant(
         [] -> {
           // No tool calls, no stop_reason — treat as done
           let assert Ok(msg) = list.last(st.history)
-          #(st, Ok(msg))
+          #(st, session, Ok(msg))
         }
         calls -> {
           // Has tool calls but no stop_reason — execute them
@@ -387,7 +691,7 @@ fn resume_from_assistant(
             execute_tools_effect(config, st, calls, fn(results) {
               msg.ToolResults(results)
             })
-          do_loop(config, st, agent_msg)
+          do_loop(config, st, session, agent_msg)
         }
       }
   }
