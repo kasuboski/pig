@@ -10,16 +10,28 @@
 //// same two-phase relay protocol as the hackney adapter (report the head,
 //// wait for `StartRelay`, forward chunks), so streaming retry/fallback and
 //// relay forwarding are both testable in-process.
+////
+//// The adapter also records the most recent outgoing `TransportRequest`
+//// (sync or stream), so tests can assert on the auth/URL that execution
+//// actually put on the wire — closing the auth-wiring gap without a socket.
 
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import pig_proxy/transport
 
 /// Messages served by the in-memory transport actor.
 pub type InMemoryMsg {
-  TakeSync(reply_to: process.Subject(transport.TransportResponse))
-  TakeStream(reply_to: process.Subject(StreamScript))
+  TakeSync(
+    request: transport.TransportRequest,
+    reply_to: process.Subject(transport.TransportResponse),
+  )
+  TakeStream(
+    request: transport.TransportRequest,
+    reply_to: process.Subject(StreamScript),
+  )
+  GetLastRequest(reply_to: process.Subject(Option(transport.TransportRequest)))
 }
 
 /// A scripted streaming outcome. `CommitStream` reports a committed head
@@ -55,33 +67,40 @@ type State {
     sync_exhausted: transport.TransportResponse,
     stream_queue: List(StreamScript),
     stream_exhausted: StreamScript,
+    last_request: Option(transport.TransportRequest),
   )
 }
 
 fn handle_message(state: State, msg: InMemoryMsg) {
   case msg {
-    TakeSync(reply_to) ->
+    TakeSync(request:, reply_to:) -> {
       case state.sync_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(State(..state, sync_queue: rest))
+          actor.continue(State(..state, sync_queue: rest, last_request: Some(request)))
         }
         [] -> {
           process.send(reply_to, state.sync_exhausted)
-          actor.continue(state)
+          actor.continue(State(..state, last_request: Some(request)))
         }
       }
-    TakeStream(reply_to) ->
+    }
+    TakeStream(request:, reply_to:) -> {
       case state.stream_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(State(..state, stream_queue: rest))
+          actor.continue(State(..state, stream_queue: rest, last_request: Some(request)))
         }
         [] -> {
           process.send(reply_to, state.stream_exhausted)
-          actor.continue(state)
+          actor.continue(State(..state, last_request: Some(request)))
         }
       }
+    }
+    GetLastRequest(reply_to:) -> {
+      process.send(reply_to, state.last_request)
+      actor.continue(state)
+    }
   }
 }
 
@@ -121,7 +140,13 @@ fn start_with(
   stream_exhausted,
 ) -> Result(process.Subject(InMemoryMsg), actor.StartError) {
   let result =
-    State(sync_queue:, sync_exhausted:, stream_queue:, stream_exhausted:)
+    State(
+      sync_queue:,
+      sync_exhausted:,
+      stream_queue:,
+      stream_exhausted:,
+      last_request: None,
+    )
     |> actor.new
     |> actor.on_message(handle_message)
     |> actor.start
@@ -136,19 +161,35 @@ pub fn transport(
   subject: process.Subject(InMemoryMsg),
 ) -> transport.Transport {
   transport.Transport(
-    sync: fn(_req) {
-      actor.call(subject, waiting: 5000, sending: fn(reply_to) { TakeSync(reply_to) })
+    sync: fn(req) {
+      actor.call(subject, waiting: 5000, sending: fn(reply_to) {
+        TakeSync(request: req, reply_to:)
+      })
     },
-    stream: fn(_req) { stream_call(subject) },
+    stream: fn(req) { stream_call(subject, req) },
   )
 }
 
-fn stream_call(subject: process.Subject(InMemoryMsg)) -> transport.StreamHead {
+/// The most recent outgoing request the adapter saw (sync or stream), or
+/// `None` if it has received none. Lets tests assert on the auth/URL that
+/// execution placed on the wire.
+pub fn last_request(
+  subject: process.Subject(InMemoryMsg),
+) -> Option(transport.TransportRequest) {
+  actor.call(subject, waiting: 5000, sending: fn(reply_to) {
+    GetLastRequest(reply_to:)
+  })
+}
+
+fn stream_call(
+  subject: process.Subject(InMemoryMsg),
+  request: transport.TransportRequest,
+) -> transport.StreamHead {
   // The relay (a spawned process) owns the run subject and reports the
   // head synchronously, mirroring the hackney adapter. This keeps the
   // commit decision out of the caller and the relay's receive valid.
   let head = process.new_subject()
-  let _ = process.spawn(fn() { relay_loop(subject, head) })
+  let _ = process.spawn(fn() { relay_loop(subject, head, request) })
   case process.receive(head, 5000) {
     Ok(h) -> h
     Error(Nil) -> transport.StreamFailure("in-memory stream head timeout")
@@ -158,9 +199,10 @@ fn stream_call(subject: process.Subject(InMemoryMsg)) -> transport.StreamHead {
 fn relay_loop(
   subject: process.Subject(InMemoryMsg),
   head: process.Subject(transport.StreamHead),
+  request: transport.TransportRequest,
 ) -> Nil {
   let reply = process.new_subject()
-  process.send(subject, TakeStream(reply))
+  process.send(subject, TakeStream(request:, reply_to: reply))
   case process.receive(reply, 5000) {
     Error(Nil) ->
       process.send(head, transport.StreamFailure("in-memory script timeout"))

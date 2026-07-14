@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleeunit
@@ -7,6 +8,7 @@ import pig_proxy/circuit_actor
 import pig_proxy/config
 import pig_proxy/execution
 import pig_proxy/transport
+import pig_proxy/vault
 import support/in_memory_transport
 
 pub fn main() -> Nil {
@@ -436,4 +438,91 @@ fn drain_loop(subject, count, acc) {
         Error(Nil) -> list.reverse(acc)
       }
   }
+}
+
+// ── Auth wiring (what actually reaches the transport) ──────────
+
+/// A request carrying a client-supplied Authorization header, used to prove
+/// the proxy scrubs it on the wire while preserving harmless headers.
+fn req_with_client_auth() -> execution.ProxyRequest {
+  execution.ProxyRequest(
+    method: "POST",
+    path: "/v1/chat/completions",
+    headers: [
+      #("authorization", "Bearer client-secret"),
+      #("x-request-id", "abc"),
+    ],
+    body: "{\"model\":\"m\"}",
+    model: "m",
+  )
+}
+
+/// A three-part JWT whose payload encodes a chatgpt_account_id, so the
+/// Codex auth path can derive an account id without a real token.
+fn fake_jwt(account_id: String) -> String {
+  let payload =
+    json.object([
+      #(
+        "https://api.openai.com/auth",
+        json.object([#("chatgpt_account_id", json.string(account_id))]),
+      ),
+    ])
+  let payload_b64 =
+    payload
+    |> json.to_string
+    |> bit_array.from_string
+    |> bit_array.base64_url_encode(False)
+  "hdr." <> payload_b64 <> ".sig"
+}
+
+pub fn api_key_target_sends_bearer_to_transport_test() {
+  let assert Ok(s) =
+    in_memory_transport.start([ok200()], transport.TransportError("x"))
+  let _ =
+    execution.orchestrate(
+      exec_with(in_memory_transport.transport(s), None),
+      req(),
+      execution.FallbackChain([openai()]),
+    )
+  let assert Some(out) = in_memory_transport.last_request(s)
+  assert list.key_find(out.headers, "authorization") == Ok("Bearer k")
+  assert list.key_find(out.headers, "content-type") == Ok("application/json")
+}
+
+pub fn api_key_target_scrubs_client_auth_on_the_wire_test() {
+  let assert Ok(s) =
+    in_memory_transport.start([ok200()], transport.TransportError("x"))
+  let _ =
+    execution.orchestrate(
+      exec_with(in_memory_transport.transport(s), None),
+      req_with_client_auth(),
+      execution.FallbackChain([openai()]),
+    )
+  let assert Some(out) = in_memory_transport.last_request(s)
+  // The client's bearer is gone; the configured upstream key is injected.
+  assert list.key_find(out.headers, "authorization") == Ok("Bearer k")
+  // Harmless client headers survive scrubbing.
+  assert list.key_find(out.headers, "x-request-id") == Ok("abc")
+}
+
+pub fn codex_target_sends_codex_headers_to_transport_test() {
+  let jwt = fake_jwt("acct_123")
+  let assert Ok(v) =
+    vault.start(vault.initial_credentials([#("codex", vault.CodexToken(jwt))]))
+  let assert Ok(s) =
+    in_memory_transport.start([ok200()], transport.TransportError("x"))
+  let exec =
+    exec_with(in_memory_transport.transport(s), None)
+    |> execution.with_vault(v)
+  let _ =
+    execution.orchestrate(
+      exec,
+      req(),
+      execution.FallbackChain([config.codex_target("codex", "http://codex/v1")]),
+    )
+  let assert Some(out) = in_memory_transport.last_request(s)
+  assert list.key_find(out.headers, "authorization") == Ok("Bearer " <> jwt)
+  assert list.key_find(out.headers, "chatgpt-account-id") == Ok("acct_123")
+  assert list.key_find(out.headers, "OpenAI-Beta") == Ok("responses=experimental")
+  assert list.key_find(out.headers, "originator") == Ok("pig")
 }
