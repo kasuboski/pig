@@ -110,7 +110,8 @@ fn proxy_request(
     Ok(body_req) -> {
       let body = bit_array_to_string(body_req.body)
       let model = proxy.extract_model(body)
-      let target = select_target(state, model) |> apply_live_credential(state)
+      let target = select_target(state, model)
+      let auth = resolve_auth(target, state.vault)
       let method = method_to_string(req.method)
       let streaming = proxy.is_streaming(body)
       let provider = config.provider_string(target)
@@ -133,7 +134,7 @@ fn proxy_request(
             False -> body
           }
           proxy.forward_stream(
-            req, target, method, path, req.headers, body_with_usage,
+            req, target, auth, method, path, req.headers, body_with_usage,
           )
         }
         False -> {
@@ -141,6 +142,7 @@ fn proxy_request(
             forward_with_retry(
               state.config,
               target,
+              auth,
               method,
               path,
               req.headers,
@@ -184,6 +186,7 @@ fn proxy_request(
 fn forward_with_retry(
   config: ProxyConfig,
   target: UpstreamTarget,
+  auth: proxy.ResolvedAuth,
   method: String,
   path: String,
   headers: List(#(String, String)),
@@ -191,7 +194,7 @@ fn forward_with_retry(
   attempt: Int,
 ) -> hackney.HackneyResponse {
   let resp =
-    proxy.forward_sync(target, method, path, headers, body, default_upstream_timeout_ms)
+    proxy.forward_sync(target, auth, method, path, headers, body, default_upstream_timeout_ms)
 
   case should_retry(resp, attempt, config.max_retries) {
     True -> {
@@ -205,7 +208,7 @@ fn forward_with_retry(
           <> "ms",
       )
       process.sleep(delay)
-      forward_with_retry(config, target, method, path, headers, body, attempt + 1)
+      forward_with_retry(config, target, auth, method, path, headers, body, attempt + 1)
     }
     False -> resp
   }
@@ -259,30 +262,46 @@ fn select_target(state: ServerState, model: String) -> UpstreamTarget {
   }
 }
 
-/// Overlay the live credential from the vault onto the target, when a
-/// vault is configured. A `vault.CodexToken` becomes the target's
-/// `codex_token` (and its `api_key`, so the Bearer header matches what
-/// the Codex Responses endpoint expects); a `vault.ApiKey` becomes the
-/// target's `api_key`. If the vault has no entry for this target, the
-/// static config target is returned unchanged.
-fn apply_live_credential(
+/// Resolve the concrete authentication to apply for a target: the live
+/// credential from the vault when one is configured and has an entry,
+/// otherwise the target's static `TargetAuth`. A `Codex` target with no
+/// live token in the vault resolves to an empty Codex credential and logs
+/// a warning (its requests will be unauthenticated) — that is a
+/// misconfiguration rather than a normal path.
+fn resolve_auth(
   target: UpstreamTarget,
-  state: ServerState,
-) -> UpstreamTarget {
-  case state.vault {
+  vault_subject: Option(process.Subject(vault.VaultMsg)),
+) -> proxy.ResolvedAuth {
+  case vault_subject {
     Some(v) ->
       case vault.get_credential(v, target.id, 2000) {
-        vault.CredentialFound(vault.CodexToken(token)) ->
-          config.UpstreamTarget(
-            ..target,
-            api_key: token,
-            codex_token: Some(token),
-          )
-        vault.CredentialFound(vault.ApiKey(key)) ->
-          config.UpstreamTarget(..target, api_key: key, codex_token: None)
-        vault.CredentialNotFound -> target
+        vault.CredentialFound(cred) -> credential_to_resolved(cred)
+        vault.CredentialNotFound -> static_auth(target)
       }
-    None -> target
+    None -> static_auth(target)
+  }
+}
+
+fn credential_to_resolved(cred: vault.Credential) -> proxy.ResolvedAuth {
+  case cred {
+    vault.ApiKey(key) -> proxy.ApiKey(key)
+    vault.CodexToken(token) -> proxy.Codex(token)
+  }
+}
+
+fn static_auth(target: UpstreamTarget) -> proxy.ResolvedAuth {
+  case target.auth {
+    config.ApiKey(key) -> proxy.ApiKey(key)
+    config.Codex -> {
+      logging.log(
+        logging.Warning,
+        "proxy: Codex target \""
+          <> target.id
+          <> "\" has no live token in the vault — requests will be"
+          <> " unauthenticated",
+      )
+      proxy.Codex("")
+    }
   }
 }
 

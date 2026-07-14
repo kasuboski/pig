@@ -80,42 +80,50 @@ pub fn inject_api_key(
   [#("authorization", "Bearer " <> api_key), ..headers]
 }
 
+/// The concrete authentication to apply to an upstream request: a mode
+/// plus a resolved token. The credential vault resolves a target's
+/// `TargetAuth` into one of these at request time (`server.resolve_auth`).
+pub type ResolvedAuth {
+  ApiKey(key: String)
+  Codex(token: String)
+}
+
 /// Build the full header list for an upstream request: scrubbed client
 /// headers plus injected auth and JSON content headers.
 ///
-/// Targets with a Codex OAuth token (`target.codex_token`) get the Codex
-/// Responses API header set — `chatgpt-account-id` derived from the JWT,
-/// plus the required `OpenAI-Beta`/`originator` headers — instead of a
-/// plain Bearer key. If the token can't be decoded (e.g. malformed JWT),
-/// this falls back to plain Bearer injection and logs a warning rather
-/// than failing the request outright.
+/// A `Codex` credential gets the Codex Responses API header set —
+/// `chatgpt-account-id` derived from the JWT, plus the required
+/// `OpenAI-Beta`/`originator` headers — instead of a plain Bearer key. If
+/// the token can't be decoded (e.g. malformed JWT), this falls back to
+/// plain Bearer injection and logs a warning rather than failing the
+/// request outright.
 pub fn build_upstream_headers(
   client_headers: List(#(String, String)),
-  target: UpstreamTarget,
+  base_url: String,
+  credential: ResolvedAuth,
   streaming: Bool,
 ) -> List(#(String, String)) {
   let scrubbed = scrub_headers(client_headers)
-  case target.codex_token {
-    Some(token) ->
-      case auth.headers(auth.CodexOAuth(token, target.base_url), streaming) {
+  case credential {
+    Codex(token) ->
+      case auth.headers(auth.CodexOAuth(token, base_url), streaming) {
         Ok(codex_headers) -> list.append(scrubbed, codex_headers)
         Error(_) -> {
           logging.log(
             logging.Warning,
-            "proxy: failed to derive chatgpt-account-id for target \""
-              <> target.id
-              <> "\" — falling back to plain bearer injection",
+            "proxy: failed to derive chatgpt-account-id — falling back to"
+              <> " plain bearer injection",
           )
-          bearer_headers(scrubbed, target, streaming)
+          bearer_headers(scrubbed, token, streaming)
         }
       }
-    None -> bearer_headers(scrubbed, target, streaming)
+    ApiKey(key) -> bearer_headers(scrubbed, key, streaming)
   }
 }
 
 fn bearer_headers(
   scrubbed_headers: List(#(String, String)),
-  target: UpstreamTarget,
+  key: String,
   streaming: Bool,
 ) -> List(#(String, String)) {
   let accept = case streaming {
@@ -123,7 +131,7 @@ fn bearer_headers(
     False -> "application/json"
   }
   scrubbed_headers
-  |> inject_api_key(target.api_key)
+  |> inject_api_key(key)
   |> list.append([
     #("content-type", "application/json"),
     #("accept", accept),
@@ -324,6 +332,7 @@ pub fn ensure_stream_usage(body: String) -> String
 /// the raw hackney response.
 pub fn forward_sync(
   target: UpstreamTarget,
+  auth: ResolvedAuth,
   method: String,
   path: String,
   client_headers: List(#(String, String)),
@@ -331,7 +340,7 @@ pub fn forward_sync(
   timeout_ms: Int,
 ) -> hackney.HackneyResponse {
   let url = resolve_upstream_url(target, path)
-  let headers = build_upstream_headers(client_headers, target, False)
+  let headers = build_upstream_headers(client_headers, target.base_url, auth, False)
   logging.log(logging.Debug, "proxy: sync " <> method <> " " <> url)
   hackney.sync_request(method, url, headers, body, timeout_ms)
 }
@@ -352,13 +361,14 @@ pub fn forward_sync(
 pub fn forward_stream(
   req: request.Request(mist.Connection),
   target: UpstreamTarget,
+  auth: ResolvedAuth,
   method: String,
   path: String,
   client_headers: List(#(String, String)),
   body: String,
 ) -> response.Response(mist.ResponseData) {
   let url = resolve_upstream_url(target, path)
-  let headers = build_upstream_headers(client_headers, target, True)
+  let headers = build_upstream_headers(client_headers, target.base_url, auth, True)
   let model = extract_model(body)
   let target_id = target.id
   let provider = config.provider_string(target)

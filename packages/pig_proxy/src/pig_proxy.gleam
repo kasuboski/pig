@@ -97,28 +97,78 @@ fn bootstrap_codex_credentials(
   Option(process.Subject(vault.VaultMsg)),
   Option(process.Subject(codex_refresh.RefreshMsg)),
 ) {
+  case find_codex_target_id(cfg) {
+    Some(target_id) -> bootstrap_for_target(cfg, target_id)
+    None -> {
+      logging.log(
+        logging.Warning,
+        "no target is configured for ChatGPT/Codex OAuth — live Codex"
+          <> " token rotation disabled",
+      )
+      #(None, None)
+    }
+  }
+}
+
+/// Load persisted Codex credentials for `target_id` and wire them into the
+/// vault + refresh actor. When persisted credentials are unavailable, fall
+/// back to the configured seed token (`OPENAI_COMPAT_CODEX_TOKEN`) to seed
+/// the vault without refresh.
+fn bootstrap_for_target(
+  cfg: config.ProxyConfig,
+  target_id: String,
+) -> #(
+  Option(process.Subject(vault.VaultMsg)),
+  Option(process.Subject(codex_refresh.RefreshMsg)),
+) {
   let path = codex_credentials.default_path()
   case codex_credentials.load(path) {
-    Ok(creds) ->
-      case find_codex_target_id(cfg) {
-        Some(target_id) -> start_vault_and_refresh(target_id, creds, path)
+    Ok(creds) -> start_vault_and_refresh(target_id, creds, path)
+    Error(reason) ->
+      case cfg.codex_seed_token {
+        Some(token) -> start_vault_seeded(target_id, token)
         None -> {
           logging.log(
             logging.Warning,
-            "no target is configured with a codex_token — live Codex token"
-              <> " rotation disabled",
+            "could not load Codex credentials from "
+              <> path
+              <> ": "
+              <> reason
+              <> " — live Codex token rotation disabled",
           )
           #(None, None)
         }
       }
-    Error(reason) -> {
+  }
+}
+
+/// Seed the vault with a static Codex token (no refresh actor, since a seed
+/// token carries no refresh token). Degrades to `(None, None)` if the
+/// vault cannot start.
+fn start_vault_seeded(
+  target_id: String,
+  token: String,
+) -> #(
+  Option(process.Subject(vault.VaultMsg)),
+  Option(process.Subject(codex_refresh.RefreshMsg)),
+) {
+  let initial =
+    vault.initial_credentials([#(target_id, vault.CodexToken(token))])
+  case vault.start(initial) {
+    Ok(v) -> {
+      logging.log(
+        logging.Info,
+        "seeded credential vault for Codex target \""
+          <> target_id
+          <> "\" from the configured seed token (no refresh)",
+      )
+      #(Some(v), None)
+    }
+    Error(_) -> {
       logging.log(
         logging.Warning,
-        "could not load Codex credentials from "
-          <> path
-          <> ": "
-          <> reason
-          <> " — live Codex token rotation disabled",
+        "failed to start credential vault — live credential rotation"
+          <> " disabled",
       )
       #(None, None)
     }
@@ -193,11 +243,11 @@ fn link_refresh_actor(
 }
 
 /// Find the target id that should hold the Codex credential: the first
-/// target explicitly configured with a `codex_token`. Returns `None`
-/// when no such target exists, so the caller can disable Codex bootstrap
-/// rather than injecting an OAuth token into a non-Codex target.
+/// target whose `TargetAuth` is `Codex`. Returns `None` when no such
+/// target exists, so the caller can disable Codex bootstrap rather than
+/// injecting an OAuth token into a non-Codex target.
 fn find_codex_target_id(cfg: config.ProxyConfig) -> Option(String) {
-  case list.find(cfg.targets, fn(t) { t.codex_token != None }) {
+  case list.find(cfg.targets, config.is_codex_target) {
     Ok(t) -> Some(t.id)
     Error(_) -> None
   }

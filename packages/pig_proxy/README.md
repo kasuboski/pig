@@ -75,8 +75,9 @@ always injects its own configured credential upstream.
 |---|---|---|
 | `PIG_PROXY_PORT` | `8080` | Port the proxy listens on. |
 | `OPENAI_COMPAT_BASE_URL` | `http://localhost:11434/v1` | Upstream base URL, including `/v1`. |
-| `OPENAI_COMPAT_API_KEY` | `ollama` | Key injected as `Authorization: Bearer <key>` on every forwarded request. |
-| `OPENAI_COMPAT_CODEX_TOKEN` | unset | Codex OAuth JWT stored on the default target for the credential vault (see [Codex / ChatGPT OAuth](#codex--chatgpt-oauth) below). |
+| `OPENAI_COMPAT_API_KEY` | `ollama` | Key injected as `Authorization: Bearer <key>` on every forwarded request (ignored when the target is Codex OAuth). |
+| `OPENAI_COMPAT_CODEX` | unset | When truthy, marks the default target as ChatGPT/Codex OAuth; its live token is resolved from the credential vault. |
+| `OPENAI_COMPAT_CODEX_TOKEN` | unset | Static Codex JWT that seeds the credential vault at startup; also marks the default target as Codex OAuth. |
 | `PIG_PROXY_MODELS_DEV_URL` | `https://models.dev/api.json` | Catalog used to compute per-request USD cost in `/metrics`. |
 | `PIG_PROXY_MODELS_REFRESH_MS` | `3600000` (1h) | How often the models.dev catalog is refreshed. |
 
@@ -145,12 +146,23 @@ immediately via `vault.rotate_token`) and written back to disk.
 ### Environment variable fallback
 
 If you already have a Codex JWT (e.g. from `codex login`), you can still pass
-it via environment variables instead of running the login flow:
+it via environment variables instead of running the login flow. Setting
+`OPENAI_COMPAT_CODEX_TOKEN` marks the default target as Codex OAuth and seeds
+the credential vault with the JWT (no refresh, since a static token carries no
+refresh token):
 
 ```sh
 export OPENAI_COMPAT_BASE_URL="https://chatgpt.com/backend-api/codex"
-export OPENAI_COMPAT_API_KEY="<your JWT>"
-export OPENAI_COMPAT_CODEX_TOKEN="<same JWT>"
+export OPENAI_COMPAT_CODEX_TOKEN="<your JWT>"
+gleam run
+```
+
+To use persisted credentials obtained via `pig_proxy/codex_login` instead, just
+declare the target as Codex without a token:
+
+```sh
+export OPENAI_COMPAT_BASE_URL="https://chatgpt.com/backend-api/codex"
+export OPENAI_COMPAT_CODEX=true
 gleam run
 ```
 
