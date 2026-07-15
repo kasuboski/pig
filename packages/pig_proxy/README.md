@@ -155,7 +155,7 @@ immediately via `vault.rotate_token`) and written back to disk.
 |---|---|
 | `pig_protocol/oauth/codex` | Pure PKCE/URL/token-building logic (no HTTP). |
 | `pig_proxy/codex_credentials` | Disk persistence (`~/.pig/codex_auth.json`). |
-| `pig_proxy/codex_login` | Interactive login: mist callback server, code exchange, JWT account-id extraction. |
+| `pig_proxy/codex_login` | Interactive login: default device-code flow for local, remote, and headless hosts; optional local browser callback; token exchange and JWT account-id extraction. |
 | `pig_proxy/codex_refresh` | Background actor: periodic expiry check, refresh, vault rotation, disk save. |
 | `pig_proxy/vault` | In-memory credential store; `rotate_token` updates without restart. |
 | `pig_proxy/proxy` | Header injection: uses `chatgpt-account-id` + `OpenAI-Beta` headers when `codex_token` is present. |
