@@ -23,7 +23,6 @@
 //// them, the test prints a skip message and passes.
 
 import gleam/bit_array
-import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
@@ -65,8 +64,7 @@ pub fn proxy_forwards_codex_responses_test() {
                 |> proxy_config.with_port(config.base_port() + 2)
               let state = runtime.start(cfg)
               server.start(state)
-              // Let the listener bind.
-              process.sleep(1000)
+              let assert True = gate.wait_until_ready(cfg.port)
 
               let url =
                 "http://localhost:"

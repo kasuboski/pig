@@ -37,7 +37,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
-import gleam/result
 import logging
 import pig_proxy/circuit_actor
 import pig_proxy/codex_credentials
@@ -46,11 +45,13 @@ import pig_proxy/config.{type ProxyConfig}
 import pig_proxy/metrics
 import pig_proxy/model_catalog
 import pig_proxy/server
+import pig_proxy/telemetry
 import pig_proxy/vault
 
 /// Bring up the proxy runtime for `cfg` and return the `ServerState` ready
 /// to pass to `server.start`.
 pub fn start(cfg: ProxyConfig) -> server.ServerState {
+  telemetry.ensure_started()
   // Shared names: created once, captured by the supervisor workers (which
   // register under them) and stored in ServerState (so the request path
   // resolves the CURRENT process after a restart).
@@ -78,14 +79,9 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
       )
     }))
     |> static_supervisor.add(supervision.worker(fn() {
-      // metrics.start_named attaches a typed telemetry handler too; the
-      // handler id is discarded (a restarted metrics actor leaves the prior
-      // handler as a harmless no-op that forwards to a dead subject).
+      // `attach_named` below installs one handler after the tree boots; it
+      // resolves this named actor after every supervised restart.
       metrics.start_named(metrics_name)
-      |> result.map(fn(pair) {
-        let #(started, _handler_id) = pair
-        started
-      })
     }))
     |> add_cred_sub(plan, vault_name)
 
@@ -96,6 +92,7 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   // Fail-fast: if the tree later dies (restart intensity exceeded), take the
   // proxy down so an external supervisor restarts the whole process.
   let _ = process.link(started.pid)
+  let _ = metrics.attach_named(metrics_name)
 
   server.ServerState(
     config: cfg,

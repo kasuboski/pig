@@ -467,9 +467,7 @@ pub fn sync_response_to_mist(
 ) -> response.Response(mist.ResponseData) {
   case resp {
     hackney.OkResponse(status:, headers:, body:) ->
-      response.new(status)
-      |> set_response_headers(headers)
-      |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
+      render_response(status, headers, body)
     hackney.ErrorResponse(reason:) ->
       response.new(502)
       |> response.set_header("content-type", "application/json")

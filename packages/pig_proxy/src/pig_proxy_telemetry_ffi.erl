@@ -17,7 +17,8 @@
     handlers_init/0,
     handlers_add/1,
     handlers_remove/1,
-    handlers_get/0
+    handlers_get/0,
+    handlers_call/2
 ]).
 
 -define(HANDLERS_KEY, {pig_proxy, telemetry_handlers}).
@@ -39,9 +40,13 @@ system_time() ->
 
 %% ── Typed-handler registry (persistent_term) ─────────────────────
 
-%% Initialise the registry to empty. Idempotent.
+%% Initialise the registry once without erasing handlers registered by a
+%% running runtime or another supervised component.
 handlers_init() ->
-    persistent_term:put(?HANDLERS_KEY, []),
+    case persistent_term:get(?HANDLERS_KEY, undefined) of
+        undefined -> persistent_term:put(?HANDLERS_KEY, []);
+        _ -> ok
+    end,
     nil.
 
 %% Register a Gleam handler; return an opaque ID for later removal.
@@ -60,6 +65,15 @@ handlers_remove({handler_id, Ref}) ->
 %% Snapshot of the current handler list (hot path: called by `emit`).
 handlers_get() ->
     persistent_term:get(?HANDLERS_KEY, []).
+
+%% Invoke an untrusted Gleam callback without allowing it to crash the
+%% emitter or prevent delivery to later handlers.
+handlers_call(Fn, Event) ->
+    try Fn(Event) of
+        _ -> nil
+    catch
+        _:_ -> nil
+    end.
 
 %% Convert atom-keyed map to binary-keyed map with all values as binaries.
 atomize_keys(Map) when is_map(Map) ->

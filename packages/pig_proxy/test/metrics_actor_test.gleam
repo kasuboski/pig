@@ -178,26 +178,39 @@ pub fn request_stop_event_accumulates_tokens_test() {
   cleanup()
 }
 
-/// Absent token usage (None) must add nothing — and must NOT be conflated
-/// with an explicit zero. A request reporting None then one reporting
-/// Some(0) leave the totals at 0 either way, but the typed path makes the
-/// distinction representable (this guards against the old string round-trip
-/// which encoded both as "" / 0).
-pub fn absent_token_usage_is_not_conflated_with_zero_test() {
+/// Absent token usage must not increase previously accumulated totals.
+pub fn absent_token_usage_does_not_change_totals_test() {
   let #(subject, cleanup) = setup()
   let _ =
     send_event_and_snapshot(subject, request_stop_event_with_tokens(
-      "gpt-4", 200, 200, None, None,
+      "gpt-4", 200, 200, Some(3), Some(4),
     ))
   let snapshot =
     send_event_and_snapshot(subject, request_stop_event_with_tokens(
-      "gpt-4", 200, 200, Some(0), Some(0),
+      "gpt-4", 200, 200, None, None,
     ))
   let assert Ok(m) = dict.get(snapshot.models, "gpt-4")
-  assert m.input_tokens == 0
-  assert m.output_tokens == 0
+  assert m.input_tokens == 3
+  assert m.output_tokens == 4
   assert m.request_count == 2
   cleanup()
+}
+
+/// A failing typed handler does not prevent later handlers from receiving an
+/// event through the protected telemetry callback boundary.
+pub fn failing_typed_handler_does_not_stop_fanout_test() {
+  telemetry.ensure_started()
+  let subject = process.new_subject()
+  let failing = telemetry.attach_typed(fn(_) { panic as "expected failure" })
+  let succeeding = telemetry.attach_typed(fn(event) {
+    process.send(subject, event)
+  })
+
+  telemetry.emit(telemetry.RequestStart(model: "gpt-4", streaming: False))
+  let assert Ok(telemetry.RequestStart(model: "gpt-4", streaming: False)) =
+    process.receive(subject, 1_000)
+  telemetry.detach_typed(failing)
+  telemetry.detach_typed(succeeding)
 }
 
 /// A non-empty provider keys the model as `provider/model`.

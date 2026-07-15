@@ -12,7 +12,6 @@
 //// message and passes.
 
 import gleam/bit_array
-import gleam/erlang/process
 import gleam/int
 import gleam/string
 import gleeunit
@@ -37,8 +36,7 @@ pub fn health_endpoint_serves_after_boot_test() {
         |> proxy_config.with_port(config.base_port())
       let state = runtime.start(cfg)
       server.start(state)
-      // Let the listener bind.
-      process.sleep(1000)
+      let assert True = gate.wait_until_ready(cfg.port)
 
       let url =
         "http://localhost:"

@@ -47,6 +47,9 @@ fn handlers_remove(id: HandlerId) -> Nil
 @external(erlang, "pig_proxy_telemetry_ffi", "handlers_get")
 fn handlers_get() -> List(#(HandlerId, fn(ProxyEvent) -> Nil))
 
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_call")
+fn handlers_call(handler: fn(ProxyEvent) -> Nil, event: ProxyEvent) -> Nil
+
 /// Opaque handler ID returned by `attach_typed`.
 pub type HandlerId
 
@@ -152,7 +155,7 @@ pub fn name_to_string(name: List(String)) -> String {
 pub fn emit(event: ProxyEvent) -> Nil {
   list.each(handlers_get(), fn(entry) {
     let #(_, handler) = entry
-    handler(event)
+    handlers_call(handler, event)
   })
   emit_external(event)
 }

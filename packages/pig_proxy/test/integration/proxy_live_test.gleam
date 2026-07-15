@@ -16,7 +16,6 @@
 //// Gated behind PIG_RUN_INTEGRATION=1. Without it, the test prints a skip
 //// message and passes.
 
-import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleeunit
@@ -50,8 +49,7 @@ pub fn proxy_forwards_chat_completion_test() {
             |> proxy_config.with_port(config.base_port() + 1)
           let state = runtime.start(cfg)
           server.start(state)
-          // Let the listener bind.
-          process.sleep(1000)
+          let assert True = gate.wait_until_ready(cfg.port)
 
           let url =
             "http://localhost:"

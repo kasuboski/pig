@@ -77,9 +77,14 @@ stream_connect(Method, Url, Headers, Body, HeadSubject) ->
                     when StatusCode >= 200, StatusCode < 300 ->
                     receive_first_and_report(Ref, StatusCode, RespHeaders, HeadSubject);
                 {ok, StatusCode, RespHeaders} ->
-                    FullBody = read_all_body(Ref),
-                    send_subject(HeadSubject,
-                        {stream_rejected, StatusCode, RespHeaders, FullBody});
+                    case read_all_body(Ref) of
+                        {ok, FullBody} ->
+                            send_subject(HeadSubject,
+                                {stream_rejected, StatusCode, RespHeaders, FullBody});
+                        {timeout, _PartialBody} ->
+                            send_subject(HeadSubject,
+                                {stream_failure, <<"timeout reading upstream error body">>})
+                    end;
                 {error, Reason} ->
                     send_subject(HeadSubject, {stream_failure, Reason})
             end;
@@ -176,6 +181,7 @@ forward_loop(Ref, Fwd) ->
 
 %% Read the full body for a non-2xx streaming response.
 %% Tail-recursive: accumulates chunks in an iolist, then flattens once.
+%% Returns `{ok, Body}` on completion and `{timeout, PartialBody}` on idle timeout.
 read_all_body(Ref) ->
     read_all_body(Ref, []).
 
@@ -185,15 +191,15 @@ read_all_body(Ref, Acc) ->
             read_all_body(Ref, [BinBodyPart | Acc]);
         {hackney_response, Ref, done} ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc));
+            {ok, iolist_to_binary(lists:reverse(Acc))};
         {hackney_response, Ref, {error, _Reason}} ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc));
+            {ok, iolist_to_binary(lists:reverse(Acc))};
         _Other ->
             read_all_body(Ref, Acc)
     after ?HEAD_TIMEOUT_MS ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc))
+            {timeout, iolist_to_binary(lists:reverse(Acc))}
     end.
 
 %% Construct a gleam/erlang Subject owned by this process.
