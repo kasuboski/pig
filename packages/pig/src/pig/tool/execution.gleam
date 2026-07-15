@@ -1,35 +1,48 @@
-//// Pure tool execution.
+//// Tool execution compatibility API and batch validation.
 ////
-//// Looks up a tool in the registry, parses the tool call's JSON arguments
-//// into `dynamic.Dynamic`, and calls the handler. Returns structured errors
-//// for unknown tools, malformed JSON, or handler failures. Never crashes.
+//// `execute_tool` delegates to the canonical dispatch in `pig/tool`; batch
+//// validation remains here because it is used by the agent runtime.
 
-import gleam/dynamic/decode
+import gleam/dict
 import gleam/json
+import pig/tool.{type ToolCallBatchError, type ToolError, type ToolRegistry}
 import pig_protocol/message.{type ToolCall}
-import pig/tool.{type ToolError, type ToolRegistry}
 
-/// Execute a tool call against the registry.
+/// Execute a tool call through canonical registry dispatch.
 ///
-/// Parses `arguments_json` into `dynamic.Dynamic` before passing to the handler.
-/// Returns:
-/// - `Ok(json.Json)` on successful execution
-/// - `Error(ToolError)` for unknown tools, malformed args, or handler errors
+/// This compatibility API delegates to `tool.execute_tool`, which owns lookup,
+/// argument decoding, context construction, and handler invocation.
 pub fn execute_tool(
   registry: ToolRegistry,
   call: ToolCall,
 ) -> Result(json.Json, ToolError) {
-  case tool.lookup(registry, call.name) {
-    Ok(t) -> {
-      case json.parse(from: call.arguments_json, using: decode.dynamic) {
-        Ok(args) -> t.handler(args)
-        Error(_) ->
-          Error(tool.ToolError(
-            message: "invalid JSON arguments for tool \"" <> call.name <> "\"",
-          ))
+  tool.execute_tool(registry, call)
+}
+
+/// Validate a batch before hooks, telemetry, or tool processes are started.
+///
+/// The first invalidity is selected left-to-right: an empty ID at its index,
+/// or the second occurrence of a duplicated ID. Empty batches are valid.
+pub fn validate_tool_calls(
+  calls: List(ToolCall),
+) -> Result(Nil, ToolCallBatchError) {
+  validate_remaining(calls, dict.new(), 0)
+}
+
+fn validate_remaining(
+  calls: List(ToolCall),
+  seen: dict.Dict(String, Nil),
+  index: Int,
+) -> Result(Nil, ToolCallBatchError) {
+  case calls {
+    [] -> Ok(Nil)
+    [call, ..] if call.id == "" -> Error(tool.EmptyToolCallId(index))
+    [call, ..rest] -> {
+      case dict.get(seen, call.id) {
+        Ok(_) -> Error(tool.DuplicateToolCallId(call.id))
+        Error(Nil) ->
+          validate_remaining(rest, dict.insert(seen, call.id, Nil), index + 1)
       }
     }
-    Error(Nil) ->
-      Error(tool.ToolError(message: "unknown tool \"" <> call.name <> "\""))
   }
 }

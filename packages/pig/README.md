@@ -60,7 +60,10 @@ fn add_tool() -> tool.Tool {
         schema.prop("b", schema.integer()),
       ]),
     ),
-    handler: fn(arguments) {
+    handler: fn(context, arguments) {
+      // Context is library-owned and identifies this invocation.
+      let _ = tool.call_id(context)
+      let _ = tool.tool_name(context)
       let decoder = {
         use a <- decode.field("a", decode.int)
         use b <- decode.field("b", decode.int)

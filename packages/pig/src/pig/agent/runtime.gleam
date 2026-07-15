@@ -804,6 +804,26 @@ fn execute_tools_effect(
   on_results: fn(List(#(ToolCall, Result(json.Json, tool.ToolError)))) ->
     msg.AgentMsg,
 ) -> #(state.AgentState, msg.AgentMsg) {
+  // Reject the whole batch before hooks, telemetry, or processes can observe it.
+  case execution.validate_tool_calls(calls) {
+    Error(batch_error) -> {
+      let rejected =
+        list.map(calls, fn(call) {
+          #(call, Error(tool.InvalidToolCallBatch(batch_error)))
+        })
+      #(agent_st, on_results(rejected))
+    }
+    Ok(Nil) -> execute_valid_tools_effect(config, agent_st, calls, on_results)
+  }
+}
+
+fn execute_valid_tools_effect(
+  config: RuntimeConfig,
+  agent_st: state.AgentState,
+  calls: List(ToolCall),
+  on_results: fn(List(#(ToolCall, Result(json.Json, tool.ToolError)))) ->
+    msg.AgentMsg,
+) -> #(state.AgentState, msg.AgentMsg) {
   let disp = config.dispatcher
 
   // Partition into blocked (handled inline) and allowed (spawned)
@@ -842,7 +862,7 @@ fn execute_tools_effect(
       let assert Ok(#(result, duration)) = find_result(results, call.id)
       let raw_content = case result {
         Ok(json_result) -> json.to_string(json_result)
-        Error(tool_err) -> "Tool error: " <> tool_err.message
+        Error(tool_err) -> "Tool error: " <> tool.error_message(tool_err)
       }
       // Apply result hooks
       let result_event =

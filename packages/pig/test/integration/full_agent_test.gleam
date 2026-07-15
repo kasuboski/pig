@@ -54,7 +54,7 @@ fn add_tool() -> tool.Tool {
           |> schema.description("Second number"),
       ]),
     ),
-    handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+    handler: fn(_, args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       let a_result =
         decode.run(args, decode.field("a", decode.int, decode.success))
       let b_result =

@@ -86,7 +86,7 @@ pub fn tool_call_roundtrip_test() {
                 |> schema.description("Second number"),
             ]),
           ),
-          handler: fn(args: dynamic.Dynamic) -> Result(
+          handler: fn(_, args: dynamic.Dynamic) -> Result(
             json.Json,
             tool.ToolError,
           ) {

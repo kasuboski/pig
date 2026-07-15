@@ -3,16 +3,17 @@
 //// Tests that each tool's handler correctly parses arguments and
 //// calls the underlying kv/vfs operations.
 
-import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/string
 import gleeunit
 import pig/tool
+import pig/tool/execution
 import pig/workspace/kv
 import pig/workspace/schema
 import pig/workspace/tools
 import pig/workspace/vfs
+import pig_protocol/message
 import sqlight
 
 pub fn main() -> Nil {
@@ -30,15 +31,16 @@ fn with_db(f: fn(sqlight.Connection) -> a) -> a {
   result
 }
 
-/// Helper to call a tool handler with JSON arguments.
+/// Execute a tool with JSON arguments through its public invocation boundary.
 fn call_handler(
-  tool: tool.Tool,
+  subject: tool.Tool,
   args: List(#(String, json.Json)),
 ) -> Result(json.Json, tool.ToolError) {
-  let args_json = json.object(args)
-  let args_string = json.to_string(args_json)
-  let assert Ok(dyn) = json.parse(from: args_string, using: decode.dynamic)
-  tool.handler(dyn)
+  let arguments_json = json.to_string(json.object(args))
+  execution.execute_tool(
+    tool.new_registry() |> tool.register(subject),
+    message.ToolCall(id: "test", name: subject.definition.name, arguments_json:),
+  )
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

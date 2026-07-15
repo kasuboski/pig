@@ -10,9 +10,9 @@ import gleam/json
 import gleam/list
 import gleam/string
 import jscheam/schema
-import pig_protocol/tool_definition
 import pig/skill
 import pig/tool
+import pig_protocol/tool_definition
 import simplifile
 
 /// Create a librarian tool from a list of loaded skills.
@@ -27,7 +27,7 @@ pub fn librarian_tool(skills: List(skill.Skill)) -> tool.Tool {
         <> "Returns the SKILL.md content for the requested skill.",
       parameters: schema.object([schema.prop("name", schema.string())]),
     ),
-    handler: fn(args: dynamic.Dynamic) {
+    handler: fn(_, args: dynamic.Dynamic) {
       case
         decode.run(args, decode.field("name", decode.string, decode.success))
       {
