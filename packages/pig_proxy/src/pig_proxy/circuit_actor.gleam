@@ -130,6 +130,21 @@ pub fn start(
   }
 }
 
+/// Start the circuit actor registered under `name`, returning the
+/// `Started` value a supervisor needs. Registering under a shared name lets
+/// the request path reach the current process after a restart.
+pub fn start_named(
+  threshold: Int,
+  cooldown_ms: Int,
+  name: process.Name(CircuitMsg),
+) -> Result(actor.Started(process.Subject(CircuitMsg)), actor.StartError) {
+  CircuitActorState(circuits: dict.new(), threshold:, cooldown_ms:)
+  |> actor.new
+  |> actor.on_message(handle_message)
+  |> actor.named(name)
+  |> actor.start
+}
+
 /// Synchronously ask whether `target_id` may be attempted right now.
 pub fn admit(
   circuit: process.Subject(CircuitMsg),

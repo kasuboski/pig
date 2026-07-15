@@ -235,6 +235,35 @@ pub fn start() -> Result(
   }
 }
 
+/// Start the metrics actor registered under `name`, returning the `Started`
+/// value a supervisor needs (plus the telemetry handler id, which callers
+/// usually discard). On a supervised restart a fresh handler is attached;
+/// the prior one becomes a no-op (it forwards to a dead subject), so this
+/// does not crash — see `runtime` for the supervision wiring.
+pub fn start_named(
+  name: process.Name(MetricsMsg),
+) -> Result(
+  #(actor.Started(process.Subject(MetricsMsg)), telemetry.HandlerId),
+  actor.StartError,
+) {
+  let result =
+    MetricsState(models: dict.new())
+    |> actor.new
+    |> actor.on_message(handle_message)
+    |> actor.named(name)
+    |> actor.start
+  case result {
+    Ok(started) -> {
+      let handler_id =
+        telemetry.attach_typed(fn(event) {
+          process.send(started.data, ProxyEvent(event:))
+        })
+      Ok(#(started, handler_id))
+    }
+    Error(e) -> Error(e)
+  }
+}
+
 /// Synchronously request a metrics snapshot from the aggregator.
 pub fn get_snapshot(
   metrics: process.Subject(MetricsMsg),

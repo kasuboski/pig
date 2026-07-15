@@ -102,6 +102,20 @@ pub fn start(
   }
 }
 
+/// Start the vault actor registered under `name`, returning the `Started`
+/// value a supervisor needs. The request path resolves it by `name` so a
+/// restarted vault (re-seeded from `initial`) is reached transparently.
+pub fn start_named(
+  initial: Dict(String, Credential),
+  name: process.Name(VaultMsg),
+) -> Result(actor.Started(process.Subject(VaultMsg)), actor.StartError) {
+  VaultState(credentials: initial)
+  |> actor.new
+  |> actor.on_message(handle_message)
+  |> actor.named(name)
+  |> actor.start
+}
+
 /// Build the initial credentials dict from a list of target id / credential pairs.
 pub fn initial_credentials(
   pairs: List(#(String, Credential)),

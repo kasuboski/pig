@@ -38,16 +38,18 @@ pub type ServerState {
   ServerState(
     config: ProxyConfig,
     routes: List(VirtualRoute),
-    metrics: Option(process.Subject(metrics.MetricsMsg)),
-    catalog: Option(process.Subject(model_catalog.CatalogMsg)),
+    /// Per-target circuit breaker, addressed by name (supervised). Resolved
+    /// per request so a restarted breaker is reached transparently.
+    circuit: process.Name(circuit_actor.CircuitMsg),
+    /// Model catalog, addressed by name (supervised); used by /metrics.
+    catalog: process.Name(model_catalog.CatalogMsg),
+    /// Metrics aggregator, addressed by name (supervised); used by /metrics.
+    metrics: process.Name(metrics.MetricsMsg),
     /// Credential vault. When present, the live credential for a target
     /// (kept fresh by `pig_proxy/codex_refresh`) overrides the static
-    /// `TargetAuth` baked into `config` at startup.
+    /// `TargetAuth` baked into `config` at startup. Manual (not yet
+    /// supervised); held as a captured subject.
     vault: Option(process.Subject(vault.VaultMsg)),
-    /// Per-target circuit breaker. When present, request execution
-    /// consults it for admission and records one failure per exhausted
-    /// retry budget.
-    circuit: Option(process.Subject(circuit_actor.CircuitMsg)),
   )
 }
 
@@ -109,7 +111,7 @@ fn proxy_request(
       telemetry.emit(telemetry.RequestStart(model:, streaming:))
 
       let exec =
-        execution.executor(hackney.transport(), state.circuit)
+        execution.executor(hackney.transport(), resolve_named(state.circuit))
         |> maybe_with_vault(state.vault)
         |> execution.with_retries_per_target(state.config.retries_per_target)
       let request =
@@ -153,6 +155,17 @@ fn maybe_with_vault(
   case vault {
     Some(v) -> execution.with_vault(exec, v)
     None -> exec
+  }
+}
+
+/// Resolve a named supervised actor to its current subject, or `None` if it
+/// is briefly unregistered (mid-restart) — callers degrade gracefully. This
+/// is what makes a restarted actor transparent: the supervisor re-registers
+/// the name, and the next request reaches the new process.
+fn resolve_named(name: process.Name(a)) -> Option(process.Subject(a)) {
+  case process.named(name) {
+    Ok(_) -> Some(process.named_subject(name))
+    Error(_) -> None
   }
 }
 
@@ -263,10 +276,10 @@ fn health_response() -> response.Response(mist.ResponseData) {
 fn metrics_response(
   state: ServerState,
 ) -> response.Response(mist.ResponseData) {
-  case state.metrics {
+  case resolve_named(state.metrics) {
     Some(metrics_subject) -> {
       let snapshot = metrics.get_snapshot(metrics_subject)
-      let catalog = case state.catalog {
+      let catalog = case resolve_named(state.catalog) {
         Some(catalog_subject) -> model_catalog.snapshot(catalog_subject)
         None -> model_catalog.empty()
       }

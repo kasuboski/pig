@@ -78,6 +78,20 @@ pub fn start(
   }
 }
 
+/// Start the catalog actor registered under `name`, returning the `Started`
+/// value a supervisor needs, so the /metrics endpoint reaches the current
+/// process after a restart.
+pub fn start_named(
+  url: String,
+  refresh_ms: Int,
+  name: process.Name(CatalogMsg),
+) -> Result(actor.Started(process.Subject(CatalogMsg)), actor.StartError) {
+  actor.new_with_initialiser(5000, initialise(url, refresh_ms))
+  |> actor.on_message(handle_message)
+  |> actor.named(name)
+  |> actor.start
+}
+
 /// Synchronously read the current catalog snapshot.
 pub fn snapshot(subject: process.Subject(CatalogMsg)) -> Catalog {
   actor.call(subject, waiting: 5000, sending: fn(reply_to) {

@@ -48,15 +48,19 @@ type RefreshState {
 ///
 /// `creds` is the credential pair currently in the vault for `target_id`
 /// (the vault must already hold a `vault.CodexToken` for this id — see
-/// `pig_proxy.gleam`'s startup wiring).
+/// `runtime` startup wiring). The vault is addressed by `vault_name` rather
+/// than a captured `Subject`: under `rest_for_one` supervision a restarted
+/// vault re-registers the name, and the resolved subject routes to the new
+/// process so rotation never targets a dead vault.
 pub fn start(
-  vault_subject: process.Subject(vault.VaultMsg),
+  vault_name: process.Name(vault.VaultMsg),
   target_id: String,
   credentials_path: String,
   creds: CodexCredentials,
   check_interval_ms: Int,
   refresh_buffer_ms: Int,
 ) -> Result(process.Subject(RefreshMsg), actor.StartError) {
+  let vault_subject = process.named_subject(vault_name)
   let result =
     actor.new_with_initialiser(
       5000,
