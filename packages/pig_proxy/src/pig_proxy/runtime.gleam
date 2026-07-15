@@ -6,25 +6,35 @@
 //// to start, how they're supervised, how callers reach them after a restart
 //// — lives here and nowhere else.
 ////
-//// Supervision:
-////   The independent actors (circuit breaker, model catalog, metrics) are
-////   owned by a `static_supervisor` (one_for_one), each started under a
-////   shared `process.Name` via `actor.named`. On a crash the supervisor
-////   restarts just that actor, which re-registers the name — so the request
-////   path (which resolves by name) transparently reaches the new process.
-////   Boot is all-or-nothing: if any supervised actor fails to start, the
-////   supervisor fails and the proxy does not boot (fail-to-boot).
+//// Supervision tree:
 ////
-////   The credential vault + Codex refresh pair are started manually for now:
-////   they are coupled (refresh depends on the vault) and re-seeding the
-////   vault from persisted credentials on restart wants a rest_for_one
-////   sub-tree, which is a deliberate follow-up. Both are name-addressed so
-////   the move into the tree is mechanical later; the refresh actor is linked
-////   to this process so silent loss of token rotation fails fast.
+////   pig_proxy_sup (one_for_one, fail-to-boot)
+////   ├── circuit        (named)  — per-target circuit breaker
+////   ├── model_catalog  (named)  — models.dev refresher
+////   ├── metrics        (named)  — typed-event aggregator
+////   └── cred_sup (rest_for_one) — only when a Codex target is configured
+////       ├── vault      (named)  — live credential store
+////       └── refresh             — background Codex token rotation
+////
+//// Every supervised actor is started under a shared `process.Name` via
+//// `actor.named`. On a crash the supervisor restarts just that actor (or,
+//// for the cred pair, both under rest_for_one so refresh never targets a
+//// dead vault), which re-registers the name — so the request path resolves
+//// by name and transparently reaches the new process. Boot is
+//// all-or-nothing: a child that fails to start fails the supervisor and the
+//// proxy does not boot (fail-to-boot). The supervisor is linked to this
+//// process so a tree death fails fast to an external restart.
+////
+//// The cred pair re-seeds from disk on each (re)start: the vault reloads the
+//// persisted access token, and refresh reloads the persisted credential pair,
+//// so a restart picks up the latest rotated credentials rather than the
+//// boot-time snapshot.
 
+import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
@@ -38,10 +48,8 @@ import pig_proxy/model_catalog
 import pig_proxy/server
 import pig_proxy/vault
 
-/// Bring up the proxy runtime for `cfg`: start and supervise the circuit
-/// breaker, model catalog, and metrics aggregator; start the credential
-/// vault + Codex refresh (when a Codex target is configured). Returns the
-/// `ServerState` ready to pass to `server.start`.
+/// Bring up the proxy runtime for `cfg` and return the `ServerState` ready
+/// to pass to `server.start`.
 pub fn start(cfg: ProxyConfig) -> server.ServerState {
   // Shared names: created once, captured by the supervisor workers (which
   // register under them) and stored in ServerState (so the request path
@@ -49,6 +57,9 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   let circuit_name = process.new_name("circuit")
   let catalog_name = process.new_name("catalog")
   let metrics_name = process.new_name("metrics")
+  let vault_name = process.new_name("vault")
+
+  let plan = cred_plan(cfg)
 
   let sup =
     static_supervisor.new(static_supervisor.OneForOne)
@@ -76,6 +87,7 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
         started
       })
     }))
+    |> add_cred_sub(plan, vault_name)
 
   // Fail-to-boot: a child that can't start fails the supervisor, and thus
   // the proxy boot.
@@ -85,29 +97,85 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   // proxy down so an external supervisor restarts the whole process.
   let _ = process.link(started.pid)
 
-  // Credential vault + refresh (manual; coupled pair — see module doc).
-  let vault_subject = start_credentials(cfg)
-
   server.ServerState(
     config: cfg,
     routes: [],
     circuit: circuit_name,
     catalog: catalog_name,
     metrics: metrics_name,
-    vault: vault_subject,
+    vault: vault_name_for(plan, vault_name),
   )
 }
 
-// ── Credential vault + refresh (manual, Codex-optional) ────────
+/// Conditionally add the credential sub-supervisor. No-op (no vault) when
+/// no Codex target is configured or no credentials are available.
+fn add_cred_sub(
+  builder: static_supervisor.Builder,
+  plan: Option(CredPlan),
+  vault_name: process.Name(vault.VaultMsg),
+) -> static_supervisor.Builder {
+  case plan {
+    Some(p) ->
+      builder
+      |> static_supervisor.add(cred_sub_child(p, vault_name))
+    None -> builder
+  }
+}
 
-/// Load persisted Codex credentials (if present) and wire them into the
-/// credential vault + background refresh actor, returning the vault subject
-/// (or `None`). See `pig_proxy/codex_login` for obtaining the initial pair.
-fn start_credentials(
-  cfg: ProxyConfig,
-) -> Option(process.Subject(vault.VaultMsg)) {
+/// The vault name exposed to the request path: present iff the cred
+/// sub-tree was added.
+fn vault_name_for(
+  plan: Option(CredPlan),
+  vault_name: process.Name(vault.VaultMsg),
+) -> Option(process.Name(vault.VaultMsg)) {
+  case plan {
+    Some(_) -> Some(vault_name)
+    None -> None
+  }
+}
+
+// ── Credential sub-tree (rest_for_one) ─────────────────────────
+
+/// A resolved plan for the credential sub-tree, decided at boot.
+type CredPlan {
+  /// Vault + refresh, both re-seeding/reloading from `path` on each restart.
+  Full(target_id: String, path: String)
+  /// Vault only, seeded from a static token (no refresh_token to rotate).
+  Seeded(target_id: String, token: String)
+}
+
+/// Decide whether to start the credential sub-tree for `cfg`, and how.
+/// `None` when no Codex target is configured or no credentials are
+/// available — the proxy then serves with the static config.
+fn cred_plan(cfg: ProxyConfig) -> Option(CredPlan) {
   case find_codex_target_id(cfg) {
-    Some(target_id) -> start_credentials_for_target(cfg, target_id)
+    Some(target_id) -> {
+      let path = codex_credentials.default_path()
+      case codex_credentials.load(path) {
+        Ok(_creds) -> Some(Full(target_id:, path:))
+        Error(_reason) ->
+          case cfg.codex_seed_token {
+            Some(token) -> {
+              logging.log(
+                logging.Info,
+                "no persisted Codex credentials — seeding vault for target \""
+                  <> target_id
+                  <> "\" from the configured seed token (no refresh)",
+              )
+              Some(Seeded(target_id:, token:))
+            }
+            None -> {
+              logging.log(
+                logging.Warning,
+                "no Codex credentials at "
+                  <> path
+                  <> " and no seed token — live Codex token rotation disabled",
+              )
+              None
+            }
+          }
+      }
+    }
     None -> {
       logging.log(
         logging.Warning,
@@ -119,114 +187,96 @@ fn start_credentials(
   }
 }
 
-fn start_credentials_for_target(
-  cfg: ProxyConfig,
-  target_id: String,
-) -> Option(process.Subject(vault.VaultMsg)) {
-  let path = codex_credentials.default_path()
-  case codex_credentials.load(path) {
-    Ok(creds) -> start_vault_and_refresh(target_id, creds, path)
-    Error(reason) ->
-      case cfg.codex_seed_token {
-        Some(token) -> start_vault_seeded(target_id, token)
-        None -> {
-          logging.log(
-            logging.Warning,
-            "could not load Codex credentials from "
-              <> path
-              <> ": "
-              <> reason
-              <> " — live Codex token rotation disabled",
-          )
-          None
-        }
-      }
-  }
-}
-
-/// Seed the vault with a static Codex token (no refresh actor, since a seed
-/// token carries no refresh token). The vault is started under a name so the
-/// future supervised path reuses the same wiring.
-fn start_vault_seeded(target_id: String, token: String) -> Option(
-  process.Subject(vault.VaultMsg),
+/// The credential pair as a sub-supervisor child of the top supervisor.
+/// `rest_for_one`: a vault restart takes refresh down with it (refresh
+/// re-resolves the vault name on restart), so rotation never targets a dead
+/// vault. refresh crashing restarts only refresh.
+fn cred_sub_child(
+  plan: CredPlan,
+  vault_name: process.Name(vault.VaultMsg),
 ) {
-  let vault_name = process.new_name("vault")
-  let initial =
-    vault.initial_credentials([#(target_id, vault.CodexToken(token))])
-  case vault.start_named(initial, vault_name) {
-    Ok(started) -> {
-      logging.log(
-        logging.Info,
-        "seeded credential vault for Codex target \""
-          <> target_id
-          <> "\" from the configured seed token (no refresh)",
-      )
-      Some(started.data)
-    }
-    Error(_) -> {
-      logging.log(
-        logging.Warning,
-        "failed to start credential vault — live credential rotation"
-          <> " disabled",
-      )
-      None
-    }
-  }
+  supervision.supervisor(fn() { cred_sub_start(plan, vault_name) })
 }
 
-/// Start the credential vault under a name, seeded with the Codex access
-/// token, then start the background refresh actor against it (addressed by
-/// the same name). The refresh actor is linked to this process so silent
-/// loss of token rotation fails fast. Degrades to `None` if the vault cannot
-/// start.
-fn start_vault_and_refresh(
-  target_id: String,
-  creds: codex_credentials.CodexCredentials,
-  path: String,
-) -> Option(process.Subject(vault.VaultMsg)) {
-  let vault_name = process.new_name("vault")
-  let initial =
-    vault.initial_credentials([#(target_id, vault.CodexToken(creds.access_token))])
-  case vault.start_named(initial, vault_name) {
-    Ok(started) -> {
-      case
-        codex_refresh.start(
-          vault_name,
-          target_id,
-          path,
-          creds,
-          codex_refresh.default_check_interval_ms,
-          codex_refresh.default_refresh_buffer_ms,
-        )
-      {
-        Ok(refresh) -> {
-          // Link the refresh actor so a crash surfaces and triggers an
-          // external restart instead of silently stopping rotation.
-          case process.subject_owner(refresh) {
-            Ok(pid) -> {
-              let _ = process.link(pid)
-              Nil
-            }
-            Error(_) -> Nil
+fn cred_sub_start(
+  plan: CredPlan,
+  vault_name: process.Name(vault.VaultMsg),
+) -> Result(
+  actor.Started(static_supervisor.Supervisor),
+  actor.StartError,
+) {
+  let sub =
+    static_supervisor.new(static_supervisor.RestForOne)
+    |> static_supervisor.add(vault_worker(plan, vault_name))
+    |> add_refresh_worker(plan, vault_name)
+  static_supervisor.start(sub)
+}
+
+/// The vault worker. On each (re)start it reloads the persisted access token
+/// (Full) or uses the static seed (Seeded), so a restart picks up the latest
+/// rotated credential.
+fn vault_worker(
+  plan: CredPlan,
+  vault_name: process.Name(vault.VaultMsg),
+) {
+  supervision.worker(fn() { vault.start_named(vault_initial(plan), vault_name) })
+}
+
+/// The refresh worker (Full plan only). Reloads the persisted credential
+/// pair on each (re)start so it rotates from the latest refresh token.
+fn add_refresh_worker(
+  builder: static_supervisor.Builder,
+  plan: CredPlan,
+  vault_name: process.Name(vault.VaultMsg),
+) -> static_supervisor.Builder {
+  case plan {
+    Full(target_id:, path:) ->
+      builder
+      |> static_supervisor.add(supervision.worker(fn() {
+        case codex_credentials.load(path) {
+          Ok(creds) ->
+            codex_refresh.start_started(
+              vault_name,
+              target_id,
+              path,
+              creds,
+              codex_refresh.default_check_interval_ms,
+              codex_refresh.default_refresh_buffer_ms,
+            )
+          Error(reason) -> {
+            logging.log(
+              logging.Error,
+              "pig_proxy: could not reload Codex credentials from "
+                <> path
+                <> ": "
+                <> reason,
+            )
+            Error(actor.InitFailed("could not reload Codex credentials"))
           }
         }
-        Error(_) ->
-          logging.log(
-            logging.Warning,
-            "failed to start Codex token refresh actor — tokens will not"
-              <> " be refreshed automatically",
-          )
+      }))
+    Seeded(..) -> builder
+  }
+}
+
+/// Build the vault's initial credentials from the plan (reloaded fresh each
+/// time this runs, i.e. on every vault start/restart).
+fn vault_initial(plan: CredPlan) -> Dict(String, vault.Credential) {
+  case plan {
+    Full(target_id:, path:) ->
+      case codex_credentials.load(path) {
+        Ok(creds) ->
+          vault.initial_credentials([
+            #(target_id, vault.CodexToken(creds.access_token)),
+          ])
+        Error(_reason) ->
+          // No persisted creds on a Full restart: start an empty vault. The
+          // refresh worker (also restarting under rest_for_one) populates it
+          // once it rotates.
+          vault.initial_credentials([])
       }
-      Some(started.data)
-    }
-    Error(_) -> {
-      logging.log(
-        logging.Warning,
-        "failed to start credential vault — live credential rotation"
-          <> " disabled",
-      )
-      None
-    }
+    Seeded(target_id:, token:) ->
+      vault.initial_credentials([#(target_id, vault.CodexToken(token))])
   }
 }
 

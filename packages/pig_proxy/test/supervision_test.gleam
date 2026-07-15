@@ -11,6 +11,7 @@ import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleeunit
 import pig_proxy/circuit_actor
+import pig_proxy/vault
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -42,6 +43,31 @@ pub fn supervised_named_actor_restarts_under_same_name_test() {
   // The supervisor is linked to this test process, so it is torn down when
   // the process exits — no explicit kill (which would kill this process too).
   process.sleep(0)
+}
+
+/// The credential vault restarts under the same name under a rest_for_one
+/// supervisor (the cred sub-tree), so the request path reaches the re-seeded
+/// vault after a crash.
+pub fn supervised_vault_restarts_under_same_name_test() {
+  let vault_name = process.new_name("vault_supervision_test")
+  let sup =
+    static_supervisor.new(static_supervisor.RestForOne)
+    |> static_supervisor.add(supervision.worker(fn() {
+      vault.start_named(vault.initial_credentials([]), vault_name)
+    }))
+
+  let assert Ok(_) = static_supervisor.start(sup)
+
+  let assert Ok(pid_a) = process.named(vault_name)
+  // Crash the vault; rest_for_one restarts it under the same name.
+  process.kill(pid_a)
+
+  let assert Ok(pid_b) = poll_for_new_pid(vault_name, pid_a, 40)
+  assert pid_b != pid_a
+
+  // The re-seeded vault is reachable by name and answers (empty → not found).
+  let assert vault.CredentialNotFound =
+    vault.get_credential(process.named_subject(vault_name), "any-target", 1000)
 }
 
 /// Before the actor is (re)registered, the name resolves to None — the

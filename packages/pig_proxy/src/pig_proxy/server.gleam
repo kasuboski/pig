@@ -45,11 +45,10 @@ pub type ServerState {
     catalog: process.Name(model_catalog.CatalogMsg),
     /// Metrics aggregator, addressed by name (supervised); used by /metrics.
     metrics: process.Name(metrics.MetricsMsg),
-    /// Credential vault. When present, the live credential for a target
-    /// (kept fresh by `pig_proxy/codex_refresh`) overrides the static
-    /// `TargetAuth` baked into `config` at startup. Manual (not yet
-    /// supervised); held as a captured subject.
-    vault: Option(process.Subject(vault.VaultMsg)),
+    /// Credential vault, addressed by name (supervised under the cred
+    /// rest_for_one sub-tree). Resolved per request so a restarted vault is
+    /// reached transparently; `None` when no Codex target is configured.
+    vault: Option(process.Name(vault.VaultMsg)),
   )
 }
 
@@ -147,13 +146,18 @@ fn resolve_chain(state: ServerState, model: String) -> execution.FallbackChain {
   execution.FallbackChain(targets:)
 }
 
-/// Apply the vault to an executor when one is configured.
+/// Apply the vault to an executor when one is configured (and currently
+/// registered; degrades to static auth during the brief vault restart window).
 fn maybe_with_vault(
   exec: execution.Executor,
-  vault: Option(process.Subject(vault.VaultMsg)),
+  vault: Option(process.Name(vault.VaultMsg)),
 ) -> execution.Executor {
   case vault {
-    Some(v) -> execution.with_vault(exec, v)
+    Some(name) ->
+      case resolve_named(name) {
+        Some(v) -> execution.with_vault(exec, v)
+        None -> exec
+      }
     None -> exec
   }
 }
