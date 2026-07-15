@@ -75,8 +75,9 @@ always injects its own configured credential upstream.
 |---|---|---|
 | `PIG_PROXY_PORT` | `8080` | Port the proxy listens on. |
 | `OPENAI_COMPAT_BASE_URL` | `http://localhost:11434/v1` | Upstream base URL, including `/v1`. |
-| `OPENAI_COMPAT_API_KEY` | `ollama` | Key injected as `Authorization: Bearer <key>` on every forwarded request. |
-| `OPENAI_COMPAT_CODEX_TOKEN` | unset | Codex OAuth JWT stored on the default target for the credential vault (see [Codex / ChatGPT OAuth](#codex--chatgpt-oauth) below). |
+| `OPENAI_COMPAT_API_KEY` | `ollama` | Key injected as `Authorization: Bearer <key>` on every forwarded request (ignored when the target is Codex OAuth). |
+| `OPENAI_COMPAT_CODEX` | unset | When truthy, marks the default target as ChatGPT/Codex OAuth; its live token is resolved from the credential vault. |
+| `OPENAI_COMPAT_CODEX_TOKEN` | unset | Static Codex JWT that seeds the credential vault at startup; also marks the default target as Codex OAuth. |
 | `PIG_PROXY_MODELS_DEV_URL` | `https://models.dev/api.json` | Catalog used to compute per-request USD cost in `/metrics`. |
 | `PIG_PROXY_MODELS_REFRESH_MS` | `3600000` (1h) | How often the models.dev catalog is refreshed. |
 
@@ -99,22 +100,40 @@ The Responses route (`/v1/responses`) doubles as the route for OpenAI's Codex
 subscription backend (`chatgpt.com/backend-api/codex/responses`), which
 authenticates with a ChatGPT OAuth JWT rather than a platform API key.
 
-`pig_proxy` can obtain and refresh Codex credentials itself via the same
-PKCE + local-callback OAuth flow the Codex CLI uses — no external CLI
-required.
+`pig_proxy` can obtain and refresh Codex credentials itself through OpenAI's
+OAuth endpoints — no external CLI required.
 
 ### Logging in
 
+From the repository root:
+
 ```sh
-cd packages/pig_proxy
-gleam run -m pig_proxy/codex_login
+mise run codex-login
 ```
 
-This prints an authorization URL, opens a callback server on `127.0.0.1:1455`,
-waits for the browser redirect, exchanges the authorization code for tokens,
-extracts the `chatgpt_account_id` from the JWT, and persists the credential
-pair to `~/.pig/codex_auth.json` (override the path with
+(or, from inside the package: `cd packages/pig_proxy && gleam run -m pig_proxy/codex_login` — `gleam` needs the package's `gleam.toml`, so it must be run from `packages/pig_proxy`, not the repo root).
+
+The standard flow prints a short device code. Open
+`https://auth.openai.com/codex/device` in **any** browser, enter the code, and
+`pig_proxy` polls for completion. It works unchanged on local machines,
+remote servers, and headless hosts: no localhost callback, SSH tunnel, or
+pasted redirect URL is needed. On completion it exchanges the authorization
+code for tokens, extracts the `chatgpt_account_id` from the JWT, and persists
+the credential pair to `~/.pig/codex_auth.json` (override the path with
 `PIG_CODEX_AUTH_PATH`).
+
+#### Optional browser callback
+
+For local one-click login, use the same browser callback flow offered by the
+Codex CLI and pi:
+
+```sh
+PIG_CODEX_LOGIN_BROWSER=1 mise run codex-login
+```
+
+This opens a callback server on `127.0.0.1:1455` and waits for the browser
+redirect. It is only suitable when the browser can reach that local address;
+use the standard device-code flow everywhere else.
 
 ### Starting the proxy
 
@@ -136,7 +155,7 @@ immediately via `vault.rotate_token`) and written back to disk.
 |---|---|
 | `pig_protocol/oauth/codex` | Pure PKCE/URL/token-building logic (no HTTP). |
 | `pig_proxy/codex_credentials` | Disk persistence (`~/.pig/codex_auth.json`). |
-| `pig_proxy/codex_login` | Interactive login: mist callback server, code exchange, JWT account-id extraction. |
+| `pig_proxy/codex_login` | Interactive login: default device-code flow for local, remote, and headless hosts; optional local browser callback; token exchange and JWT account-id extraction. |
 | `pig_proxy/codex_refresh` | Background actor: periodic expiry check, refresh, vault rotation, disk save. |
 | `pig_proxy/vault` | In-memory credential store; `rotate_token` updates without restart. |
 | `pig_proxy/proxy` | Header injection: uses `chatgpt-account-id` + `OpenAI-Beta` headers when `codex_token` is present. |
@@ -145,12 +164,23 @@ immediately via `vault.rotate_token`) and written back to disk.
 ### Environment variable fallback
 
 If you already have a Codex JWT (e.g. from `codex login`), you can still pass
-it via environment variables instead of running the login flow:
+it via environment variables instead of running the login flow. Setting
+`OPENAI_COMPAT_CODEX_TOKEN` marks the default target as Codex OAuth and seeds
+the credential vault with the JWT (no refresh, since a static token carries no
+refresh token):
 
 ```sh
 export OPENAI_COMPAT_BASE_URL="https://chatgpt.com/backend-api/codex"
-export OPENAI_COMPAT_API_KEY="<your JWT>"
-export OPENAI_COMPAT_CODEX_TOKEN="<same JWT>"
+export OPENAI_COMPAT_CODEX_TOKEN="<your JWT>"
+gleam run
+```
+
+To use persisted credentials obtained via `pig_proxy/codex_login` instead, just
+declare the target as Codex without a token:
+
+```sh
+export OPENAI_COMPAT_BASE_URL="https://chatgpt.com/backend-api/codex"
+export OPENAI_COMPAT_CODEX=true
 gleam run
 ```
 
@@ -160,10 +190,14 @@ account. Never commit it or log it.
 ## Programmatic configuration
 
 For multiple upstreams, virtual model routing, or fallback chains, build a
-`ProxyConfig` directly instead of using `from_env`:
+`ProxyConfig` directly instead of using `from_env`, then hand it to
+`runtime.start` (which brings up the supervisor tree and returns the
+`ServerState`) and `server.start`:
 
 ```gleam
+import gleam/erlang/process
 import pig_proxy/config
+import pig_proxy/runtime
 import pig_proxy/server
 
 pub fn main() {
@@ -177,15 +211,11 @@ pub fn main() {
   let cfg =
     config.new([openai, ollama])
     |> config.with_port(8080)
-    |> config.with_max_retries(3)
+    |> config.with_retries_per_target(1)
 
-  server.start(server.ServerState(
-    config: cfg,
-    routes: [],
-    metrics: None,
-    catalog: None,
-    vault: None,
-  ))
+  let state = runtime.start(cfg)
+  server.start(state)
+  process.sleep_forever()
 }
 ```
 

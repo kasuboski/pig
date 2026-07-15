@@ -10,6 +10,7 @@
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dynamic/decode
+import gleam/int
 import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
@@ -23,13 +24,7 @@ import pig_protocol/auth
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/hackney
 import pig_proxy/telemetry
-
-/// Messages sent from the streaming relay to the mist chunked loop.
-pub type ProxyMessage {
-  Chunk(BitArray)
-  StreamDone
-  StreamError(String)
-}
+import pig_proxy/transport
 
 /// State held by the streaming chunked loop: accumulated token usage, a
 /// buffer of incomplete SSE data across network fragments, and the upstream
@@ -80,42 +75,50 @@ pub fn inject_api_key(
   [#("authorization", "Bearer " <> api_key), ..headers]
 }
 
+/// The concrete authentication to apply to an upstream request: a mode
+/// plus a resolved token. The credential vault resolves a target's
+/// `TargetAuth` into one of these at request time (`execution.resolve_auth`).
+pub type ResolvedAuth {
+  ApiKey(key: String)
+  Codex(token: String)
+}
+
 /// Build the full header list for an upstream request: scrubbed client
 /// headers plus injected auth and JSON content headers.
 ///
-/// Targets with a Codex OAuth token (`target.codex_token`) get the Codex
-/// Responses API header set — `chatgpt-account-id` derived from the JWT,
-/// plus the required `OpenAI-Beta`/`originator` headers — instead of a
-/// plain Bearer key. If the token can't be decoded (e.g. malformed JWT),
-/// this falls back to plain Bearer injection and logs a warning rather
-/// than failing the request outright.
+/// A `Codex` credential gets the Codex Responses API header set —
+/// `chatgpt-account-id` derived from the JWT, plus the required
+/// `OpenAI-Beta`/`originator` headers — instead of a plain Bearer key. If
+/// the token can't be decoded (e.g. malformed JWT), this falls back to
+/// plain Bearer injection and logs a warning rather than failing the
+/// request outright.
 pub fn build_upstream_headers(
   client_headers: List(#(String, String)),
-  target: UpstreamTarget,
+  base_url: String,
+  credential: ResolvedAuth,
   streaming: Bool,
 ) -> List(#(String, String)) {
   let scrubbed = scrub_headers(client_headers)
-  case target.codex_token {
-    Some(token) ->
-      case auth.headers(auth.CodexOAuth(token, target.base_url), streaming) {
+  case credential {
+    Codex(token) ->
+      case auth.headers(auth.CodexOAuth(token, base_url), streaming) {
         Ok(codex_headers) -> list.append(scrubbed, codex_headers)
         Error(_) -> {
           logging.log(
             logging.Warning,
-            "proxy: failed to derive chatgpt-account-id for target \""
-              <> target.id
-              <> "\" — falling back to plain bearer injection",
+            "proxy: failed to derive chatgpt-account-id — falling back to"
+              <> " plain bearer injection",
           )
-          bearer_headers(scrubbed, target, streaming)
+          bearer_headers(scrubbed, token, streaming)
         }
       }
-    None -> bearer_headers(scrubbed, target, streaming)
+    ApiKey(key) -> bearer_headers(scrubbed, key, streaming)
   }
 }
 
 fn bearer_headers(
   scrubbed_headers: List(#(String, String)),
-  target: UpstreamTarget,
+  key: String,
   streaming: Bool,
 ) -> List(#(String, String)) {
   let accept = case streaming {
@@ -123,7 +126,7 @@ fn bearer_headers(
     False -> "application/json"
   }
   scrubbed_headers
-  |> inject_api_key(target.api_key)
+  |> inject_api_key(key)
   |> list.append([
     #("content-type", "application/json"),
     #("accept", accept),
@@ -318,85 +321,58 @@ fn merge_usage_from_event(existing: Usage, event: String) -> Usage {
 @external(erlang, "pig_proxy_json_ffi", "ensure_stream_usage")
 pub fn ensure_stream_usage(body: String) -> String
 
-// ── Non-streaming forward ───────────────────────────────────────
-
-/// Forward a non-streaming request to the upstream target and return
-/// the raw hackney response.
-pub fn forward_sync(
-  target: UpstreamTarget,
-  method: String,
-  path: String,
-  client_headers: List(#(String, String)),
-  body: String,
-  timeout_ms: Int,
-) -> hackney.HackneyResponse {
-  let url = resolve_upstream_url(target, path)
-  let headers = build_upstream_headers(client_headers, target, False)
-  logging.log(logging.Debug, "proxy: sync " <> method <> " " <> url)
-  hackney.sync_request(method, url, headers, body, timeout_ms)
-}
-
 // ── Streaming forward ───────────────────────────────────────────
 
-/// Forward a streaming request to the upstream target, piping SSE chunks
-/// back to the client via `mist.chunked`.
+/// Drive a committed streaming relay onto the client connection.
 ///
-/// A relay process is spawned inside the chunked `init` callback. The relay
-/// uses hackney's async streaming to receive upstream chunks and forwards
-/// them as `ProxyMessage` values to the chunked loop's subject. The loop
-/// then writes each chunk to the client connection via `mist.send_chunk`.
+/// Execution has already walked the fallback chain, committed to `target_id`
+/// (recording one circuit success), and handed back the relay's `run`
+/// subject plus its owning `relay` pid. This starts the relay forwarding
+/// to a fresh chunked loop, pipes each `RelayChunk` to the client while
+/// accumulating token usage, and emits the streaming telemetry
+/// (`StreamChunk` per chunk; `RequestStop` on completion; `RequestError`
+/// on a mid-stream failure) — all attributed to the committed target.
 ///
-/// Telemetry events (StreamChunk, RequestStop, RequestError) are emitted
-/// from within the loop so streaming requests are visible to the metrics
-/// aggregator.
-pub fn forward_stream(
+/// Retry and fallback are NOT this function's concern: they ended at the
+/// commit point (the first byte) inside execution.
+pub fn stream_response(
   req: request.Request(mist.Connection),
-  target: UpstreamTarget,
-  method: String,
-  path: String,
-  client_headers: List(#(String, String)),
-  body: String,
+  run: process.Subject(transport.RelayControl),
+  relay: process.Pid,
+  target_id: String,
+  provider: String,
+  model: String,
+  status: Int,
+  start_time: Int,
 ) -> response.Response(mist.ResponseData) {
-  let url = resolve_upstream_url(target, path)
-  let headers = build_upstream_headers(client_headers, target, True)
-  let model = extract_model(body)
-  let target_id = target.id
-  let provider = config.provider_string(target)
-  logging.log(logging.Debug, "proxy: stream " <> method <> " " <> url)
+  logging.log(
+    logging.Debug,
+    "proxy: stream committed to \"" <> target_id <> "\" (" <> int_status(status) <> ")",
+  )
 
   let initial_response =
-    response.new(200)
+    response.new(status)
     |> response.set_header("content-type", "text/event-stream")
     |> response.set_header("cache-control", "no-cache")
     |> response.set_header("connection", "keep-alive")
-
-  let start_time = telemetry.system_time()
 
   mist.chunked(
     req,
     initial_response,
     init: fn(subj) {
-      let relay =
-        hackney.stream_request(
-          method,
-          url,
-          headers,
-          body,
-          fn(chunk) { process.send(subj, Chunk(chunk)) },
-          fn(_) { process.send(subj, StreamDone) },
-          fn(reason) { process.send(subj, StreamError(reason)) },
-        )
-      StreamState(usage: Usage(None, None), buffer: "", relay: relay)
+      // Tell the relay to start forwarding the body to this loop.
+      process.send(run, transport.StartRelay(forward: subj))
+      StreamState(usage: Usage(None, None), buffer: "", relay:)
     },
     loop: fn(state, message, conn) {
       case message {
-        Chunk(data) -> {
+        transport.RelayChunk(data) -> {
           case mist.send_chunk(conn, data) {
             Ok(_) -> {
               telemetry.emit(telemetry.StreamChunk(
-                target_id: target_id,
-                provider: provider,
-                model: model,
+                target_id:,
+                provider:,
+                model:,
                 chunk_bytes: bit_array.byte_size(data),
               ))
 
@@ -424,7 +400,7 @@ pub fn forward_stream(
             }
           }
         }
-        StreamDone -> {
+        transport.RelayDone -> {
           logging.log(logging.Debug, "proxy: stream complete")
           // Flush any trailing event that never received a final delimiter.
           let final_usage = case state.buffer {
@@ -433,29 +409,27 @@ pub fn forward_stream(
           }
           let duration = telemetry.system_time() - start_time
           telemetry.emit(telemetry.RequestStop(
-            target_id: target_id,
-            provider: provider,
-            model: model,
-            status: 200,
+            target_id:,
+            provider:,
+            model:,
+            status:,
             duration_ms: duration,
             input_tokens: final_usage.prompt,
             output_tokens: final_usage.completion,
           ))
           mist.chunk_stop()
         }
-        StreamError(reason) -> {
-          logging.log(
-            logging.Error,
-            "proxy: stream error: " <> reason,
-          )
+        transport.RelayError(reason) -> {
+          logging.log(logging.Error, "proxy: stream error: " <> reason)
           telemetry.emit(telemetry.RequestError(
-            target_id: target_id,
-            provider: provider,
-            model: model,
+            target_id:,
+            provider:,
+            model:,
             error_type: reason,
           ))
           // Send an SSE error event so the client can detect the error
-          // even though the HTTP status is already 200 (required by SSE).
+          // even though the HTTP status is already committed (required by
+          // SSE once the first byte has flowed).
           let sse_error =
             "event: error\ndata: {\"error\":{\"message\":\""
             <> escape_json_string(reason)
@@ -473,6 +447,10 @@ pub fn forward_stream(
 
 // ── Helpers ─────────────────────────────────────────────────────
 
+fn int_status(n: Int) -> String {
+  int.to_string(n)
+}
+
 /// Escape a string for safe interpolation into a JSON string literal.
 fn escape_json_string(s: String) -> String {
   s
@@ -489,9 +467,7 @@ pub fn sync_response_to_mist(
 ) -> response.Response(mist.ResponseData) {
   case resp {
     hackney.OkResponse(status:, headers:, body:) ->
-      response.new(status)
-      |> set_response_headers(headers)
-      |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
+      render_response(status, headers, body)
     hackney.ErrorResponse(reason:) ->
       response.new(502)
       |> response.set_header("content-type", "application/json")
@@ -503,6 +479,19 @@ pub fn sync_response_to_mist(
         ),
       ))
   }
+}
+
+/// Render an upstream response (status, headers, body) as a mist response,
+/// filtering hop-by-hop and connection-nominated headers. Used by the
+/// execution path to render a committed outcome.
+pub fn render_response(
+  status: Int,
+  headers: List(#(String, String)),
+  body: BitArray,
+) -> response.Response(mist.ResponseData) {
+  response.new(status)
+  |> set_response_headers(headers)
+  |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
 }
 
 fn set_response_headers(

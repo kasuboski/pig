@@ -57,8 +57,9 @@ pub fn record_failure(
 /// Whether the circuit is currently blocking requests.
 ///
 /// An open circuit blocks until the cool-down elapses, then transitions
-/// to half-open (allowing one probe). A half-open circuit allows one
-/// probe. A closed circuit never blocks.
+/// to half-open (admitting attempts again). A half-open circuit admits
+/// attempts; the circuit actor admits concurrent probes with no
+/// single-slot reservation. A closed circuit never blocks.
 pub fn is_open(
   state: CircuitState,
   now_ms: Int,

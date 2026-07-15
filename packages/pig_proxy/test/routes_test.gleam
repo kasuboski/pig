@@ -16,8 +16,7 @@ fn test_config() -> config.ProxyConfig {
     config.UpstreamTarget(
       id: "ollama",
       base_url: "http://localhost:11434/v1",
-      api_key: "ollama",
-      codex_token: None,
+      auth: config.ApiKey("ollama"),
       provider: None,
       fallbacks: [],
       supports_tools: True,
@@ -26,8 +25,7 @@ fn test_config() -> config.ProxyConfig {
     config.UpstreamTarget(
       id: "simple",
       base_url: "http://localhost:8080/v1",
-      api_key: "test",
-      codex_token: None,
+      auth: config.ApiKey("test"),
       provider: None,
       fallbacks: [],
       supports_tools: False,

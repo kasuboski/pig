@@ -10,6 +10,18 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
+/// How an upstream target authenticates: a static API key, or
+/// ChatGPT/Codex OAuth whose live token is resolved from the credential
+/// vault at request time. One concept per target — the two cannot be mixed.
+pub type TargetAuth {
+  /// A static key injected as `Authorization: Bearer <key>`.
+  ApiKey(key: String)
+  /// ChatGPT/Codex OAuth. The live JWT is resolved from the credential
+  /// vault (seeded by `pig_proxy/codex_login` or a seed token) so a rotated
+  /// token is picked up with no restart.
+  Codex
+}
+
 /// A single upstream provider target.
 pub type UpstreamTarget {
   UpstreamTarget(
@@ -17,10 +29,8 @@ pub type UpstreamTarget {
     id: String,
     /// Base URL including `/v1` prefix, e.g. "https://api.openai.com/v1".
     base_url: String,
-    /// API key injected into forwarded requests. Empty for no-auth providers.
-    api_key: String,
-    /// Optional Codex OAuth JWT for the Codex Responses route.
-    codex_token: Option(String),
+    /// How this target authenticates upstream. See `TargetAuth`.
+    auth: TargetAuth,
     /// Provider key matching models.dev (e.g. "openai", "anthropic").
     /// When set, telemetry and metrics use `provider/model` as the
     /// model key so cost lookups against the models.dev catalog resolve
@@ -40,8 +50,9 @@ pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
     port: Int,
-    /// Max retries for transient errors before failing over.
-    max_retries: Int,
+    /// Per-Target Retry Budget: additional attempts per upstream target
+    /// before moving to the next fallback. Resets per target.
+    retries_per_target: Int,
     /// Consecutive failures before opening a circuit breaker.
     circuit_threshold: Int,
     /// Cool-down period (ms) before a half-open probe is attempted.
@@ -50,13 +61,18 @@ pub type ProxyConfig {
     models_dev_url: String,
     /// How often (ms) to refresh the model catalog.
     models_refresh_ms: Int,
+    /// Optional static Codex JWT (e.g. from `OPENAI_COMPAT_CODEX_TOKEN`)
+    /// used to seed the credential vault at startup when persisted
+    /// credentials are unavailable. Request-time auth always flows through
+    /// the vault; this never authenticates a request directly.
+    codex_seed_token: Option(String),
   )
 }
 
 /// Defaults matching the project's local ollama setup.
 pub const default_port = 8080
 
-pub const default_max_retries = 3
+pub const default_retries_per_target = 1
 
 pub const default_circuit_threshold = 5
 
@@ -71,11 +87,12 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
     port: default_port,
-    max_retries: default_max_retries,
+    retries_per_target: default_retries_per_target,
     circuit_threshold: default_circuit_threshold,
     circuit_cooldown_ms: default_circuit_cooldown_ms,
     models_dev_url: default_models_dev_url,
     models_refresh_ms: default_models_refresh_ms,
+    codex_seed_token: None,
   )
 }
 
@@ -84,9 +101,12 @@ pub fn with_port(config: ProxyConfig, port: Int) -> ProxyConfig {
   ProxyConfig(..config, port:)
 }
 
-/// Set max retries.
-pub fn with_max_retries(config: ProxyConfig, max_retries: Int) -> ProxyConfig {
-  ProxyConfig(..config, max_retries:)
+/// Set the Per-Target Retry Budget (additional attempts after the first).
+pub fn with_retries_per_target(
+  config: ProxyConfig,
+  retries_per_target: Int,
+) -> ProxyConfig {
+  ProxyConfig(..config, retries_per_target:)
 }
 
 /// Set the models.dev catalog URL.
@@ -106,7 +126,16 @@ pub fn with_models_refresh_ms(config: ProxyConfig, ms: Int) -> ProxyConfig {
   ProxyConfig(..config, models_refresh_ms: effective)
 }
 
-/// A convenience builder for a standard OpenAI-compatible target.
+/// Set the static Codex seed token used to bootstrap the credential vault.
+pub fn with_codex_seed_token(
+  config: ProxyConfig,
+  token: Option(String),
+) -> ProxyConfig {
+  ProxyConfig(..config, codex_seed_token: token)
+}
+
+/// A convenience builder for a standard OpenAI-compatible target that
+/// authenticates with a static API key.
 pub fn openai_target(
   id: String,
   base_url: String,
@@ -115,13 +144,41 @@ pub fn openai_target(
   UpstreamTarget(
     id:,
     base_url:,
-    api_key:,
-    codex_token: None,
+    auth: ApiKey(api_key),
     provider: None,
     fallbacks: [],
     supports_tools: True,
     supports_json_schema: True,
   )
+}
+
+/// A convenience builder for a ChatGPT/Codex OAuth target. The live token
+/// is resolved from the credential vault at request time rather than held
+/// statically on the target.
+pub fn codex_target(id: String, base_url: String) -> UpstreamTarget {
+  UpstreamTarget(
+    id:,
+    base_url:,
+    auth: Codex,
+    provider: None,
+    fallbacks: [],
+    supports_tools: True,
+    supports_json_schema: True,
+  )
+}
+
+/// Mark a target as authenticating via ChatGPT/Codex OAuth. Its live token
+/// is then resolved from the credential vault instead of a static key.
+pub fn with_codex(target: UpstreamTarget) -> UpstreamTarget {
+  UpstreamTarget(..target, auth: Codex)
+}
+
+/// Whether a target authenticates via ChatGPT/Codex OAuth.
+pub fn is_codex_target(target: UpstreamTarget) -> Bool {
+  case target.auth {
+    Codex -> True
+    ApiKey(_) -> False
+  }
 }
 
 /// Set the provider key (matches models.dev, e.g. "openai", "anthropic").
@@ -160,27 +217,31 @@ pub fn provider_string(target: UpstreamTarget) -> String {
 ///
 /// Reads:
 ///   PIG_PROXY_PORT                  — listening port (default 8080)
+///   PIG_PROXY_RETRIES_PER_TARGET    — Per-Target Retry Budget (default 1)
 ///   OPENAI_COMPAT_BASE_URL          — upstream base URL
 ///   OPENAI_COMPAT_API_KEY           — upstream API key
 ///   OPENAI_COMPAT_MODEL             — default model slug
-///   OPENAI_COMPAT_CODEX_TOKEN       — optional Codex OAuth JWT
+///   OPENAI_COMPAT_CODEX             — mark the default target as ChatGPT/Codex OAuth
+///   OPENAI_COMPAT_CODEX_TOKEN       — optional Codex OAuth JWT (seeds the vault)
 ///   OPENAI_COMPAT_PROVIDER          — models.dev provider key (e.g. "openai")
 ///   PIG_PROXY_MODELS_DEV_URL        — models.dev catalog URL
 ///   PIG_PROXY_MODELS_REFRESH_MS     — catalog refresh interval in ms
 pub fn from_env() -> ProxyConfig {
+  let codex_token = codex_token_env()
+  let is_codex = codex_env() || codex_token != None
   let target =
-    openai_target(
-      "default",
-      base_url_env(),
-      api_key_env(),
-    )
-    |> maybe_with_codex_token(codex_token_env())
+    case is_codex {
+      True -> codex_target("default", base_url_env())
+      False -> openai_target("default", base_url_env(), api_key_env())
+    }
     |> maybe_with_provider(provider_env())
 
   new([target])
   |> with_port(port_env())
+  |> with_retries_per_target(retries_per_target_env())
   |> with_models_dev_url(models_dev_url_env())
   |> with_models_refresh_ms(models_refresh_ms_env())
+  |> with_codex_seed_token(codex_token)
 }
 
 fn base_url_env() -> String {
@@ -200,6 +261,14 @@ fn codex_token_env() -> Option(String) {
   }
 }
 
+fn codex_env() -> Bool {
+  case envoy.get("OPENAI_COMPAT_CODEX") {
+    Ok("true") -> True
+    Ok("1") -> True
+    _ -> False
+  }
+}
+
 fn port_env() -> Int {
   case envoy.get("PIG_PROXY_PORT") {
     Ok(port_str) ->
@@ -208,6 +277,17 @@ fn port_env() -> Int {
         Error(_) -> default_port
       }
     Error(_) -> default_port
+  }
+}
+
+fn retries_per_target_env() -> Int {
+  case envoy.get("PIG_PROXY_RETRIES_PER_TARGET") {
+    Ok(str) ->
+      case int.parse(str) {
+        Ok(n) -> n
+        Error(_) -> default_retries_per_target
+      }
+    Error(_) -> default_retries_per_target
   }
 }
 
@@ -224,16 +304,6 @@ fn models_refresh_ms_env() -> Int {
         Error(_) -> default_models_refresh_ms
       }
     Error(_) -> default_models_refresh_ms
-  }
-}
-
-fn maybe_with_codex_token(
-  target: UpstreamTarget,
-  token: Option(String),
-) -> UpstreamTarget {
-  case token {
-    Some(t) -> UpstreamTarget(..target, codex_token: Some(t))
-    None -> target
   }
 }
 

@@ -1,13 +1,20 @@
 //// Interactive Codex (ChatGPT) OAuth login for pig_proxy.
 ////
-//// Runs the same PKCE + local callback flow as the Codex CLI: prints an
-//// authorization URL to open in a browser, waits for the OAuth callback
-//// on `127.0.0.1:1455`, exchanges the authorization code for tokens, and
-//// persists the result via `pig_proxy/codex_credentials` so pig_proxy can
-//// use and refresh them without depending on the Codex CLI.
+//// Uses OpenAI's device authorization flow by default: open a URL in any
+//// browser, enter a short code, and this process polls for authorization.
+//// It works identically on local and remote/headless hosts — no localhost
+//// callback, tunnel, or pasted redirect URL is needed.
 ////
-//// Run with: `gleam run -m pig_proxy/codex_login`
+//// Set `PIG_CODEX_LOGIN_BROWSER=1` to use the optional local browser
+//// callback on 127.0.0.1:1455 instead. Both flows exchange the resulting
+//// authorization code for tokens and persist them via
+//// `pig_proxy/codex_credentials`, so pig_proxy can use and refresh them
+//// without depending on the Codex CLI.
+////
+//// Run with: `mise run codex-login` (or `gleam run -m pig_proxy/codex_login`
+//// from `packages/pig_proxy`).
 
+import envoy
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -25,44 +32,206 @@ import pig_proxy/codex_credentials.{type CodexCredentials, CodexCredentials}
 import pig_proxy/hackney
 import pig_proxy/telemetry
 
+/// Select the local browser-callback flow instead of the default device flow.
+fn is_browser() -> Bool {
+  case envoy.get("PIG_CODEX_LOGIN_BROWSER") {
+    Ok("1") -> True
+    Ok("true") -> True
+    _ -> False
+  }
+}
+
 const originator = "pig"
 
 const callback_wait_ms = 300_000
+
+const device_request_timeout_ms = 30_000
+
+const slow_down_ms = 5_000
 
 type CallbackResult {
   CallbackOk(code: String)
   CallbackError(reason: String)
 }
 
+type DevicePollResult {
+  DeviceAuthorized(code: String, verifier: String)
+  DevicePending
+  DeviceSlowDown
+  DeviceFailed(reason: String)
+}
+
 pub fn main() -> Nil {
+  case is_browser() {
+    True -> run_browser()
+    False -> run_device()
+  }
+}
+
+/// Default headless-safe flow: visit OpenAI's device page and enter a code.
+fn run_device() -> Nil {
+  case request_device_usercode() {
+    Error(reason) -> io.println_error("Could not start device login: " <> reason)
+    Ok(device) -> {
+      io.println(
+        "Open this URL in any browser and enter this code:\n\n"
+          <> "  "
+          <> codex_oauth.device_verification_uri
+          <> "\n\n  "
+          <> device.user_code
+          <> "\n",
+      )
+      io.println("Waiting for OpenAI authorization…")
+      poll_device(
+        device,
+        poll_interval_ms(device.interval_seconds),
+        codex_oauth.device_code_timeout_seconds * 1000,
+      )
+    }
+  }
+}
+
+fn poll_device(
+  device: codex_oauth.DeviceUserCode,
+  delay_ms: Int,
+  remaining_ms: Int,
+) -> Nil {
+  case remaining_ms <= 0 {
+    True -> io.println_error("Timed out waiting for device authorization.")
+    False -> {
+      process.sleep(delay_ms)
+      case poll_device_token(device) {
+        DeviceAuthorized(code:, verifier:) ->
+          finish_login(code, verifier, codex_oauth.device_redirect_uri)
+        DevicePending -> poll_device(device, delay_ms, remaining_ms - delay_ms)
+        DeviceSlowDown ->
+          poll_device(device, delay_ms + slow_down_ms, remaining_ms - delay_ms)
+        DeviceFailed(reason) -> io.println_error("Device login failed: " <> reason)
+      }
+    }
+  }
+}
+
+fn poll_interval_ms(interval_seconds: Int) -> Int {
+  case interval_seconds > 0 {
+    True -> interval_seconds * 1000
+    // Never spin when a malformed response supplies zero.
+    False -> 1000
+  }
+}
+
+fn request_device_usercode() -> Result(codex_oauth.DeviceUserCode, String) {
+  hackney.ensure_started()
+  case
+    hackney.sync_request(
+      "POST",
+      codex_oauth.device_usercode_url(),
+      [#("content-type", codex_oauth.device_request_content_type)],
+      codex_oauth.device_usercode_body(),
+      device_request_timeout_ms,
+    )
+  {
+    hackney.OkResponse(status: 200, body:, ..) -> {
+      use text <- result.try(body_as_string(body))
+      codex_oauth.parse_device_usercode(text)
+      |> result.map_error(fn(_) { "malformed device-code response" })
+    }
+    hackney.OkResponse(status:, ..) ->
+      Error("device-code endpoint returned status " <> int.to_string(status))
+    hackney.ErrorResponse(reason:) -> Error(reason)
+  }
+}
+
+fn poll_device_token(device: codex_oauth.DeviceUserCode) -> DevicePollResult {
+  hackney.ensure_started()
+  case
+    hackney.sync_request(
+      "POST",
+      codex_oauth.device_token_url(),
+      [#("content-type", codex_oauth.device_request_content_type)],
+      codex_oauth.device_token_body(device.device_auth_id, device.user_code),
+      device_request_timeout_ms,
+    )
+  {
+    hackney.OkResponse(status: 200, body:, ..) ->
+      case body_as_string(body) {
+        Error(reason) -> DeviceFailed(reason)
+        Ok(text) ->
+          case codex_oauth.parse_device_token_success(text) {
+            Ok(token) ->
+              DeviceAuthorized(token.authorization_code, token.code_verifier)
+            Error(_) -> DeviceFailed("malformed device authorization response")
+          }
+      }
+    hackney.OkResponse(status: 403, ..) -> DevicePending
+    hackney.OkResponse(status: 404, ..) -> DevicePending
+    hackney.OkResponse(status:, body:, ..) -> {
+      let text = result.unwrap(body_as_string(body), "")
+      case codex_oauth.device_error_code(text) {
+        Some("deviceauth_authorization_pending") -> DevicePending
+        Some("slow_down") -> DeviceSlowDown
+        Some(code) ->
+          DeviceFailed(
+            "device authorization returned " <> int.to_string(status) <> ": " <> code,
+          )
+        None ->
+          DeviceFailed("device authorization returned status " <> int.to_string(status))
+      }
+    }
+    hackney.ErrorResponse(reason:) -> DeviceFailed(reason)
+  }
+}
+
+fn body_as_string(body: BitArray) -> Result(String, String) {
+  bit_array.to_string(body)
+  |> result.map_error(fn(_) { "response is not valid UTF-8" })
+}
+
+/// Local callback flow: the browser redirect hits 127.0.0.1:1455 automatically.
+fn run_browser() -> Nil {
   let pkce = codex_oauth.generate_pkce()
   let state = codex_oauth.generate_state()
   let redirect_uri = codex_oauth.default_redirect_uri
+  let verifier = codex_oauth.verifier(pkce)
   let url = codex_oauth.authorize_url(pkce, state, redirect_uri, originator)
+  run_callback(url, state, verifier, redirect_uri)
+}
 
+/// Local callback flow: the browser redirect hits 127.0.0.1:1455 automatically.
+fn run_callback(
+  url: String,
+  state: String,
+  verifier: String,
+  redirect_uri: String,
+) -> Nil {
   let subject = process.new_subject()
   case start_callback_server(subject, state) {
     Ok(_) -> {
       io.println(
         "Open this URL in your browser to log in to Codex:\n\n" <> url <> "\n",
       )
-      io.println("Waiting for the browser callback on " <> redirect_uri <> " ...")
+      io.println(
+        "Waiting for the browser callback on "
+          <> redirect_uri
+          <> " ...\n"
+          <> "  On a remote/headless host the browser can't reach this callback.\n"
+          <> "  Re-run without PIG_CODEX_LOGIN_BROWSER to use device-code login\n"
+          <> "  instead (no port or tunnel needed).",
+      )
 
       case process.receive(subject, callback_wait_ms) {
         Error(_) -> io.println_error("Timed out waiting for the OAuth callback.")
         Ok(CallbackError(reason)) ->
           io.println_error("Login failed: " <> reason)
-        Ok(CallbackOk(code)) ->
-          finish_login(code, codex_oauth.verifier(pkce), redirect_uri)
+        Ok(CallbackOk(code)) -> finish_login(code, verifier, redirect_uri)
       }
     }
     Error(_) ->
       io.println_error(
         "Failed to start the OAuth callback server on 127.0.0.1:1455"
-          <> " — is the port already in use?",
+          <> " — is the port already in use? Run the default device-code login instead.",
       )
   }
-  Nil
 }
 
 fn finish_login(code: String, verifier: String, redirect_uri: String) -> Nil {

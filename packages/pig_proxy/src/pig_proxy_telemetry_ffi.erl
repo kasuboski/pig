@@ -1,10 +1,27 @@
 -module(pig_proxy_telemetry_ffi).
 
-%% Thin FFI for :telemetry.execute/3, mirroring pig_obs_ffi.
-%% Converts string-keyed maps to atom-keyed maps and string event
-%% name segments to atoms.
+%% FFI for pig_proxy telemetry.
+%%
+%% Two responsibilities:
+%%   - execute/3: emit an event to the BEAM :telemetry registry for EXTERNAL
+%%     consumers (OTel, etc.). Called from the edge, after internal typed
+%%     fanout, so the string/atom encoding stays out of the typed path.
+%%   - typed-handler registry: a persistent_term list of Gleam
+%%     `fn(ProxyEvent) -> Nil` handlers. The hot path is handlers_get/0 (a
+%%     lock-free read inside `emit`); attach/detach are rare.
 
--export([ensure_started/0, execute/3, system_time/0, attach_forwarder/2, detach_forwarder/1]).
+-export([
+    ensure_started/0,
+    execute/3,
+    system_time/0,
+    handlers_init/0,
+    handlers_add/1,
+    handlers_remove/1,
+    handlers_get/0,
+    handlers_call/2
+]).
+
+-define(HANDLERS_KEY, {pig_proxy, telemetry_handlers}).
 
 %% Ensure the telemetry application is running.
 ensure_started() ->
@@ -21,39 +38,44 @@ execute(NameStrs, Measurements, Metadata) ->
 system_time() ->
     erlang:system_time(millisecond).
 
-%% Attach a telemetry handler that forwards events to a process as
-%% {proxy_metrics_event, NameStrs, MeasurementsStrs, MetadataStrs}.
-%% Returns an opaque handler ID for later detachment.
-attach_forwarder(Pid, EventNamesStrs) ->
-    Handler = fun(EventName, Measurements, Metadata, _Config) ->
-        NameStrs = [atom_to_binary(E, utf8) || E <- EventName],
-        Pid ! {proxy_metrics_event, NameStrs,
-               deatomize_to_strings(Measurements),
-               deatomize_to_strings(Metadata)},
-        ok
-    end,
-    AtomNames = [[binary_to_atom(S, utf8) || S <- Name] || Name <- EventNamesStrs],
-    HandlerId = {pig_proxy_forwarder, make_ref()},
-    telemetry:attach_many(HandlerId, AtomNames, Handler, undefined),
-    HandlerId.
+%% ── Typed-handler registry (persistent_term) ─────────────────────
 
-detach_forwarder(HandlerId) ->
-    telemetry:detach(HandlerId),
+%% Initialise the registry once without erasing handlers registered by a
+%% running runtime or another supervised component.
+handlers_init() ->
+    case persistent_term:get(?HANDLERS_KEY, undefined) of
+        undefined -> persistent_term:put(?HANDLERS_KEY, []);
+        _ -> ok
+    end,
     nil.
 
-%% Convert atom-keyed map to binary-keyed map with all values as binaries.
-deatomize_to_strings(Map) when is_map(Map) ->
-    maps:fold(fun(K, V, Acc) ->
-        BinKey = if is_atom(K) -> atom_to_binary(K, utf8); true -> K end,
-        BinVal = if
-            is_integer(V) -> integer_to_binary(V);
-            is_atom(V) -> atom_to_binary(V, utf8);
-            is_binary(V) -> V;
-            true -> list_to_binary(io_lib:format("~p", [V]))
-        end,
-        Acc#{BinKey => BinVal}
-    end, #{}, Map).
+%% Register a Gleam handler; return an opaque ID for later removal.
+handlers_add(Fn) ->
+    Ref = make_ref(),
+    Prev = persistent_term:get(?HANDLERS_KEY, []),
+    persistent_term:put(?HANDLERS_KEY, [{Ref, Fn} | Prev]),
+    {handler_id, Ref}.
 
+%% Remove a previously registered handler by its ID.
+handlers_remove({handler_id, Ref}) ->
+    Prev = persistent_term:get(?HANDLERS_KEY, []),
+    persistent_term:put(?HANDLERS_KEY, [H || H = {R, _} <- Prev, R =/= Ref]),
+    nil.
+
+%% Snapshot of the current handler list (hot path: called by `emit`).
+handlers_get() ->
+    persistent_term:get(?HANDLERS_KEY, []).
+
+%% Invoke an untrusted Gleam callback without allowing it to crash the
+%% emitter or prevent delivery to later handlers.
+handlers_call(Fn, Event) ->
+    try Fn(Event) of
+        _ -> nil
+    catch
+        _:_ -> nil
+    end.
+
+%% Convert atom-keyed map to binary-keyed map with all values as binaries.
 atomize_keys(Map) when is_map(Map) ->
     maps:fold(fun(K, V, Acc) ->
         AtomKey = if is_binary(K) -> binary_to_atom(K, utf8); true -> K end,

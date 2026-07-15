@@ -124,3 +124,66 @@ pub fn parse_callback_query_missing_code_is_error_test() {
 pub fn parse_callback_query_missing_state_is_error_test() {
   let assert Error(Nil) = codex.parse_callback_query("code=abc123")
 }
+
+// ── device authorization ─────────────────────────────────────────
+
+pub fn device_endpoints_match_openai_codex_test() {
+  assert
+    codex.device_usercode_url()
+      == "https://auth.openai.com/api/accounts/deviceauth/usercode"
+  assert
+    codex.device_token_url()
+      == "https://auth.openai.com/api/accounts/deviceauth/token"
+  assert codex.device_verification_uri == "https://auth.openai.com/codex/device"
+  assert
+    codex.device_redirect_uri == "https://auth.openai.com/deviceauth/callback"
+}
+
+pub fn device_request_bodies_contain_expected_fields_test() {
+  assert string.contains(codex.device_usercode_body(), codex.client_id)
+  let body = codex.device_token_body("device-auth-id", "ABCD-EFGH")
+  assert string.contains(body, "device-auth-id")
+  assert string.contains(body, "ABCD-EFGH")
+}
+
+pub fn parse_device_usercode_success_test() {
+  let assert Ok(device) =
+    codex.parse_device_usercode(
+      "{\"device_auth_id\":\"device-id\",\"user_code\":\"ABCD-EFGH\",\"interval\":5}",
+    )
+  assert device.device_auth_id == "device-id"
+  assert device.user_code == "ABCD-EFGH"
+  assert device.interval_seconds == 5
+}
+
+pub fn parse_device_usercode_accepts_numeric_string_interval_test() {
+  let assert Ok(device) =
+    codex.parse_device_usercode(
+      "{\"device_auth_id\":\"device-id\",\"user_code\":\"ABCD-EFGH\",\"interval\":\"5\"}",
+    )
+  assert device.interval_seconds == 5
+}
+
+pub fn parse_device_usercode_missing_field_is_error_test() {
+  let assert Error(_) =
+    codex.parse_device_usercode("{\"device_auth_id\":\"device-id\"}")
+}
+
+pub fn parse_device_token_success_test() {
+  let assert Ok(token) =
+    codex.parse_device_token_success(
+      "{\"authorization_code\":\"auth-code\",\"code_verifier\":\"verifier\"}",
+    )
+  assert token.authorization_code == "auth-code"
+  assert token.code_verifier == "verifier"
+}
+
+pub fn device_error_code_accepts_object_or_string_test() {
+  assert
+    codex.device_error_code("{\"error\":{\"code\":\"slow_down\"}}")
+      == Some("slow_down")
+  assert
+    codex.device_error_code("{\"error\":\"deviceauth_authorization_pending\"}")
+      == Some("deviceauth_authorization_pending")
+  assert codex.device_error_code("{}") == None
+}

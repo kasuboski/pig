@@ -130,7 +130,7 @@ pub fn extract_model_absent_returns_unknown_test() {
 pub fn config_new_has_defaults_test() {
   let cfg = config.new([config.openai_target("a", "http://x/v1", "k")])
   assert cfg.port == config.default_port
-  assert cfg.max_retries == config.default_max_retries
+  assert cfg.retries_per_target == config.default_retries_per_target
   assert cfg.circuit_threshold == config.default_circuit_threshold
   assert cfg.circuit_cooldown_ms == config.default_circuit_cooldown_ms
 }
@@ -163,6 +163,46 @@ pub fn config_with_fallback_test() {
     |> config.with_fallback("gpt-4-turbo")
     |> config.with_fallback("llama-3")
   assert target.fallbacks == ["gpt-4-turbo", "llama-3"]
+}
+
+// ── Target authentication ───────────────────────────────────────
+
+pub fn openai_target_uses_api_key_auth_test() {
+  let target = config.openai_target("openai", "http://x/v1", "sk-key")
+  assert config.is_codex_target(target) == False
+  let assert config.ApiKey(key) = target.auth
+  assert key == "sk-key"
+}
+
+pub fn codex_target_uses_codex_auth_test() {
+  let target =
+    config.codex_target("codex", "https://chatgpt.com/backend-api/codex")
+  assert config.is_codex_target(target) == True
+  let assert config.Codex = target.auth
+  Nil
+}
+
+pub fn with_codex_marks_target_as_codex_test() {
+  let target =
+    config.openai_target("openai", "http://x/v1", "sk-key")
+    |> config.with_codex
+  assert config.is_codex_target(target) == True
+}
+
+pub fn build_upstream_headers_api_key_injects_bearer_test() {
+  let headers =
+    proxy.build_upstream_headers(
+      [#("x-request-id", "abc"), #("authorization", "Bearer client-secret")],
+      "http://x/v1",
+      proxy.ApiKey("sk-upstream"),
+      False,
+    )
+  // Client auth is scrubbed; the upstream key is injected; JSON content
+  // and accept headers are added by the proxy.
+  assert list.key_find(headers, "authorization") == Ok("Bearer sk-upstream")
+  assert list.key_find(headers, "content-type") == Ok("application/json")
+  assert list.key_find(headers, "accept") == Ok("application/json")
+  assert list.key_find(headers, "x-request-id") == Ok("abc")
 }
 
 // ── Hackney response to mist conversion ─────────────────────────

@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/erlang/process
-import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleeunit
 import pig_proxy/metrics
 import pig_proxy/telemetry
@@ -12,17 +12,17 @@ pub fn main() -> Nil {
 // ── Setup ───────────────────────────────────────────────────────
 
 /// Start the metrics actor and return the subject plus a cleanup function
-/// that detaches the telemetry handler.
+/// that detaches the typed telemetry handler.
 fn setup() -> #(
   process.Subject(metrics.MetricsMsg),
   fn() -> Nil,
 ) {
   telemetry.ensure_started()
   let assert Ok(#(subject, handler_id)) = metrics.start()
-  #(subject, fn() { telemetry.detach_forwarder(handler_id) })
+  #(subject, fn() { telemetry.detach_typed(handler_id) })
 }
 
-/// Send a ProxyMetricsEvent to the actor (async), then synchronize with
+/// Send a typed event to the actor (async), then synchronize with
 /// get_snapshot (sync via actor.call) so the event is processed before
 /// we inspect the snapshot.
 fn send_event_and_snapshot(
@@ -33,61 +33,44 @@ fn send_event_and_snapshot(
   metrics.get_snapshot(subject)
 }
 
-fn request_stop_event(
-  model: String,
-  duration_ms: Int,
-  status: Int,
-) -> metrics.MetricsMsg {
-  request_stop_event_with_tokens(model, duration_ms, status, 0, 0)
+fn request_stop_event(model: String, duration_ms: Int, status: Int) -> metrics.MetricsMsg {
+  request_stop_event_with_tokens(model, duration_ms, status, Some(0), Some(0))
 }
 
 fn request_stop_event_with_tokens(
   model: String,
   duration_ms: Int,
   status: Int,
-  input_tokens: Int,
-  output_tokens: Int,
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
 ) -> metrics.MetricsMsg {
-  metrics.ProxyMetricsEvent(
-    name: ["pig_proxy", "request", "stop"],
-    measurements: dict.from_list([
-      #("system_time", "1000"),
-      #("duration_ms", int.to_string(duration_ms)),
-      #("status", int.to_string(status)),
-    ]),
-    metadata: dict.from_list([
-      #("target_id", "test"),
-      #("model", model),
-      #("input_tokens", int.to_string(input_tokens)),
-      #("output_tokens", int.to_string(output_tokens)),
-    ]),
-  )
+  metrics.ProxyEvent(event: telemetry.RequestStop(
+    target_id: "test",
+    provider: "",
+    model:,
+    status:,
+    duration_ms:,
+    input_tokens:,
+    output_tokens:,
+  ))
 }
 
 fn request_error_event(model: String, error_type: String) -> metrics.MetricsMsg {
-  metrics.ProxyMetricsEvent(
-    name: ["pig_proxy", "request", "error"],
-    measurements: dict.from_list([#("system_time", "1000")]),
-    metadata: dict.from_list([
-      #("target_id", "test"),
-      #("model", model),
-      #("error_type", error_type),
-    ]),
-  )
+  metrics.ProxyEvent(event: telemetry.RequestError(
+    target_id: "test",
+    provider: "",
+    model:,
+    error_type:,
+  ))
 }
 
 fn stream_chunk_event(model: String, chunk_bytes: Int) -> metrics.MetricsMsg {
-  metrics.ProxyMetricsEvent(
-    name: ["pig_proxy", "stream", "chunk"],
-    measurements: dict.from_list([
-      #("system_time", "1000"),
-      #("chunk_bytes", int.to_string(chunk_bytes)),
-    ]),
-    metadata: dict.from_list([
-      #("target_id", "test"),
-      #("model", model),
-    ]),
-  )
+  metrics.ProxyEvent(event: telemetry.StreamChunk(
+    target_id: "test",
+    provider: "",
+    model:,
+    chunk_bytes:,
+  ))
 }
 
 // ── Tests ───────────────────────────────────────────────────────
@@ -182,11 +165,69 @@ pub fn request_stop_and_error_events_track_independently_test() {
 pub fn request_stop_event_accumulates_tokens_test() {
   let #(subject, cleanup) = setup()
   let _ =
-    send_event_and_snapshot(subject, request_stop_event_with_tokens("gpt-4", 200, 200, 10, 20))
+    send_event_and_snapshot(subject, request_stop_event_with_tokens(
+      "gpt-4", 200, 200, Some(10), Some(20),
+    ))
   let snapshot =
-    send_event_and_snapshot(subject, request_stop_event_with_tokens("gpt-4", 200, 200, 5, 7))
+    send_event_and_snapshot(subject, request_stop_event_with_tokens(
+      "gpt-4", 200, 200, Some(5), Some(7),
+    ))
   let assert Ok(m) = dict.get(snapshot.models, "gpt-4")
   assert m.input_tokens == 15
   assert m.output_tokens == 27
+  cleanup()
+}
+
+/// Absent token usage must not increase previously accumulated totals.
+pub fn absent_token_usage_does_not_change_totals_test() {
+  let #(subject, cleanup) = setup()
+  let _ =
+    send_event_and_snapshot(subject, request_stop_event_with_tokens(
+      "gpt-4", 200, 200, Some(3), Some(4),
+    ))
+  let snapshot =
+    send_event_and_snapshot(subject, request_stop_event_with_tokens(
+      "gpt-4", 200, 200, None, None,
+    ))
+  let assert Ok(m) = dict.get(snapshot.models, "gpt-4")
+  assert m.input_tokens == 3
+  assert m.output_tokens == 4
+  assert m.request_count == 2
+  cleanup()
+}
+
+/// A failing typed handler does not prevent later handlers from receiving an
+/// event through the protected telemetry callback boundary.
+pub fn failing_typed_handler_does_not_stop_fanout_test() {
+  telemetry.ensure_started()
+  let subject = process.new_subject()
+  let failing = telemetry.attach_typed(fn(_) { panic as "expected failure" })
+  let succeeding = telemetry.attach_typed(fn(event) {
+    process.send(subject, event)
+  })
+
+  telemetry.emit(telemetry.RequestStart(model: "gpt-4", streaming: False))
+  let assert Ok(telemetry.RequestStart(model: "gpt-4", streaming: False)) =
+    process.receive(subject, 1_000)
+  telemetry.detach_typed(failing)
+  telemetry.detach_typed(succeeding)
+}
+
+/// A non-empty provider keys the model as `provider/model`.
+pub fn provider_qualifies_the_metrics_key_test() {
+  let #(subject, cleanup) = setup()
+  let _ =
+    send_event_and_snapshot(subject, metrics.ProxyEvent(event: telemetry.RequestStop(
+      target_id: "test",
+      provider: "openai",
+      model: "gpt-4",
+      status: 200,
+      duration_ms: 50,
+      input_tokens: Some(0),
+      output_tokens: Some(0),
+    )))
+  let snapshot = metrics.get_snapshot(subject)
+  let assert Ok(m) = dict.get(snapshot.models, "openai/gpt-4")
+  assert m.request_count == 1
   cleanup()
 }

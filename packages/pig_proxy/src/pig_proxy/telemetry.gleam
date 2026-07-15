@@ -1,21 +1,29 @@
 //// Proxy telemetry events.
 ////
 //// A single `ProxyEvent` union type with typed variants for every proxy
-//// lifecycle event. One `emit(ProxyEvent)` function emits via `:telemetry`.
+//// lifecycle event.
 ////
-//// The background metrics aggregator attaches as a `:telemetry` handler
-//// (see `pig_proxy/metrics.gleam`) to consume these events asynchronously.
+//// `emit(ProxyEvent)` has two audiences:
+////   - INTERNAL typed consumers (the metrics aggregator): registered via
+////     `attach_typed`, called synchronously in the emitting process with
+////     the typed event. No string encoding crosses this path.
+////   - EXTERNAL consumers (OTel, dashboards): the event is encoded to the
+////     BEAM `:telemetry` registry at the edge, after typed fanout.
+////
+//// Keeping the typed/external split here means the metrics aggregator
+//// pattern-matches typed events directly — no string round-trip, and
+//// absent token usage stays `None` instead of being flattened to "0".
 
 import gleam/dict.{type Dict}
-import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
 // ── FFI Bindings ────────────────────────────────────────────────
 
 @external(erlang, "pig_proxy_telemetry_ffi", "ensure_started")
-pub fn ensure_started() -> Nil
+fn ffi_ensure_started() -> Nil
 
 @external(erlang, "pig_proxy_telemetry_ffi", "execute")
 fn ffi_execute(
@@ -27,29 +35,32 @@ fn ffi_execute(
 @external(erlang, "pig_proxy_telemetry_ffi", "system_time")
 pub fn system_time() -> Int
 
-@external(erlang, "pig_proxy_telemetry_ffi", "attach_forwarder")
-fn ffi_attach_forwarder(
-  pid: process.Pid,
-  event_names: List(List(String)),
-) -> HandlerId
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_init")
+fn handlers_init() -> Nil
 
-@external(erlang, "pig_proxy_telemetry_ffi", "detach_forwarder")
-fn ffi_detach_forwarder(handler_id: HandlerId) -> Nil
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_add")
+fn handlers_add(handler: fn(ProxyEvent) -> Nil) -> HandlerId
 
-/// Opaque handler ID returned by `attach_forwarder`.
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_remove")
+fn handlers_remove(id: HandlerId) -> Nil
+
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_get")
+fn handlers_get() -> List(#(HandlerId, fn(ProxyEvent) -> Nil))
+
+@external(erlang, "pig_proxy_telemetry_ffi", "handlers_call")
+fn handlers_call(handler: fn(ProxyEvent) -> Nil, event: ProxyEvent) -> Nil
+
+/// Opaque handler ID returned by `attach_typed`.
 pub type HandlerId
 
 // ── Event Union Type ────────────────────────────────────────────
 
 /// All proxy telemetry events as typed variants.
 pub type ProxyEvent {
-  /// A request was received and is about to be forwarded.
-  RequestStart(
-    target_id: String,
-    provider: String,
-    model: String,
-    streaming: Bool,
-  )
+  /// A request was received. Attributed to the request, not a target —
+  /// with fallback the serving target is not known until the commit point,
+  /// so the terminal `RequestStop`/`RequestError` carry target attribution.
+  RequestStart(model: String, streaming: Bool)
   /// A request completed successfully.
   RequestStop(
     target_id: String,
@@ -105,7 +116,8 @@ pub fn circuit_state_change_name() -> List(String) {
   ["pig_proxy", "circuit", "state_change"]
 }
 
-/// All event names — used to attach the metrics handler.
+/// All pig_proxy telemetry event names — useful for external consumers
+/// that want to attach to the full set via the BEAM :telemetry registry.
 pub fn all_event_names() -> List(List(String)) {
   [
     request_start_name(),
@@ -135,15 +147,29 @@ pub fn name_to_string(name: List(String)) -> String {
 // ── Emit ────────────────────────────────────────────────────────
 
 /// Emit a typed telemetry event.
+///
+/// Internal typed handlers registered via `attach_typed` are called
+/// synchronously with the typed event (the metrics aggregator consumes
+/// here). The event is then encoded and emitted to the BEAM :telemetry
+/// registry for external consumers.
 pub fn emit(event: ProxyEvent) -> Nil {
+  list.each(handlers_get(), fn(entry) {
+    let #(_, handler) = entry
+    handlers_call(handler, event)
+  })
+  emit_external(event)
+}
+
+/// Encode the typed event to measurements/metadata and emit it to the
+/// BEAM :telemetry registry for external consumers. This is the only
+/// place the typed → string encoding happens (the edge).
+fn emit_external(event: ProxyEvent) -> Nil {
   case event {
-    RequestStart(target_id:, provider:, model:, streaming:) ->
+    RequestStart(model:, streaming:) ->
       ffi_execute(
         request_start_name(),
         dict.from_list([#("system_time", system_time())]),
         dict.from_list([
-          #("target_id", target_id),
-          #("provider", provider),
           #("model", model),
           #("streaming", bool_to_string(streaming)),
         ]),
@@ -216,18 +242,22 @@ pub fn emit(event: ProxyEvent) -> Nil {
 
 // ── Handler attachment ──────────────────────────────────────────
 
-/// Attach a telemetry handler that forwards events to a process.
-/// Returns an opaque handler ID that can be used to detach later.
-pub fn attach_forwarder(
-  pid: process.Pid,
-  event_names: List(List(String)),
-) -> HandlerId {
-  ffi_attach_forwarder(pid, event_names)
+/// Start the telemetry application and initialise the typed-handler
+/// registry. Idempotent.
+pub fn ensure_started() -> Nil {
+  ffi_ensure_started()
+  handlers_init()
 }
 
-/// Detach a previously attached handler.
-pub fn detach_forwarder(handler_id: HandlerId) -> Nil {
-  ffi_detach_forwarder(handler_id)
+/// Register a typed handler invoked synchronously by `emit` for every
+/// `ProxyEvent`. Returns an opaque ID for `detach_typed`.
+pub fn attach_typed(handler: fn(ProxyEvent) -> Nil) -> HandlerId {
+  handlers_add(handler)
+}
+
+/// Remove a previously registered typed handler.
+pub fn detach_typed(id: HandlerId) -> Nil {
+  handlers_remove(id)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────

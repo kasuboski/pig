@@ -4,18 +4,34 @@
 %%
 %% Two modes:
 %%   - sync_request/5: blocking request that returns the full response.
-%%   - stream_request_loop/7: streaming request that invokes Gleam callbacks
-%%     for each body chunk, completion, and error. Must run in a dedicated
-%%     process because it blocks until the stream ends.
+%%   - stream_connect/5: opens a streaming request, reports the head
+%%     (status + first byte) synchronously to a gleam/erlang Subject, then
+%%     waits to be "started" before forwarding the body. This lets request
+%%     execution decide retry/fallback/commit BEFORE any byte reaches the
+%%     client, while the mist chunked loop still owns the forwarding sink.
+%%
+%% Message shapes mirror the Gleam custom types in pig_proxy/transport:
+%%   head    -> {stream_committed, Status, Headers, RunSubject}
+%%              {stream_rejected,  Status, Headers, Body}
+%%              {stream_failure,   Reason}
+%%   control -> {start_relay, ForwardSubject}        (sent TO the relay)
+%%   forward -> {relay_chunk, Bin} | relay_done | {relay_error, Reason}
+%%
+%% A gleam/erlang Subject is {subject, Pid, Tag}; a message is sent as
+%% the tagged tuple {Tag, Message} to Pid (see gleam_erlang_ffi).
 
 -export([
     ensure_started/0,
     sync_request/5,
-    stream_request_loop/7
+    stream_connect/5
 ]).
 
-%% Stream body receive timeout (120 seconds).
+%% Per-receive timeouts.
+-define(HEAD_TIMEOUT_MS, 30000).
 -define(STREAM_TIMEOUT_MS, 120000).
+%% How long a committed relay waits for StartRelay before giving up, so a
+%% relay whose consumer never starts (e.g. a crash) does not leak.
+-define(START_TIMEOUT_MS, 30000).
 
 %% Ensure the hackney application (and its dependencies) are running.
 ensure_started() ->
@@ -43,78 +59,129 @@ sync_request(Method, Url, Headers, Body, TimeoutMs) ->
             {error_response, format_error(Reason)}
     end.
 
-%% Streaming request with callbacks.
+%% Open a streaming request and report the head to HeadSubject synchronously.
 %%
-%% Makes an async hackney request with stream_to self(), receives the
-%% status and headers. If the status is 2xx, streams body chunks to
-%% ChunkCb. If the status is non-2xx, reads the full body and calls
-%% ErrorCb with a formatted error including the status code.
+%%   2xx head + first byte  -> {stream_committed, Status, Headers, RunSubject}
+%%                             then PAUSE until StartRelay, then forward.
+%%   2xx head, empty body   -> {stream_committed, ...} then forward relay_done.
+%%   non-2xx head           -> {stream_rejected, Status, Headers, FullBody}.
+%%   connect failure        -> {stream_failure, Reason}.
 %%
-%% Blocks until the stream ends or errors. MUST be called in a dedicated
-%% process (the relay) so it doesn't block the request handler.
-stream_request_loop(Method, Url, Headers, Body, ChunkCb, DoneCb, ErrorCb) ->
+%% MUST run in a dedicated process (the relay): it blocks until the stream
+%% ends after being started.
+stream_connect(Method, Url, Headers, Body, HeadSubject) ->
     case hackney:request(Method, Url, Headers, Body, [{stream_to, self()}, {async, true}]) of
         {ok, Ref} ->
             case receive_status_headers(Ref) of
-                {ok, StatusCode} when StatusCode >= 200, StatusCode < 300 ->
-                    stream_body(Ref, ChunkCb, DoneCb, ErrorCb);
-                {ok, StatusCode} ->
-                    %% Non-2xx status: read the full body and report as error.
-                    ErrorBody = read_all_body(Ref),
-                    ErrorCb(format_http_error(StatusCode, ErrorBody));
+                {ok, StatusCode, RespHeaders}
+                    when StatusCode >= 200, StatusCode < 300 ->
+                    receive_first_and_report(Ref, StatusCode, RespHeaders, HeadSubject);
+                {ok, StatusCode, RespHeaders} ->
+                    case read_all_body(Ref) of
+                        {ok, FullBody} ->
+                            send_subject(HeadSubject,
+                                {stream_rejected, StatusCode, RespHeaders, FullBody});
+                        {timeout, _PartialBody} ->
+                            send_subject(HeadSubject,
+                                {stream_failure, <<"timeout reading upstream error body">>})
+                    end;
                 {error, Reason} ->
-                    ErrorCb(Reason)
+                    send_subject(HeadSubject, {stream_failure, Reason})
             end;
         {error, Reason} ->
-            ErrorCb(format_error(Reason))
+            send_subject(HeadSubject, {stream_failure, format_error(Reason)})
     end.
 
 %% Receive the initial {status, ...} and {headers, ...} messages.
-%% Returns {ok, StatusCode} or {error, Reason}.
 receive_status_headers(Ref) ->
     receive
         {hackney_response, Ref, {status, StatusCode, _Reason}} ->
             receive
-                {hackney_response, Ref, {headers, _Headers}} ->
-                    {ok, StatusCode};
+                {hackney_response, Ref, {headers, Headers}} ->
+                    {ok, StatusCode, Headers};
                 {hackney_response, Ref, {error, Reason}} ->
                     hackney:close(Ref),
                     {error, format_error(Reason)}
-            after 30000 ->
+            after ?HEAD_TIMEOUT_MS ->
                     hackney:close(Ref),
                     {error, <<"timeout waiting for upstream headers">>}
             end;
         {hackney_response, Ref, {error, Reason}} ->
             hackney:close(Ref),
             {error, format_error(Reason)}
-    after 30000 ->
+    after ?HEAD_TIMEOUT_MS ->
             hackney:close(Ref),
             {error, <<"timeout waiting for upstream status">>}
     end.
 
-%% Stream body chunks to ChunkCb until done or error.
-stream_body(Ref, ChunkCb, DoneCb, ErrorCb) ->
+%% Confirm commit by observing the first body event, report the head, then
+%% hand off to the start/forward phase.
+receive_first_and_report(Ref, Status, Headers, HeadSubject) ->
     receive
         {hackney_response, Ref, BinBodyPart} when is_binary(BinBodyPart) ->
-            ChunkCb(BinBodyPart),
-            stream_body(Ref, ChunkCb, DoneCb, ErrorCb);
+            RunSubject = new_subject(),
+            send_subject(HeadSubject, {stream_committed, Status, Headers, RunSubject}),
+            wait_start_and_forward(Ref, BinBodyPart, RunSubject);
         {hackney_response, Ref, done} ->
-            hackney:close(Ref),
-            DoneCb(nil);
+            RunSubject = new_subject(),
+            send_subject(HeadSubject, {stream_committed, Status, Headers, RunSubject}),
+            wait_start_and_finish_empty(Ref, RunSubject);
         {hackney_response, Ref, {error, Reason}} ->
             hackney:close(Ref),
-            ErrorCb(format_error(Reason));
-        _Other ->
-            %% Ignore unexpected messages.
-            stream_body(Ref, ChunkCb, DoneCb, ErrorCb)
-    after ?STREAM_TIMEOUT_MS ->
+            send_subject(HeadSubject, {stream_failure, format_error(Reason)})
+    after ?HEAD_TIMEOUT_MS ->
             hackney:close(Ref),
-            ErrorCb(<<"stream timeout">>)
+            send_subject(HeadSubject, {stream_failure, <<"timeout waiting for first byte">>})
+    end.
+
+%% Hold the first byte, wait for StartRelay, then forward it and continue.
+wait_start_and_forward(Ref, FirstChunk, RunSubject) ->
+    RunTag = subject_tag(RunSubject),
+    receive
+        {RunTag, {start_relay, Fwd}} ->
+            send_subject(Fwd, {relay_chunk, FirstChunk}),
+            forward_loop(Ref, Fwd)
+    after ?START_TIMEOUT_MS ->
+            hackney:close(Ref),
+            ok
+    end.
+
+%% A committed empty stream: wait for StartRelay, then report done.
+wait_start_and_finish_empty(Ref, RunSubject) ->
+    RunTag = subject_tag(RunSubject),
+    receive
+        {RunTag, {start_relay, Fwd}} ->
+            send_subject(Fwd, relay_done),
+            hackney:close(Ref),
+            ok
+    after ?START_TIMEOUT_MS ->
+            hackney:close(Ref),
+            ok
+    end.
+
+%% Forward subsequent chunks to the consumer subject until done or error.
+forward_loop(Ref, Fwd) ->
+    receive
+        {hackney_response, Ref, BinBodyPart} when is_binary(BinBodyPart) ->
+            send_subject(Fwd, {relay_chunk, BinBodyPart}),
+            forward_loop(Ref, Fwd);
+        {hackney_response, Ref, done} ->
+            send_subject(Fwd, relay_done),
+            hackney:close(Ref);
+        {hackney_response, Ref, {error, Reason}} ->
+            send_subject(Fwd, {relay_error, format_error(Reason)}),
+            hackney:close(Ref);
+        _Other ->
+            %% Ignore unexpected messages (e.g. a late start_relay echo).
+            forward_loop(Ref, Fwd)
+    after ?STREAM_TIMEOUT_MS ->
+            send_subject(Fwd, {relay_error, <<"stream timeout">>}),
+            hackney:close(Ref)
     end.
 
 %% Read the full body for a non-2xx streaming response.
-%% Tail-recursive: accumulates chunks in an iolist, then flattens once at
-%% the end to avoid growing the process stack with deeply nested binaries.
+%% Tail-recursive: accumulates chunks in an iolist, then flattens once.
+%% Returns `{ok, Body}` on completion and `{timeout, PartialBody}` on idle timeout.
 read_all_body(Ref) ->
     read_all_body(Ref, []).
 
@@ -124,20 +191,29 @@ read_all_body(Ref, Acc) ->
             read_all_body(Ref, [BinBodyPart | Acc]);
         {hackney_response, Ref, done} ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc));
+            {ok, iolist_to_binary(lists:reverse(Acc))};
         {hackney_response, Ref, {error, _Reason}} ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc));
+            {ok, iolist_to_binary(lists:reverse(Acc))};
         _Other ->
             read_all_body(Ref, Acc)
-    after 30000 ->
+    after ?HEAD_TIMEOUT_MS ->
             hackney:close(Ref),
-            iolist_to_binary(lists:reverse(Acc))
+            {timeout, iolist_to_binary(lists:reverse(Acc))}
     end.
 
-%% Format an HTTP error (non-2xx status) for the Gleam ErrorCb.
-format_http_error(StatusCode, Body) ->
-    list_to_binary(io_lib:format("upstream returned ~w: ~s", [StatusCode, Body])).
+%% Construct a gleam/erlang Subject owned by this process.
+new_subject() ->
+    {subject, self(), erlang:make_ref()}.
+
+%% The tag of a gleam/erlang Subject.
+subject_tag({subject, _Pid, Tag}) ->
+    Tag.
+
+%% Send a Gleam message to a gleam/erlang Subject: Pid ! {Tag, Message}.
+send_subject({subject, Pid, Tag}, Message) ->
+    Pid ! {Tag, Message},
+    ok.
 
 %% Format an Erlang error term into a binary string for Gleam.
 format_error(Reason) ->

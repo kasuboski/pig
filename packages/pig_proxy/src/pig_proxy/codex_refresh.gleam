@@ -11,6 +11,7 @@
 import gleam/erlang/process
 import gleam/option.{type Option}
 import gleam/otp/actor
+import gleam/result
 import logging
 import pig_proxy/codex_credentials.{type CodexCredentials}
 import pig_proxy/codex_login
@@ -48,34 +49,51 @@ type RefreshState {
 ///
 /// `creds` is the credential pair currently in the vault for `target_id`
 /// (the vault must already hold a `vault.CodexToken` for this id — see
-/// `pig_proxy.gleam`'s startup wiring).
+/// `runtime` startup wiring). The vault is addressed by `vault_name` rather
+/// than a captured `Subject`: under `rest_for_one` supervision a restarted
+/// vault re-registers the name, and the resolved subject routes to the new
+/// process so rotation never targets a dead vault.
 pub fn start(
-  vault_subject: process.Subject(vault.VaultMsg),
+  vault_name: process.Name(vault.VaultMsg),
   target_id: String,
   credentials_path: String,
   creds: CodexCredentials,
   check_interval_ms: Int,
   refresh_buffer_ms: Int,
 ) -> Result(process.Subject(RefreshMsg), actor.StartError) {
-  let result =
-    actor.new_with_initialiser(
-      5000,
-      initialise(
-        vault_subject,
-        target_id,
-        credentials_path,
-        creds,
-        check_interval_ms,
-        refresh_buffer_ms,
-      ),
-    )
-    |> actor.on_message(handle_message)
-    |> actor.start
+  start_started(vault_name, target_id, credentials_path, creds, check_interval_ms, refresh_buffer_ms)
+  |> result.map(fn(s) { s.data })
+}
 
-  case result {
-    Ok(started) -> Ok(started.data)
-    Error(e) -> Error(e)
-  }
+/// Start the refresh actor, returning the `Started` value a supervisor
+/// needs. The vault is addressed by `vault_name` (resolved to a named
+/// subject): under `rest_for_one` supervision a restarted vault re-registers
+/// the name, so rotation always targets the live vault.
+pub fn start_started(
+  vault_name: process.Name(vault.VaultMsg),
+  target_id: String,
+  credentials_path: String,
+  creds: CodexCredentials,
+  check_interval_ms: Int,
+  refresh_buffer_ms: Int,
+) -> Result(
+  actor.Started(process.Subject(RefreshMsg)),
+  actor.StartError,
+) {
+  let vault_subject = process.named_subject(vault_name)
+  actor.new_with_initialiser(
+    5000,
+    initialise(
+      vault_subject,
+      target_id,
+      credentials_path,
+      creds,
+      check_interval_ms,
+      refresh_buffer_ms,
+    ),
+  )
+  |> actor.on_message(handle_message)
+  |> actor.start
 }
 
 fn initialise(
