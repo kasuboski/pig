@@ -100,9 +100,8 @@ The Responses route (`/v1/responses`) doubles as the route for OpenAI's Codex
 subscription backend (`chatgpt.com/backend-api/codex/responses`), which
 authenticates with a ChatGPT OAuth JWT rather than a platform API key.
 
-`pig_proxy` can obtain and refresh Codex credentials itself via the same
-PKCE + local-callback OAuth flow the Codex CLI uses — no external CLI
-required.
+`pig_proxy` can obtain and refresh Codex credentials itself through OpenAI's
+OAuth endpoints — no external CLI required.
 
 ### Logging in
 
@@ -114,27 +113,27 @@ mise run codex-login
 
 (or, from inside the package: `cd packages/pig_proxy && gleam run -m pig_proxy/codex_login` — `gleam` needs the package's `gleam.toml`, so it must be run from `packages/pig_proxy`, not the repo root).
 
-This prints an authorization URL, opens a callback server on `127.0.0.1:1455`,
-waits for the browser redirect, exchanges the authorization code for tokens,
-extracts the `chatgpt_account_id` from the JWT, and persists the credential
-pair to `~/.pig/codex_auth.json` (override the path with
+The standard flow prints a short device code. Open
+`https://auth.openai.com/codex/device` in **any** browser, enter the code, and
+`pig_proxy` polls for completion. It works unchanged on local machines,
+remote servers, and headless hosts: no localhost callback, SSH tunnel, or
+pasted redirect URL is needed. On completion it exchanges the authorization
+code for tokens, extracts the `chatgpt_account_id` from the JWT, and persists
+the credential pair to `~/.pig/codex_auth.json` (override the path with
 `PIG_CODEX_AUTH_PATH`).
 
-#### Remote / headless hosts
+#### Optional browser callback
 
-The default flow needs the browser to reach `127.0.0.1:1455` on the host
-running the login — which fails when pig_proxy runs on a remote server and
-your browser is local. Use the manual paste flow instead (no tunnel/port):
+For local one-click login, use the same browser callback flow offered by the
+Codex CLI and pi:
 
 ```sh
-PIG_CODEX_LOGIN_MANUAL=1 mise run codex-login
+PIG_CODEX_LOGIN_BROWSER=1 mise run codex-login
 ```
 
-Open the printed URL in your local browser and authorize; you'll be redirected
-to `http://localhost:1455/auth/callback?code=...` which won't load (expected).
-Copy the **entire** URL from the address bar and paste it at the prompt — the
-code is parsed and exchanged. (Alternatively, forward the port with
-`ssh -L 1455:127.0.0.1:1455 <remote-host>` and use the default flow.)
+This opens a callback server on `127.0.0.1:1455` and waits for the browser
+redirect. It is only suitable when the browser can reach that local address;
+use the standard device-code flow everywhere else.
 
 ### Starting the proxy
 

@@ -13,6 +13,7 @@
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option}
@@ -178,4 +179,128 @@ pub fn parse_callback_query(query: String) -> Result(#(String, String), Nil) {
   use code <- result.try(list.key_find(params, "code"))
   use state <- result.try(list.key_find(params, "state"))
   Ok(#(code, state))
+}
+
+// ── Device authorization flow (headless) ────────────────────────
+//
+// OpenAI also exposes a device-code flow (the "visit a URL and enter a
+// code" UX), which works on remote/headless hosts where the browser can't
+// reach a localhost callback. Unlike the browser PKCE flow, the device
+// token endpoint returns the authorization code AND its code_verifier, so
+// the caller exchanges them at the normal token endpoint with the device
+// redirect URI. These device endpoints speak JSON (not form-encoded).
+
+const device_usercode_path = "/api/accounts/deviceauth/usercode"
+
+const device_token_path = "/api/accounts/deviceauth/token"
+
+/// Where the user goes to enter the device code (in any browser).
+pub const device_verification_uri = "https://auth.openai.com/codex/device"
+
+/// Redirect URI used in the final code exchange for the device flow.
+pub const device_redirect_uri = "https://auth.openai.com/deviceauth/callback"
+
+/// How long a device code is valid (matches the official CLI / pi).
+pub const device_code_timeout_seconds = 900
+
+/// Content-type for the device endpoints (JSON, unlike the token endpoint).
+pub const device_request_content_type = "application/json"
+
+/// Device user-code request endpoint (`POST` `{client_id}`).
+pub fn device_usercode_url() -> String {
+  auth_base_url <> device_usercode_path
+}
+
+/// Device token polling endpoint.
+pub fn device_token_url() -> String {
+  auth_base_url <> device_token_path
+}
+
+/// JSON body for the device user-code request.
+pub fn device_usercode_body() -> String {
+  json.to_string(json.object([#("client_id", json.string(client_id))]))
+}
+
+/// JSON body for polling the device token endpoint.
+pub fn device_token_body(device_auth_id: String, user_code: String) -> String {
+  json.to_string(
+    json.object([
+      #("device_auth_id", json.string(device_auth_id)),
+      #("user_code", json.string(user_code)),
+    ]),
+  )
+}
+
+/// A device user-code response: the code to display + how often to poll.
+pub type DeviceUserCode {
+  DeviceUserCode(
+    device_auth_id: String,
+    user_code: String,
+    interval_seconds: Int,
+  )
+}
+
+fn device_usercode_decoder() -> decode.Decoder(DeviceUserCode) {
+  use device_auth_id <- decode.field("device_auth_id", decode.string)
+  use user_code <- decode.field("user_code", decode.string)
+  use interval_seconds <- decode.field("interval", device_interval_decoder())
+  decode.success(DeviceUserCode(device_auth_id:, user_code:, interval_seconds:))
+}
+
+fn device_interval_decoder() -> decode.Decoder(Int) {
+  let numeric_string = decode.then(decode.string, fn(value) {
+    case int.parse(value) {
+      Ok(interval) -> decode.success(interval)
+      Error(_) -> decode.failure(0, "integer string")
+    }
+  })
+  let raw = decode.one_of(decode.int, or: [numeric_string])
+  decode.then(raw, fn(interval) {
+    case interval >= 0 {
+      True -> decode.success(interval)
+      False -> decode.failure(0, "non-negative interval")
+    }
+  })
+}
+
+/// Parse a device user-code JSON response.
+pub fn parse_device_usercode(
+  body: String,
+) -> Result(DeviceUserCode, json.DecodeError) {
+  json.parse(from: body, using: device_usercode_decoder())
+}
+
+/// A completed device authorization: the code + verifier to exchange.
+pub type DeviceToken {
+  DeviceToken(authorization_code: String, code_verifier: String)
+}
+
+fn device_token_decoder() -> decode.Decoder(DeviceToken) {
+  use authorization_code <- decode.field("authorization_code", decode.string)
+  use code_verifier <- decode.field("code_verifier", decode.string)
+  decode.success(DeviceToken(authorization_code:, code_verifier:))
+}
+
+/// Parse a successful device token JSON response.
+pub fn parse_device_token_success(
+  body: String,
+) -> Result(DeviceToken, json.DecodeError) {
+  json.parse(from: body, using: device_token_decoder())
+}
+
+/// Extract the error code from a device token error response. The `error`
+/// field may be a string or an object with a `code` field; returns the code
+/// if either is present (used to tell `deviceauth_authorization_pending` /
+/// `slow_down` from a real failure).
+pub fn device_error_code(body: String) -> Option(String) {
+  let object_code = decode.map(
+    decode.at(["error", "code"], decode.string),
+    option.Some,
+  )
+  let string_error = decode.field("error", decode.string, fn(error) {
+    decode.success(option.Some(error))
+  })
+  let decoder =
+    decode.one_of(object_code, or: [string_error, decode.success(option.None)])
+  result.unwrap(json.parse(from: body, using: decoder), option.None)
 }
