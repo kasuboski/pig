@@ -106,10 +106,13 @@ required.
 
 ### Logging in
 
+From the repository root:
+
 ```sh
-cd packages/pig_proxy
-gleam run -m pig_proxy/codex_login
+mise run codex-login
 ```
+
+(or, from inside the package: `cd packages/pig_proxy && gleam run -m pig_proxy/codex_login` — `gleam` needs the package's `gleam.toml`, so it must be run from `packages/pig_proxy`, not the repo root).
 
 This prints an authorization URL, opens a callback server on `127.0.0.1:1455`,
 waits for the browser redirect, exchanges the authorization code for tokens,
@@ -172,10 +175,14 @@ account. Never commit it or log it.
 ## Programmatic configuration
 
 For multiple upstreams, virtual model routing, or fallback chains, build a
-`ProxyConfig` directly instead of using `from_env`:
+`ProxyConfig` directly instead of using `from_env`, then hand it to
+`runtime.start` (which brings up the supervisor tree and returns the
+`ServerState`) and `server.start`:
 
 ```gleam
+import gleam/erlang/process
 import pig_proxy/config
+import pig_proxy/runtime
 import pig_proxy/server
 
 pub fn main() {
@@ -189,15 +196,11 @@ pub fn main() {
   let cfg =
     config.new([openai, ollama])
     |> config.with_port(8080)
-    |> config.with_max_retries(3)
+    |> config.with_retries_per_target(1)
 
-  server.start(server.ServerState(
-    config: cfg,
-    routes: [],
-    metrics: None,
-    catalog: None,
-    vault: None,
-  ))
+  let state = runtime.start(cfg)
+  server.start(state)
+  process.sleep_forever()
 }
 ```
 

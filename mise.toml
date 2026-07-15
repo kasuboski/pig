@@ -35,3 +35,11 @@ env = { PIG_RUN_INTEGRATION = "1" }
 description = "Run pig_proxy integration tests (boots the proxy + forwards a chat) against an OpenAI-compatible provider"
 run = "cd packages/pig_proxy && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
+
+[tasks.proxy]
+description = "Run the pig_proxy server (reads OPENAI_COMPAT_* / PIG_PROXY_* env)"
+run = "cd packages/pig_proxy && gleam run"
+
+[tasks.codex-login]
+description = "Run the pig_proxy Codex OAuth login flow (writes ~/.pig/codex_auth.json)"
+run = "cd packages/pig_proxy && gleam run -m pig_proxy/codex_login"
