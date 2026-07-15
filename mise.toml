@@ -30,3 +30,8 @@ env = { PIG_RUN_INTEGRATION = "1" }
 description = "Run pig_protocol integration tests (chat + codex responses) against an OpenAI-compatible provider"
 run = "cd packages/pig_protocol && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
+
+[tasks.test-integration-proxy]
+description = "Run pig_proxy integration tests (boots the proxy + forwards a chat) against an OpenAI-compatible provider"
+run = "cd packages/pig_proxy && gleam test"
+env = { PIG_RUN_INTEGRATION = "1" }
