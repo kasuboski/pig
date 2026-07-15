@@ -12,9 +12,9 @@ import pig/agent/effect
 import pig/agent/msg.{type AgentMsg}
 import pig/agent/state.{type AgentState}
 import pig/agent/step_result.{type StepResult}
+import pig/tool.{type ToolError}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
-import pig/tool.{type ToolError}
 
 /// Pure state transition: given current state and a message, return
 /// the next state and any effects the runtime should execute.
@@ -98,7 +98,7 @@ fn handle_tool_results(
       let #(call, result) = pair
       let content = case result {
         Ok(json_val) -> json.to_string(json_val)
-        Error(tool_err) -> "Tool error: " <> tool_err.message
+        Error(tool_err) -> "Tool error: " <> tool.error_message(tool_err)
       }
       message.Tool(tool_call_id: call.id, content:)
     })

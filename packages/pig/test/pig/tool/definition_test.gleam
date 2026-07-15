@@ -8,8 +8,8 @@ import gleam/dynamic
 import gleam/json
 import gleeunit
 import jscheam/schema
-import pig_protocol/tool_definition
 import pig/tool
+import pig_protocol/tool_definition
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -32,7 +32,10 @@ pub fn register_overwrite_test() {
       description: "v2",
       parameters: schema.object([]),
     )
-  let handler = fn(_args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+  let handler = fn(_, _args: dynamic.Dynamic) -> Result(
+    json.Json,
+    tool.ToolError,
+  ) {
     Ok(json.null())
   }
   let registry =

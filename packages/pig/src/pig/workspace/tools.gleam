@@ -25,10 +25,10 @@ import gleam/list
 import gleam/result
 import gleam/string
 import jscheam/schema
-import pig_protocol/tool_definition
 import pig/tool
 import pig/workspace/kv
 import pig/workspace/vfs
+import pig_protocol/tool_definition
 import sqlight
 
 // ── Error conversion ────────────────────────────────────────────────
@@ -83,7 +83,7 @@ pub fn read_file_tool(conn: sqlight.Connection) -> tool.Tool {
         schema.optional(schema.prop("limit", schema.integer())),
       ]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("path", decode.string, decode.success))
       {
@@ -162,7 +162,7 @@ pub fn write_file_tool(conn: sqlight.Connection) -> tool.Tool {
         schema.prop("content", schema.string()),
       ]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(
           args,
@@ -199,7 +199,7 @@ pub fn list_directory_tool(conn: sqlight.Connection) -> tool.Tool {
       description: "List all entries in a directory.",
       parameters: schema.object([schema.prop("path", schema.string())]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("path", decode.string, decode.success))
       {
@@ -229,7 +229,7 @@ pub fn delete_file_tool(conn: sqlight.Connection) -> tool.Tool {
       description: "Delete a file or empty directory.",
       parameters: schema.object([schema.prop("path", schema.string())]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("path", decode.string, decode.success))
       {
@@ -263,7 +263,7 @@ pub fn remember_tool(conn: sqlight.Connection) -> tool.Tool {
         schema.prop("value", schema.string()),
       ]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(
           args,
@@ -300,7 +300,7 @@ pub fn recall_tool(conn: sqlight.Connection) -> tool.Tool {
       description: "Retrieve a previously stored value by key.",
       parameters: schema.object([schema.prop("key", schema.string())]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("key", decode.string, decode.success))
       {
@@ -330,7 +330,7 @@ pub fn list_keys_tool(conn: sqlight.Connection) -> tool.Tool {
       description: "List all stored keys matching a prefix.",
       parameters: schema.object([schema.prop("prefix", schema.string())]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("prefix", decode.string, decode.success))
       {
@@ -369,7 +369,7 @@ pub fn grep_tool(conn: sqlight.Connection) -> tool.Tool {
         schema.optional(schema.prop("max_results", schema.integer())),
       ]),
     ),
-    handler: fn(args) {
+    handler: fn(_, args) {
       case
         decode.run(args, decode.field("pattern", decode.string, decode.success))
       {

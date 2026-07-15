@@ -46,7 +46,7 @@ fn echo_tool() -> tool.Tool {
       description: "Echoes back",
       parameters: schema.object([]),
     ),
-    handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+    handler: fn(_, args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       let assert Ok(msg) =
         decode.run(args, decode.field("msg", decode.string, decode.success))
       Ok(json.object([#("echo", json.string(msg))]))
@@ -61,7 +61,7 @@ fn failing_tool() -> tool.Tool {
       description: "Always fails",
       parameters: schema.object([]),
     ),
-    handler: fn(_) { Error(tool.ToolError(message: "tool exploded")) },
+    handler: fn(_, _) { Error(tool.ToolError(message: "tool exploded")) },
   )
 }
 
@@ -72,11 +72,29 @@ fn slow_echo_tool(delay_ms: Int) -> tool.Tool {
       description: "Slow echo tool",
       parameters: schema.object([]),
     ),
-    handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+    handler: fn(_, args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       process.sleep(delay_ms)
       let assert Ok(msg) =
         decode.run(args, decode.field("msg", decode.string, decode.success))
       Ok(json.object([#("echo", json.string(msg))]))
+    },
+  )
+}
+
+fn context_tool() -> tool.Tool {
+  tool.Tool(
+    definition: tool_definition.ToolDefinition(
+      name: "context",
+      description: "Reports invocation context",
+      parameters: schema.object([]),
+    ),
+    handler: fn(context, _) {
+      Ok(
+        json.object([
+          #("id", json.string(tool.call_id(context))),
+          #("name", json.string(tool.tool_name(context))),
+        ]),
+      )
     },
   )
 }
@@ -214,6 +232,28 @@ fn collect_events_helper(
           collect_events_helper(subject, remaining - 1, [event, ..acc], timeout)
         Error(_) -> list.reverse(acc)
       }
+  }
+}
+
+/// Drain all events preceding an explicit dispatcher barrier without assuming
+/// an event count. The barrier itself is excluded.
+fn collect_events_before_barrier(
+  subject: process.Subject(events.SessionEvent),
+) -> List(events.SessionEvent) {
+  let assert Ok(event) = process.receive(subject, 1000)
+  case event {
+    events.SessionEnded(events.Interrupted) -> []
+    _ -> [event, ..collect_events_before_barrier(subject)]
+  }
+}
+
+fn is_tool_execution_event(event: events.SessionEvent) -> Bool {
+  case event {
+    events.ToolStarted(..)
+    | events.ToolExecuted(..)
+    | events.ToolBlocked(..)
+    | events.HookActed(..) -> True
+    _ -> False
   }
 }
 
@@ -448,6 +488,85 @@ pub fn tool_call_scenario_test() {
   let assert Ok(result) = runtime.run(subject, "use echo", 5000)
   assert result == final
   process.send(disp, dispatcher.Stop)
+}
+
+/// Check a rejected batch has no tool or hook side effects and produces one
+/// ordered structured error result for every input call.
+fn check_invalid_tool_call_batch(
+  calls: List(message.ToolCall),
+  batch_error: tool.ToolCallBatchError,
+) -> Nil {
+  let tool_response = message.Assistant("", calls, None, None)
+  let final = message.Assistant("done", [], None, None)
+  let handler_calls = start_counter()
+  let hook_calls = start_counter()
+  let hook =
+    hooks.new("must-not-run")
+    |> hooks.on_tool_call(fn(_) {
+      process.send(hook_calls, Increment)
+      hooks.BlockTool("hook ran")
+    })
+  let #(subject, collector, disp) =
+    start_with_collector(
+      sequenced_provider([tool_response, final]),
+      [counted_echo_tool(handler_calls)],
+      [hook],
+    )
+
+  let assert Ok(result) = runtime.run(subject, "go", 5000)
+  assert result == final
+  assert count(handler_calls) == 0
+  assert count(hook_calls) == 0
+
+  let expected_results =
+    list.map(calls, fn(call) {
+      message.Tool(
+        tool_call_id: call.id,
+        content: "Tool error: "
+          <> tool.error_message(tool.InvalidToolCallBatch(batch_error)),
+      )
+    })
+  let actual_results =
+    runtime.history(subject, 5000)
+    |> list.filter(fn(message) {
+      case message {
+        message.Tool(..) -> True
+        _ -> False
+      }
+    })
+  assert actual_results == expected_results
+
+  // A dispatcher barrier proves all earlier runtime events are observable
+  // without coupling this assertion to a particular total event count.
+  process.send(disp, dispatcher.Event(events.SessionEnded(events.Interrupted)))
+  let events = collect_events_before_barrier(collector)
+  assert list.filter(events, is_tool_execution_event) == []
+
+  process.send(disp, dispatcher.Stop)
+  stop_counter(handler_calls)
+  stop_counter(hook_calls)
+}
+
+/// Empty IDs reject the entire batch before hooks, events, or handlers.
+pub fn empty_id_tool_call_batch_skips_hooks_and_handlers_test() {
+  check_invalid_tool_call_batch(
+    [
+      message.ToolCall(id: "valid", name: "echo", arguments_json: "{}"),
+      message.ToolCall(id: "", name: "echo", arguments_json: "{}"),
+    ],
+    tool.EmptyToolCallId(1),
+  )
+}
+
+/// Duplicate IDs reject the entire batch before hooks, events, or handlers.
+pub fn duplicate_id_tool_call_batch_skips_hooks_and_handlers_test() {
+  check_invalid_tool_call_batch(
+    [
+      message.ToolCall(id: "duplicate", name: "echo", arguments_json: "{}"),
+      message.ToolCall(id: "duplicate", name: "echo", arguments_json: "{}"),
+    ],
+    tool.DuplicateToolCallId("duplicate"),
+  )
 }
 
 /// Runtime emits ToolStarted + ToolExecuted per tool.
@@ -1378,9 +1497,9 @@ fn counted_provider(
 
 fn counted_echo_tool(counter: process.Subject(CounterMessage)) -> tool.Tool {
   let base = echo_tool()
-  tool.Tool(definition: base.definition, handler: fn(args) {
+  tool.Tool(definition: base.definition, handler: fn(context, args) {
     process.send(counter, Increment)
-    base.handler(args)
+    base.handler(context, args)
   })
 }
 
@@ -1696,6 +1815,61 @@ pub fn run_continue_pending_tool_calls_test() {
   let assert Ok(msg) = runtime.run_continue(subject, 5000)
   assert msg == final
   process.send(disp, dispatcher.Stop)
+}
+
+/// Pending calls restored from history retain their original identity in context.
+pub fn run_continue_pending_tool_call_preserves_context_test() {
+  let call =
+    message.ToolCall(id: "persisted-id", name: "context", arguments_json: "{}")
+  let pending = message.Assistant("", [call], None, Some(stop_reason.ToolUse))
+  let final = message.Assistant("done", [], None, None)
+  let #(subject, disp) =
+    start_with_history(sequenced_provider([pending, final]), [context_tool()], [
+      message.User("resume"),
+      pending,
+    ])
+  let assert Ok(_) = runtime.run_continue(subject, 5000)
+  let messages = runtime.history(subject, 5000)
+  assert list.contains(
+    messages,
+    message.Tool(
+      tool_call_id: "persisted-id",
+      content: "{\"id\":\"persisted-id\",\"name\":\"context\"}",
+    ),
+  )
+  process.send(disp, dispatcher.Stop)
+}
+
+/// Pending calls restored from a durable session retain their exact context.
+pub fn restored_history_pending_tool_call_preserves_context_test() {
+  let call =
+    message.ToolCall(id: "restored-id", name: "context", arguments_json: "{}")
+  let pending = message.Assistant("", [call], None, Some(stop_reason.ToolUse))
+  let final = message.Assistant("done", [], None, None)
+  let snapshot =
+    session_store.Session(Some("restored-head"), [
+      message.User("resume"),
+      pending,
+    ])
+  let assert Ok(store_handle) = memory.start(snapshot)
+  let #(subject, disp) =
+    start_restored_session(
+      sequenced_provider([pending, final]),
+      [context_tool()],
+      memory.store(store_handle),
+      snapshot,
+    )
+  let assert Ok(_) = runtime.run_continue(subject, 5000)
+  assert list.contains(
+    runtime.history(subject, 5000),
+    message.Tool(
+      tool_call_id: "restored-id",
+      content: "{\"id\":\"restored-id\",\"name\":\"context\"}",
+    ),
+  )
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(store_handle)
 }
 
 /// run_continue with length stop_reason re-calls provider.

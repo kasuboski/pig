@@ -3,13 +3,14 @@
 //// Tests that the librarian tool produces a working `Tool` value
 //// that can read skill content on demand.
 
-import gleam/dynamic/decode
 import gleam/json
 import gleam/string
 import gleeunit
 import pig/skill
 import pig/skill/librarian
 import pig/tool
+import pig/tool/execution
+import pig_protocol/message
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -44,10 +45,13 @@ pub fn read_known_skill_test() {
     ),
   ]
   let t = librarian.librarian_tool(skills)
-  let args = json.object([#("name", json.string("gleam-expert"))])
-  let args_json = json.to_string(args)
-  let assert Ok(dyn) = json.parse(from: args_json, using: decode.dynamic)
-  let result = t.handler(dyn)
+  let arguments_json =
+    json.to_string(json.object([#("name", json.string("gleam-expert"))]))
+  let result =
+    execution.execute_tool(
+      tool.new_registry() |> tool.register(t),
+      message.ToolCall(id: "test", name: "read_skill", arguments_json:),
+    )
   let assert Ok(json_val) = result
   let content = json.to_string(json_val)
   assert string.contains(content, "Gleam Expert")
@@ -64,10 +68,13 @@ pub fn read_unknown_skill_returns_error_test() {
     ),
   ]
   let t = librarian.librarian_tool(skills)
-  let args = json.object([#("name", json.string("nonexistent"))])
-  let args_json = json.to_string(args)
-  let assert Ok(dyn) = json.parse(from: args_json, using: decode.dynamic)
-  let result = t.handler(dyn)
+  let arguments_json =
+    json.to_string(json.object([#("name", json.string("nonexistent"))]))
+  let result =
+    execution.execute_tool(
+      tool.new_registry() |> tool.register(t),
+      message.ToolCall(id: "test", name: "read_skill", arguments_json:),
+    )
   let assert Error(tool.ToolError(message: msg)) = result
   assert string.contains(msg, "nonexistent")
 }

@@ -13,11 +13,11 @@ import pig/agent/msg
 import pig/agent/state
 import pig/agent/step_result
 import pig/agent/update
+import pig/provider
+import pig/tool
 import pig_protocol/error
 import pig_protocol/message
-import pig/provider
 import pig_protocol/tool_definition
-import pig/tool
 
 import gleam/list
 import gleam/string
@@ -295,7 +295,7 @@ fn echo_tool() -> tool.Tool {
       description: "Echoes back",
       parameters: schema.object([]),
     ),
-    handler: fn(_) { Error(tool.ToolError(message: "unused")) },
+    handler: fn(_, _) { Error(tool.ToolError(message: "unused")) },
   )
 }
 
@@ -306,6 +306,6 @@ fn failing_tool() -> tool.Tool {
       description: "Always fails",
       parameters: schema.object([]),
     ),
-    handler: fn(_) { Error(tool.ToolError(message: "tool exploded")) },
+    handler: fn(_, _) { Error(tool.ToolError(message: "tool exploded")) },
   )
 }

@@ -12,11 +12,11 @@ import gleam/int
 import gleam/json
 import gleam/list
 import jscheam/schema
+import pig/provider
+import pig/tool
 import pig_protocol/error
 import pig_protocol/message
-import pig/provider
 import pig_protocol/tool_definition
-import pig/tool
 
 // ── Public: test tools ───────────────────────────────────────────
 
@@ -28,7 +28,7 @@ pub fn echo_tool() -> tool.Tool {
       description: "Echoes back",
       parameters: schema.object([]),
     ),
-    handler: fn(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+    handler: fn(_, args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
       let assert Ok(msg) =
         decode.run(args, decode.field("msg", decode.string, decode.success))
       Ok(json.object([#("echo", json.string(msg))]))
@@ -44,7 +44,7 @@ pub fn failing_tool() -> tool.Tool {
       description: "Always fails",
       parameters: schema.object([]),
     ),
-    handler: fn(_) { Error(tool.ToolError(message: "tool exploded")) },
+    handler: fn(_, _) { Error(tool.ToolError(message: "tool exploded")) },
   )
 }
 

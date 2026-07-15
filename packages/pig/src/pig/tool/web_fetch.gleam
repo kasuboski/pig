@@ -15,8 +15,8 @@ import gleam/result
 import gleam/string
 import jscheam/schema
 import logging
-import pig_protocol/tool_definition
 import pig/tool
+import pig_protocol/tool_definition
 
 /// Create a `web_fetch` tool.
 ///
@@ -40,7 +40,10 @@ pub fn tool() -> tool.Tool {
 }
 
 /// Handler for the web_fetch tool.
-fn handle(args: dynamic.Dynamic) -> Result(json.Json, tool.ToolError) {
+fn handle(
+  _context: tool.ToolCallContext,
+  args: dynamic.Dynamic,
+) -> Result(json.Json, tool.ToolError) {
   use url <- result.try(
     decode.run(args, decode.field("url", decode.string, decode.success))
     |> result.map_error(fn(_) {

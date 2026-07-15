@@ -19,11 +19,11 @@ import pig/agent/msg
 import pig/agent/state
 import pig/agent/step_result
 import pig/agent/update
+import pig/provider
+import pig/tool
 import pig_protocol/error
 import pig_protocol/message
-import pig/provider
 import pig_protocol/tool_definition
-import pig/tool
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -111,7 +111,7 @@ pub fn user_prompt_call_provider_includes_tools_test() {
       parameters: schema.object([]),
     )
   let t =
-    tool.Tool(definition: td, handler: fn(_) {
+    tool.Tool(definition: td, handler: fn(_, _) {
       Error(tool.ToolError(message: "unused"))
     })
   let st = state_for_update([t])

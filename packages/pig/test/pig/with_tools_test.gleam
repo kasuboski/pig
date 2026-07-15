@@ -1,8 +1,8 @@
 import gleeunit
 import jscheam/schema
 import pig
-import pig_protocol/tool_definition
 import pig/tool
+import pig_protocol/tool_definition
 
 pub fn main() {
   gleeunit.main()
@@ -15,7 +15,7 @@ fn dummy_tool(name: String) -> tool.Tool {
       description: "test",
       parameters: schema.object([]),
     ),
-    handler: fn(_) { Error(tool.ToolError(message: "test")) },
+    handler: fn(_, _) { Error(tool.ToolError(message: "test")) },
   )
 }
 
