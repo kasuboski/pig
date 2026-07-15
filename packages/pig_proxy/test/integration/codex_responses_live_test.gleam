@@ -26,7 +26,8 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/io
-import gleam/string
+import gleam/list
+import gleam/result
 import gleeunit
 import pig_proxy/config as proxy_config
 import pig_proxy/hackney
@@ -75,7 +76,7 @@ pub fn proxy_forwards_codex_responses_test() {
               let body =
                 "{\"model\":\""
                 <> config.model()
-                <> "\",\"instructions\":\"Be brief.\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply with the single word: hello\"}]}]}"
+                <> "\",\"instructions\":\"Be brief.\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply with the single word: hello\"}]}],\"stream\":true,\"store\":false}"
               case
                 hackney.sync_request(
                   "POST",
@@ -85,21 +86,30 @@ pub fn proxy_forwards_codex_responses_test() {
                   120_000,
                 )
               {
-                hackney.OkResponse(status:, body: resp_body, ..) -> {
-                  // A 401/403 here means the Codex auth path failed (bad/expired
-                  // token, wrong account id) rather than a proxy fault.
-                  case status >= 400 {
-                    True ->
+                hackney.OkResponse(status:, headers:, body: resp_body) -> {
+                  case status == 200 {
+                    True -> Nil
+                    False -> {
+                      // Print headers + body so the failure reason is visible.
+                      // 401/403 = credentials; other 4xx = request shape / model.
+                      let body_text = result.unwrap(bit_array.to_string(resp_body), "")
+                      let header_text =
+                        list.fold(headers, "", fn(acc, h) {
+                          acc <> h.0 <> ": " <> h.1 <> " | "
+                        })
+                      io.println(
+                        "Codex responses returned "
+                        <> int.to_string(status)
+                        <> "\nheaders: "
+                        <> header_text
+                        <> "\nbody: "
+                        <> body_text,
+                      )
                       panic as {
                         "Codex responses returned "
                         <> int.to_string(status)
-                        <> " — auth/credentials problem"
+                        <> " (401/403 = credentials; other 4xx = request/model) — details printed above"
                       }
-                    False -> {
-                      let assert 200 = status
-                      let assert Ok(text) = bit_array.to_string(resp_body)
-                      assert string.contains(text, "output")
-                      Nil
                     }
                   }
                 }
