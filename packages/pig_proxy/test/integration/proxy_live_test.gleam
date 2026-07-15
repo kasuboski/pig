@@ -18,6 +18,7 @@
 
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleeunit
 import pig_proxy/config as proxy_config
 import pig_proxy/hackney
@@ -35,39 +36,48 @@ pub fn main() -> Nil {
 pub fn proxy_forwards_chat_completion_test() {
   case gate.skip_unless_enabled() {
     True -> Nil
-    False -> {
-      let cfg =
-        proxy_config.from_env()
-        |> proxy_config.with_port(config.base_port() + 1)
-      let state = runtime.start(cfg)
-      server.start(state)
-      // Let the listener bind.
-      process.sleep(1000)
-
-      let url =
-        "http://localhost:"
-        <> int.to_string(cfg.port)
-        <> "/v1/chat/completions"
-      let body =
-        "{\"model\":\""
-        <> config.model()
-        <> "\",\"messages\":[{\"role\":\"user\",\"content\":\"Say exactly: hello\"}]}"
-      case
-        hackney.sync_request(
-          "POST",
-          url,
-          [#("content-type", "application/json")],
-          body,
-          120_000,
-        )
-      {
-        hackney.OkResponse(status:, ..) -> {
-          let assert 200 = status
+    False ->
+      case config.is_codex() {
+        True -> {
+          io.println(
+            "[SKIP] chat forwarding test: Codex mode (OPENAI_COMPAT_CODEX) — run the codex responses test instead.",
+          )
           Nil
         }
-        hackney.ErrorResponse(reason:) ->
-          panic as { "upstream/transport error: " <> reason }
+        False -> {
+          let cfg =
+            proxy_config.from_env()
+            |> proxy_config.with_port(config.base_port() + 1)
+          let state = runtime.start(cfg)
+          server.start(state)
+          // Let the listener bind.
+          process.sleep(1000)
+
+          let url =
+            "http://localhost:"
+            <> int.to_string(cfg.port)
+            <> "/v1/chat/completions"
+          let body =
+            "{\"model\":\""
+            <> config.model()
+            <> "\",\"messages\":[{\"role\":\"user\",\"content\":\"Say exactly: hello\"}]}"
+          case
+            hackney.sync_request(
+              "POST",
+              url,
+              [#("content-type", "application/json")],
+              body,
+              120_000,
+            )
+          {
+            hackney.OkResponse(status:, ..) -> {
+              let assert 200 = status
+              Nil
+            }
+            hackney.ErrorResponse(reason:) ->
+              panic as { "upstream/transport error: " <> reason }
+          }
+        }
       }
-    }
   }
 }
