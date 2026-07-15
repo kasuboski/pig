@@ -1,13 +1,21 @@
 //// Interactive Codex (ChatGPT) OAuth login for pig_proxy.
 ////
-//// Runs the same PKCE + local callback flow as the Codex CLI: prints an
-//// authorization URL to open in a browser, waits for the OAuth callback
-//// on `127.0.0.1:1455`, exchanges the authorization code for tokens, and
-//// persists the result via `pig_proxy/codex_credentials` so pig_proxy can
-//// use and refresh them without depending on the Codex CLI.
+//// Runs the PKCE authorization-code flow the Codex CLI uses, with two ways
+//// to receive the authorization code:
+////   - default (local): a callback server on 127.0.0.1:1455 that the browser
+////     redirects to automatically;
+////   - manual (PIG_CODEX_LOGIN_MANUAL=1): for remote/headless hosts where the
+////     browser can't reach localhost — you paste the redirect URL after
+////     authorizing, and the code is parsed + exchanged here.
 ////
-//// Run with: `gleam run -m pig_proxy/codex_login`
+//// Either way the code is exchanged for tokens and persisted via
+//// `pig_proxy/codex_credentials`, so pig_proxy can use and refresh them
+//// without depending on the Codex CLI.
+////
+//// Run with: `mise run codex-login` (or `gleam run -m pig_proxy/codex_login`
+//// from `packages/pig_proxy`). Add `PIG_CODEX_LOGIN_MANUAL=1` for the paste flow.
 
+import envoy
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
@@ -18,12 +26,25 @@ import gleam/int
 import gleam/io
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import mist
 import pig_protocol/auth
 import pig_protocol/oauth/codex as codex_oauth
 import pig_proxy/codex_credentials.{type CodexCredentials, CodexCredentials}
 import pig_proxy/hackney
 import pig_proxy/telemetry
+
+@external(erlang, "pig_proxy_io_ffi", "read_line")
+fn read_line(prompt: String) -> String
+
+/// Select the manual paste flow (for remote/headless hosts).
+fn is_manual() -> Bool {
+  case envoy.get("PIG_CODEX_LOGIN_MANUAL") {
+    Ok("1") -> True
+    Ok("true") -> True
+    _ -> False
+  }
+}
 
 const originator = "pig"
 
@@ -38,31 +59,90 @@ pub fn main() -> Nil {
   let pkce = codex_oauth.generate_pkce()
   let state = codex_oauth.generate_state()
   let redirect_uri = codex_oauth.default_redirect_uri
+  let verifier = codex_oauth.verifier(pkce)
   let url = codex_oauth.authorize_url(pkce, state, redirect_uri, originator)
 
+  case is_manual() {
+    True -> run_manual(url, state, verifier, redirect_uri)
+    False -> run_callback(url, state, verifier, redirect_uri)
+  }
+  Nil
+}
+
+/// Local callback flow: the browser redirect hits 127.0.0.1:1455 automatically.
+fn run_callback(
+  url: String,
+  state: String,
+  verifier: String,
+  redirect_uri: String,
+) -> Nil {
   let subject = process.new_subject()
   case start_callback_server(subject, state) {
     Ok(_) -> {
       io.println(
         "Open this URL in your browser to log in to Codex:\n\n" <> url <> "\n",
       )
-      io.println("Waiting for the browser callback on " <> redirect_uri <> " ...")
+      io.println(
+        "Waiting for the browser callback on "
+        <> redirect_uri
+        <> " ...\n"
+        <> "  On a remote/headless host the browser can't reach this callback.\n"
+        <> "  Re-run with PIG_CODEX_LOGIN_MANUAL=1 to paste the redirect URL\n"
+        <> "  instead (no port/tunnel needed).",
+      )
 
       case process.receive(subject, callback_wait_ms) {
         Error(_) -> io.println_error("Timed out waiting for the OAuth callback.")
         Ok(CallbackError(reason)) ->
           io.println_error("Login failed: " <> reason)
-        Ok(CallbackOk(code)) ->
-          finish_login(code, codex_oauth.verifier(pkce), redirect_uri)
+        Ok(CallbackOk(code)) -> finish_login(code, verifier, redirect_uri)
       }
     }
     Error(_) ->
       io.println_error(
         "Failed to start the OAuth callback server on 127.0.0.1:1455"
-          <> " — is the port already in use?",
+          <> " — is the port already in use? Set PIG_CODEX_LOGIN_MANUAL=1 for the paste flow.",
       )
   }
-  Nil
+}
+
+/// Manual paste flow: for remote/headless hosts where the browser can't reach
+/// `localhost:1455`. The user authorizes in their browser, copies the
+/// resulting redirect URL (which won't load), and pastes it here; the code is
+/// parsed out (reusing `parse_callback_query`) and exchanged.
+fn run_manual(
+  url: String,
+  state: String,
+  verifier: String,
+  redirect_uri: String,
+) -> Nil {
+  io.println(
+    "Open this URL in your browser to log in to Codex:\n\n" <> url <> "\n",
+  )
+  io.println(
+    "Manual mode. After you authorize, your browser is redirected to\n"
+      <> redirect_uri
+      <> "?code=... — that page will NOT load (expected on a remote host).\n"
+      <> "Copy the ENTIRE URL from the browser address bar and paste it below.",
+  )
+  let pasted = read_line("\nPaste the redirect URL here: ") |> string.trim
+  case string.split_once(pasted, "?") {
+    Error(_) ->
+      io.println_error(
+        "That URL has no query — paste the full redirect URL including the '?code=...'.",
+      )
+    Ok(#(_, query)) ->
+      case codex_oauth.parse_callback_query(query) {
+        Error(Nil) ->
+          io.println_error("Could not find code/state in the URL's query.")
+        Ok(#(code, cb_state)) ->
+          case cb_state == state {
+            False ->
+              io.println_error("Login failed: state mismatch (restart the login).")
+            True -> finish_login(code, verifier, redirect_uri)
+          }
+      }
+  }
 }
 
 fn finish_login(code: String, verifier: String, redirect_uri: String) -> Nil {

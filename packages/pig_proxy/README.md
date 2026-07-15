@@ -120,6 +120,22 @@ extracts the `chatgpt_account_id` from the JWT, and persists the credential
 pair to `~/.pig/codex_auth.json` (override the path with
 `PIG_CODEX_AUTH_PATH`).
 
+#### Remote / headless hosts
+
+The default flow needs the browser to reach `127.0.0.1:1455` on the host
+running the login — which fails when pig_proxy runs on a remote server and
+your browser is local. Use the manual paste flow instead (no tunnel/port):
+
+```sh
+PIG_CODEX_LOGIN_MANUAL=1 mise run codex-login
+```
+
+Open the printed URL in your local browser and authorize; you'll be redirected
+to `http://localhost:1455/auth/callback?code=...` which won't load (expected).
+Copy the **entire** URL from the address bar and paste it at the prompt — the
+code is parsed and exchanged. (Alternatively, forward the port with
+`ssh -L 1455:127.0.0.1:1455 <remote-host>` and use the default flow.)
+
 ### Starting the proxy
 
 ```sh
