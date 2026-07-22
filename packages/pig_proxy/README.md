@@ -18,7 +18,15 @@ ecosystem. `pig_proxy` sits between your agents and an OpenAI-compatible upstrea
 
 ## Installation
 
-`pig_proxy` is built and run from within this monorepo. From the repo root:
+Build or run the proxy directly from this repository's flake:
+
+```sh
+nix build github:kasuboski/pig#pig-proxy
+nix run github:kasuboski/pig#pig-proxy
+```
+
+For development, `pig_proxy` can also be built and run from within this
+monorepo. From the repo root:
 
 ```sh
 mise install
@@ -42,7 +50,7 @@ cd packages/pig_proxy
 gleam run
 ```
 
-This starts the server on `:8080` (default) forwarding to
+This starts the server on `127.0.0.1:8080` (default) forwarding to
 `http://localhost:11434/v1` with an `ollama` placeholder key — no configuration
 needed for local development.
 
@@ -51,6 +59,7 @@ Point it at a real OpenAI-compatible provider instead:
 ```sh
 export OPENAI_COMPAT_BASE_URL="https://api.openai.com/v1"
 export OPENAI_COMPAT_API_KEY="sk-..."
+export PIG_PROXY_BIND=127.0.0.1
 export PIG_PROXY_PORT=8080
 gleam run
 ```
@@ -73,6 +82,7 @@ always injects its own configured credential upstream.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `PIG_PROXY_BIND` | `127.0.0.1` | Address the proxy listens on. |
 | `PIG_PROXY_PORT` | `8080` | Port the proxy listens on. |
 | `OPENAI_COMPAT_BASE_URL` | `http://localhost:11434/v1` | Upstream base URL, including `/v1`. |
 | `OPENAI_COMPAT_API_KEY` | `ollama` | Key injected as `Authorization: Bearer <key>` on every forwarded request (ignored when the target is Codex OAuth). |
@@ -186,6 +196,120 @@ gleam run
 
 Treat the JWT like a password — anyone holding it can act as your ChatGPT
 account. Never commit it or log it.
+
+## Nix package and NixOS service
+
+### Standalone package
+
+The flake exposes the proxy package and both executable entry points:
+
+```sh
+nix build github:kasuboski/pig#pig-proxy
+nix run github:kasuboski/pig#pig-proxy
+nix run github:kasuboski/pig#pig-proxy-login
+```
+
+The login executable defaults to the NixOS service credential path,
+`/var/lib/pig-proxy/codex_auth.json`. For a standalone per-user installation,
+select a writable path explicitly:
+
+```sh
+PIG_CODEX_AUTH_PATH="$HOME/.pig/codex_auth.json" \
+  nix run github:kasuboski/pig#pig-proxy-login
+```
+
+### NixOS module
+
+Import the flake module and enable the service:
+
+```nix
+{
+  inputs.pig.url = "github:kasuboski/pig";
+
+  outputs = { nixpkgs, pig, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        pig.nixosModules.pig-proxy
+        {
+          services.pig-proxy = {
+            enable = true;
+            codex = true;
+            upstreamBaseUrl = "https://chatgpt.com/backend-api/codex";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The module runs as the `pig-proxy` system user and stores rotating Codex
+credentials at `<stateDirectory>/codex_auth.json`. With the default
+`stateDirectory`, this is `/var/lib/pig-proxy/codex_auth.json`. After activating
+the service, log in with the packaged device-code flow:
+
+```sh
+sudo systemctl stop pig-proxy
+sudo -u pig-proxy pig-proxy-login
+sudo systemctl start pig-proxy
+```
+
+The login helper installed by the module follows its configured
+`stateDirectory`, so no environment variable is needed even when it is
+customized. Outside the NixOS service, the package-level executable defaults to
+`/var/lib/pig-proxy/codex_auth.json`; override `PIG_CODEX_AUTH_PATH` when a
+per-user path is preferred.
+
+Static API keys must be supplied through a runtime environment file rather
+than a Nix string, which would expose the secret in the Nix store:
+
+```nix
+services.pig-proxy.environmentFile = "/run/secrets/pig-proxy.env";
+```
+
+The file uses systemd environment syntax, for example
+`OPENAI_COMPAT_API_KEY=sk-...`. It can be provisioned by sops-nix, agenix, or
+another secret manager.
+
+Common module options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `services.pig-proxy.stateDirectory` | `/var/lib/pig-proxy` | Persistent credentials and service state. |
+| `services.pig-proxy.bind` | `127.0.0.1` | Listening address. |
+| `services.pig-proxy.port` | `8080` | Listening port. |
+| `services.pig-proxy.upstreamBaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible upstream URL. |
+| `services.pig-proxy.provider` | `null` | Optional models.dev provider key for cost metrics. |
+| `services.pig-proxy.codex` | `false` | Enable persisted ChatGPT/Codex OAuth credentials. |
+| `services.pig-proxy.retriesPerTarget` | `1` | Additional attempts per upstream target before fallback. |
+| `services.pig-proxy.modelsDevUrl` | `https://models.dev/api.json` | Model and pricing catalog URL. |
+| `services.pig-proxy.modelsRefreshMs` | `3600000` | Catalog refresh interval in milliseconds. |
+| `services.pig-proxy.environmentFile` | `null` | Runtime secrets file outside the Nix store. |
+| `services.pig-proxy.openFirewall` | `false` | Open the configured TCP port. |
+
+`stateDirectory` accepts any absolute path. The module creates it with mode
+`0700`, grants the hardened service write access, and uses it for credentials,
+the service user's home, and the packaged login command. It can point directly
+at persistent storage:
+
+```nix
+services.pig-proxy.stateDirectory = "/persist/pig-proxy";
+```
+
+Alternatively, an impermanence configuration can consume the default path as
+the single value to persist:
+
+```nix
+environment.persistence."/persist".directories = [
+  {
+    directory = config.services.pig-proxy.stateDirectory;
+    user = "pig-proxy";
+    group = "pig-proxy";
+    mode = "0700";
+  }
+];
+```
 
 ## Programmatic configuration
 

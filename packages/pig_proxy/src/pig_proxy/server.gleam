@@ -64,12 +64,16 @@ pub fn start(state: ServerState) -> Nil {
   let assert Ok(_) =
     handler
     |> mist.new
+    |> mist.bind(state.config.bind)
     |> mist.port(state.config.port)
     |> mist.start
 
   logging.log(
     logging.Info,
-    "pig_proxy listening on :" <> int.to_string(state.config.port),
+    "pig_proxy listening on "
+      <> state.config.bind
+      <> ":"
+      <> int.to_string(state.config.port),
   )
 }
 
