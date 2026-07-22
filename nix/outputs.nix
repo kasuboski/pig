@@ -4,12 +4,14 @@
   nix-gleam,
   ...
 }: let
+  defaults = import ./defaults.nix;
   forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
 in {
   packages = forAllSystems (
     system: let
       pig-proxy = nixpkgs.legacyPackages.${system}.callPackage ./pig-proxy.nix {
         inherit (nix-gleam.packages.${system}) buildGleamApplication;
+        serviceStateDirectory = defaults.stateDirectory;
       };
     in {
       inherit pig-proxy;
@@ -50,7 +52,19 @@ in {
           }
         ];
       };
-      moduleCheck = assert moduleConfig.config.systemd.services.pig-proxy.environment.PIG_CODEX_AUTH_PATH
+      defaultModuleConfig = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          self.nixosModules.pig-proxy
+          {
+            system.stateVersion = "26.05";
+            services.pig-proxy.enable = true;
+          }
+        ];
+      };
+      moduleCheck = assert toString defaultModuleConfig.config.services.pig-proxy.stateDirectory
+      == defaults.stateDirectory;
+      assert moduleConfig.config.systemd.services.pig-proxy.environment.PIG_CODEX_AUTH_PATH
       == "/persist/pig-proxy/codex_auth.json";
       assert moduleConfig.config.systemd.services.pig-proxy.serviceConfig.ReadWritePaths
       == ["/persist/pig-proxy"];
@@ -83,6 +97,7 @@ in {
       ...
     }: {
       imports = [./modules/pig-proxy.nix];
+      _module.args.pigProxyDefaults = defaults;
       services.pig-proxy.package =
         lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.pig-proxy;
     };

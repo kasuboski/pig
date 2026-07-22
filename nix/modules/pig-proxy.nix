@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  pigProxyDefaults,
   ...
 }: let
   cfg = config.services.pig-proxy;
@@ -28,7 +29,7 @@ in {
 
     stateDirectory = lib.mkOption {
       type = lib.types.path;
-      default = "/var/lib/pig-proxy";
+      default = pigProxyDefaults.stateDirectory;
       description = ''
         Persistent state directory containing rotating Codex credentials.
         The directory is created with owner-only permissions and may be any

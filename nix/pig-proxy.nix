@@ -3,9 +3,10 @@
   buildGleamApplication,
   beamMinimalPackages,
   runtimeShell,
+  serviceStateDirectory,
 }: let
   erlangPackage = beamMinimalPackages.erlang;
-  serviceCredentialsPath = "/var/lib/pig-proxy/codex_auth.json";
+  serviceCredentialsPath = "${serviceStateDirectory}/codex_auth.json";
 in
   buildGleamApplication {
     src = ../packages/pig_proxy;

@@ -280,7 +280,11 @@ Common module options:
 | `services.pig-proxy.bind` | `127.0.0.1` | Listening address. |
 | `services.pig-proxy.port` | `8080` | Listening port. |
 | `services.pig-proxy.upstreamBaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible upstream URL. |
+| `services.pig-proxy.provider` | `null` | Optional models.dev provider key for cost metrics. |
 | `services.pig-proxy.codex` | `false` | Enable persisted ChatGPT/Codex OAuth credentials. |
+| `services.pig-proxy.retriesPerTarget` | `1` | Additional attempts per upstream target before fallback. |
+| `services.pig-proxy.modelsDevUrl` | `https://models.dev/api.json` | Model and pricing catalog URL. |
+| `services.pig-proxy.modelsRefreshMs` | `3600000` | Catalog refresh interval in milliseconds. |
 | `services.pig-proxy.environmentFile` | `null` | Runtime secrets file outside the Nix store. |
 | `services.pig-proxy.openFirewall` | `false` | Open the configured TCP port. |
 
