@@ -49,6 +49,7 @@ pub type UpstreamTarget {
 pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
+    bind: String,
     port: Int,
     /// Per-Target Retry Budget: additional attempts per upstream target
     /// before moving to the next fallback. Resets per target.
@@ -69,6 +70,10 @@ pub type ProxyConfig {
   )
 }
 
+/// Bind only to the local machine by default; callers can opt into network
+/// access explicitly with `with_bind` or `PIG_PROXY_BIND`.
+pub const default_bind = "127.0.0.1"
+
 /// Defaults matching the project's local ollama setup.
 pub const default_port = 8080
 
@@ -86,6 +91,7 @@ pub const default_models_refresh_ms = 3600_000
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
+    bind: default_bind,
     port: default_port,
     retries_per_target: default_retries_per_target,
     circuit_threshold: default_circuit_threshold,
@@ -94,6 +100,11 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
     models_refresh_ms: default_models_refresh_ms,
     codex_seed_token: None,
   )
+}
+
+/// Set the HTTP bind address.
+pub fn with_bind(config: ProxyConfig, bind: String) -> ProxyConfig {
+  ProxyConfig(..config, bind:)
 }
 
 /// Set the listening port.
@@ -216,6 +227,7 @@ pub fn provider_string(target: UpstreamTarget) -> String {
 /// Load a config from environment variables, falling back to defaults.
 ///
 /// Reads:
+///   PIG_PROXY_BIND                  — HTTP bind address (default 127.0.0.1)
 ///   PIG_PROXY_PORT                  — listening port (default 8080)
 ///   PIG_PROXY_RETRIES_PER_TARGET    — Per-Target Retry Budget (default 1)
 ///   OPENAI_COMPAT_BASE_URL          — upstream base URL
@@ -237,6 +249,7 @@ pub fn from_env() -> ProxyConfig {
     |> maybe_with_provider(provider_env())
 
   new([target])
+  |> with_bind(bind_env())
   |> with_port(port_env())
   |> with_retries_per_target(retries_per_target_env())
   |> with_models_dev_url(models_dev_url_env())
@@ -267,6 +280,11 @@ fn codex_env() -> Bool {
     Ok("1") -> True
     _ -> False
   }
+}
+
+fn bind_env() -> String {
+  envoy.get("PIG_PROXY_BIND")
+  |> result.unwrap(default_bind)
 }
 
 fn port_env() -> Int {
