@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}
@@ -511,7 +512,8 @@ pub fn decode_preserves_inference_exception_error_type_test() {
 pub fn to_dispatcher_sends_event_to_dispatcher_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
   let event =
     InferenceStarted(
@@ -535,7 +537,8 @@ pub fn to_dispatcher_triggers_telemetry_test() {
   let handle = listener.attach()
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
   let event =
     InferenceStarted(
@@ -560,7 +563,8 @@ pub fn to_dispatcher_triggers_telemetry_test() {
 pub fn to_dispatcher_sends_all_variants_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
   // Send multiple events and verify they're all received
   emit.to_dispatcher(

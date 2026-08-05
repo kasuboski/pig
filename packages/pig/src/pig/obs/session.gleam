@@ -14,6 +14,7 @@ import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import pig/obs/consumer_spec
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
   AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
@@ -54,7 +55,7 @@ pub opaque type SessionWriter {
 type WriterMessage {
   WriteEvent(SessionEvent)
   WriteEventSync(event: SessionEvent, reply_subject: Subject(Nil))
-  Stop
+  WriterStop
 }
 
 /// Actor state holds the file path.
@@ -78,7 +79,7 @@ pub fn start(path: String) -> Result(SessionWriter, StartError) {
 /// Stop the session writer actor.
 pub fn stop(writer: SessionWriter) -> Nil {
   let SessionWriter(subject) = writer
-  process.send(subject, Stop)
+  process.send(subject, WriterStop)
 }
 
 /// Record a session event. Fire-and-forget: does not block.
@@ -370,20 +371,41 @@ pub fn decode_tool_call() -> dynamic_decode.Decoder(ToolCall) {
   dynamic_decode.success(ToolCall(id:, name:, arguments_json:))
 }
 
-/// Start a session consumer actor that accepts SessionEvent directly.
-/// Used by the dispatcher to fan out events. Returns the Subject for registration.
-/// This is the consumer version of the actor — it receives SessionEvent directly,
-/// not WriterMessage wrappers. Fire-and-forget: does not block.
+/// Messages owned by the unsupervised session consumer.
+type ConsumerMessage {
+  Consume(SessionEvent)
+  Stop(Subject(Nil))
+}
+
+/// Start a managed session consumer and return its owned endpoint.
 pub fn start_consumer(
   path: String,
-) -> Result(Subject(SessionEvent), StartError) {
+) -> Result(consumer_spec.StartedConsumer, StartError) {
   let builder =
     actor.new(State(path: path))
-    |> actor.on_message(handle_consumer_message)
+    |> actor.on_message(handle_managed_message)
   case actor.start(builder) {
-    Ok(started) -> Ok(started.data)
+    Ok(started) -> {
+      let subject = started.data
+      Ok(
+        consumer_spec.started(
+          fn(event) { process.send(subject, Consume(event)) },
+          fn() {
+            let reply_subject = process.new_subject()
+            process.send(subject, Stop(reply_subject))
+            let _ = process.receive(reply_subject, 5000)
+            Nil
+          },
+        ),
+      )
+    }
     Error(e) -> Error(e)
   }
+}
+
+/// Stop a managed session consumer via its typed `Stop` message.
+pub fn stop_consumer(consumer: consumer_spec.StartedConsumer) -> Nil {
+  consumer_spec.stop(consumer)
 }
 
 /// Create a supervised session consumer actor for use in a supervision tree.
@@ -621,14 +643,33 @@ fn handle_message(
       process.send(reply_subject, Nil)
       actor.continue(state)
     }
-    Stop -> {
+    WriterStop -> {
       actor.stop()
     }
   }
 }
 
-/// Handle consumer messages (SessionEvent directly, not wrapped in WriterMessage).
-/// Used by the supervised consumer actor that receives events from the dispatcher.
+/// Handle consumer messages owned by the unsupervised actor.
+fn handle_managed_message(
+  state: State,
+  message: ConsumerMessage,
+) -> actor.Next(State, ConsumerMessage) {
+  case message {
+    Consume(event) -> {
+      let json_str = format_event(event)
+      case simplifile.append(state.path, json_str <> "\n") {
+        Ok(_) -> actor.continue(state)
+        Error(_) -> actor.stop()
+      }
+    }
+    Stop(reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.stop()
+    }
+  }
+}
+
+/// Handle events for the supervised actor. Its supervisor owns shutdown.
 fn handle_consumer_message(
   state: State,
   event: SessionEvent,
@@ -636,11 +677,7 @@ fn handle_consumer_message(
   let json_str = format_event(event)
   case simplifile.append(state.path, json_str <> "\n") {
     Ok(_) -> actor.continue(state)
-    Error(_) -> {
-      // Stop on write failure so the supervisor can restart the consumer.
-      // Silently continuing would lose events without any signal.
-      actor.stop()
-    }
+    Error(_) -> actor.stop()
   }
 }
 

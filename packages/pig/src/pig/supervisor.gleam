@@ -101,13 +101,15 @@ fn start_with_runtime(
   // Build event subtree: dispatcher + consumers.
   // OneForAll ensures that if either side restarts, the named subjects still
   // point at the reconstructed consumers and dispatcher.
-  let consumer_subjects =
-    list.map(consumer_specs, fn(entry) { process.named_subject(entry.name) })
+  let consumer_endpoints =
+    list.map(consumer_specs, fn(entry) {
+      consumer_spec.supervised_endpoint(entry.name)
+    })
   let event_tree =
     static_supervisor.new(static_supervisor.OneForAll)
     |> static_supervisor.add(dispatcher.supervised_with_consumers(
       dispatcher_name,
-      consumer_subjects,
+      consumer_endpoints,
     ))
     |> list.fold(consumer_specs, _, fn(builder, entry) {
       static_supervisor.add(builder, entry.spec)

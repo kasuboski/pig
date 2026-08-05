@@ -18,7 +18,6 @@ import pig/agent/state
 import pig/hooks.{type Hooks}
 import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher
-import pig/obs/events
 import pig/obs/session
 import pig/obs/terminal
 import pig/provider.{
@@ -51,7 +50,11 @@ type LoadedSession {
 
 /// Opaque handle to a running agent actor.
 pub opaque type Agent {
-  Agent(subject: Subject(runtime.RuntimeMsg))
+  Agent(
+    subject: Subject(runtime.RuntimeMsg),
+    dispatcher: Subject(dispatcher.DispatcherMessage),
+    consumers: List(consumer_spec.StartedConsumer),
+  )
 }
 
 /// Errors that can prevent an agent from starting.
@@ -311,15 +314,35 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
 
 fn register_consumers(
   dispatcher_subject: process.Subject(dispatcher.DispatcherMessage),
-  consumer_subjects: List(process.Subject(events.SessionEvent)),
+  consumers: List(consumer_spec.StartedConsumer),
 ) -> Result(Nil, dispatcher.RegistrationError) {
-  list.fold(consumer_subjects, Ok(Nil), fn(result, consumer_subject) {
+  list.fold(consumers, Ok(Nil), fn(result, consumer) {
     case result {
       Error(error) -> Error(error)
-      Ok(Nil) ->
-        dispatcher.register_consumer(dispatcher_subject, consumer_subject)
+      Ok(Nil) -> dispatcher.register_consumer(dispatcher_subject, consumer)
     }
   })
+}
+
+fn stop_consumers(consumers: List(consumer_spec.StartedConsumer)) -> Nil {
+  list.each(consumers, consumer_spec.stop)
+}
+
+fn start_consumers(
+  specs: List(ConsumerSpec),
+  started: List(consumer_spec.StartedConsumer),
+) -> Result(List(consumer_spec.StartedConsumer), ActorStartError) {
+  case specs {
+    [] -> Ok(list.reverse(started))
+    [spec, ..rest] ->
+      case spec.start_fn() {
+        Ok(consumer) -> start_consumers(rest, [consumer, ..started])
+        Error(error) -> {
+          stop_consumers(started)
+          Error(error)
+        }
+      }
+  }
 }
 
 fn start_with_session(
@@ -331,33 +354,18 @@ fn start_with_session(
   // Start dispatcher
   case dispatcher.start() {
     Ok(dispatcher_subject) -> {
-      // Try to start all consumers
-      let consumer_results =
-        list.map(config.consumer_specs, fn(entry) { entry.start_fn() })
-
-      // Check if any consumer failed to start
-      let failed =
-        list.find(consumer_results, fn(r) {
-          case r {
-            Error(_) -> True
-            Ok(_) -> False
-          }
-        })
-
-      case failed {
-        Ok(Error(e)) -> {
-          // A consumer failed — shut down dispatcher
+      // Start consumers left-to-right. This short-circuits on the first
+      // failure, so later specifications are never started.
+      case start_consumers(config.consumer_specs, []) {
+        Error(e) -> {
           process.send(dispatcher_subject, dispatcher.Stop)
           Error(ActorStart(e))
         }
-        _ -> {
-          // All consumers started OK — synchronously register them before
-          // the agent can emit any events.
-          let consumer_subjects = list.filter_map(consumer_results, fn(r) { r })
-          case register_consumers(dispatcher_subject, consumer_subjects) {
+        Ok(consumers) -> {
+          // Register them synchronously before the agent can emit events.
+          case register_consumers(dispatcher_subject, consumers) {
             Error(error) -> {
-              // Registration failed — shut down the dispatcher before
-              // returning a typed startup error.
+              stop_consumers(consumers)
               process.send(dispatcher_subject, dispatcher.Stop)
               Error(ConsumerRegistration(error))
             }
@@ -435,9 +443,14 @@ fn start_with_session(
                   inference_settings: initial_settings,
                 )
               case runtime.start_with_state(runtime_config, rt_state) {
-                Ok(subject) -> Ok(Agent(subject))
+                Ok(subject) ->
+                  Ok(Agent(
+                    subject: subject,
+                    dispatcher: dispatcher_subject,
+                    consumers: consumers,
+                  ))
                 Error(e) -> {
-                  // Runtime failed — shut down consumers and dispatcher
+                  stop_consumers(consumers)
                   process.send(dispatcher_subject, dispatcher.Stop)
                   Error(ActorStart(e))
                 }
@@ -545,9 +558,11 @@ pub fn reset_inference_settings(agent: Agent) -> Result(Nil, RunError) {
   set_inference_settings(agent, default_settings())
 }
 
-/// Stop the agent actor.
+/// Stop the agent actor and all unsupervised children owned by it.
 pub fn stop(agent: Agent) -> Nil {
   runtime.stop(agent.subject)
+  stop_consumers(agent.consumers)
+  process.send(agent.dispatcher, dispatcher.Stop)
 }
 
 /// Get the agent's current conversation history (all messages).

@@ -4,7 +4,7 @@
 //// 1. Receives `Event(SessionEvent)` messages
 //// 2. Calls `emit_telemetry(event)` — projects lightweight metrics to `:telemetry` (ALWAYS, by construction)
 //// 3. Fans out the full event to registered consumers (fire-and-forget `process.send`)
-//// 4. Accepts `RegisterConsumer(Subject(SessionEvent))` to dynamically add consumers
+//// 4. Accepts `RegisterConsumer(StartedConsumer)` to dynamically add consumers
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
+import pig/obs/consumer_spec
 import pig/obs/events.{
   type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
   InferenceStarted, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
@@ -38,9 +39,9 @@ pub type DispatcherMessage {
   /// A session event to dispatch to consumers and telemetry.
   Event(SessionEvent)
   /// Register a new consumer to receive session events.
-  RegisterConsumer(Subject(SessionEvent))
+  RegisterConsumer(consumer_spec.StartedConsumer)
   /// Register a consumer and acknowledge it after it is installed.
-  RegisterConsumerSync(Subject(SessionEvent), Subject(Nil))
+  RegisterConsumerSync(consumer_spec.StartedConsumer, Subject(Nil))
   /// Stop the dispatcher actor (for testing/cleanup).
   Stop
 }
@@ -49,7 +50,7 @@ pub type DispatcherMessage {
 
 /// Internal state for the dispatcher actor.
 type State {
-  State(consumers: List(Subject(SessionEvent)))
+  State(consumers: List(consumer_spec.StartedConsumer))
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -71,7 +72,7 @@ pub fn start() -> Result(Subject(DispatcherMessage), StartError) {
 /// Returns a typed error if the dispatcher does not acknowledge registration.
 pub fn register_consumer(
   dispatcher: Subject(DispatcherMessage),
-  consumer: Subject(SessionEvent),
+  consumer: consumer_spec.StartedConsumer,
 ) -> Result(Nil, RegistrationError) {
   register_consumer_with_timeout(dispatcher, consumer, 5000)
 }
@@ -82,7 +83,7 @@ pub fn register_consumer(
 /// deterministic tests; successful registration remains synchronous.
 pub fn register_consumer_with_timeout(
   dispatcher: Subject(DispatcherMessage),
-  consumer: Subject(SessionEvent),
+  consumer: consumer_spec.StartedConsumer,
   timeout_ms: Int,
 ) -> Result(Nil, RegistrationError) {
   let reply_subject = process.new_subject()
@@ -96,7 +97,7 @@ pub fn register_consumer_with_timeout(
 /// Synchronous alias for `register_consumer`.
 pub fn register_consumer_sync(
   dispatcher: Subject(DispatcherMessage),
-  consumer: Subject(SessionEvent),
+  consumer: consumer_spec.StartedConsumer,
 ) -> Result(Nil, RegistrationError) {
   register_consumer(dispatcher, consumer)
 }
@@ -114,7 +115,7 @@ pub fn supervised(
 /// OneForAll restart cannot lose the consumer registrations.
 pub fn supervised_with_consumers(
   name: process.Name(DispatcherMessage),
-  consumers: List(Subject(SessionEvent)),
+  consumers: List(consumer_spec.StartedConsumer),
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let builder =
@@ -137,15 +138,17 @@ fn handle_message(state: State, msg: DispatcherMessage) {
       emit_telemetry(event)
       // Always emit telemetry
       // Fan out to all registered consumers
-      list.each(state.consumers, fn(consumer) { process.send(consumer, event) })
+      list.each(state.consumers, fn(consumer) {
+        consumer_spec.consume(consumer, event)
+      })
       actor.continue(state)
     }
-    RegisterConsumer(subject) -> {
-      actor.continue(State(consumers: [subject, ..state.consumers]))
+    RegisterConsumer(consumer) -> {
+      actor.continue(State(consumers: [consumer, ..state.consumers]))
     }
-    RegisterConsumerSync(subject, reply_subject) -> {
+    RegisterConsumerSync(consumer, reply_subject) -> {
       process.send(reply_subject, Nil)
-      actor.continue(State(consumers: [subject, ..state.consumers]))
+      actor.continue(State(consumers: [consumer, ..state.consumers]))
     }
     Stop -> {
       actor.stop()

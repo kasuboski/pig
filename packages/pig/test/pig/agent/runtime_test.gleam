@@ -18,6 +18,7 @@ import jscheam/schema
 import pig/agent/runtime
 import pig/agent/state
 import pig/hooks
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/events
 import pig/obs/session as session_writer
@@ -141,7 +142,10 @@ fn start_with_collector(
 ) {
   let assert Ok(disp) = dispatcher.start()
   let collector = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(collector))
+  process.send(
+    disp,
+    dispatcher.RegisterConsumer(consumer_spec.subject_endpoint(collector)),
+  )
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let config =
     runtime.RuntimeConfig(

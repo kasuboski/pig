@@ -8,7 +8,6 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
-import gleam/result
 import gleeunit
 import pig
 import pig/agent/runtime
@@ -93,12 +92,8 @@ fn capturing_consumer_spec(
 
 fn start_capture(
   capture: process.Subject(SessionEvent),
-) -> Result(process.Subject(SessionEvent), actor.StartError) {
-  let builder =
-    actor.new(Nil)
-    |> actor.on_message(capture_handler(capture))
-  actor.start(builder)
-  |> result.map(fn(started) { started.data })
+) -> Result(consumer_spec.StartedConsumer, actor.StartError) {
+  Ok(consumer_spec.subject_endpoint(capture))
 }
 
 fn start_capture_named(

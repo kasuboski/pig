@@ -159,14 +159,10 @@ fn capturing_consumer_spec(
   consumer_spec.ConsumerSpec(spec:, name:, start_fn:)
 }
 
-fn start_capture(capture: Subject(SessionEvent)) {
-  let builder =
-    actor.new(Nil)
-    |> actor.on_message(capture_handler(capture))
-  case actor.start(builder) {
-    Ok(started) -> Ok(started.data)
-    Error(e) -> Error(e)
-  }
+fn start_capture(
+  capture: Subject(SessionEvent),
+) -> Result(consumer_spec.StartedConsumer, actor.StartError) {
+  Ok(consumer_spec.subject_endpoint(capture))
 }
 
 fn start_capture_named(

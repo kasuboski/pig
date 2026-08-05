@@ -14,6 +14,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
@@ -535,7 +536,11 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 
   // Start a test consumer as sync mechanism
   let sync_consumer = process.new_subject()
-  let assert Ok(Nil) = dispatcher.register_consumer(disp, sync_consumer)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(
+      disp,
+      consumer_spec.subject_endpoint(sync_consumer),
+    )
 
   // Start session consumer actor with the consumer handler
   let assert Ok(session_consumer) = session.start_consumer(path)
@@ -570,10 +575,11 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 
   // Cleanup
   process.send(disp, dispatcher.Stop)
+  session.stop_consumer(session_consumer)
 }
 
-/// start_consumer() creates a Subject that can receive SessionEvent directly.
-pub fn start_consumer_creates_valid_subject_test() {
+/// start_consumer() creates an owned endpoint that consumes SessionEvents.
+pub fn start_consumer_creates_valid_endpoint_test() {
   use path <- with_temp_file("consumer_subject")
   let assert Ok(consumer) = session.start_consumer(path)
 
@@ -584,14 +590,15 @@ pub fn start_consumer_creates_valid_subject_test() {
       message_count: 5,
       settings: provider.default_settings(),
     )
-  process.send(consumer, event)
+  consumer_spec.consume(consumer, event)
 
   // Send a second event to ensure first is processed
   let event2 = SessionEnded(NormalEnd)
-  process.send(consumer, event2)
+  consumer_spec.consume(consumer, event2)
 
   // Fire-and-forget doesn't crash
-  let _ = process.send(consumer, event)
+  let _ = consumer_spec.consume(consumer, event)
+  session.stop_consumer(consumer)
 
   Nil
 }

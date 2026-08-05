@@ -124,30 +124,31 @@ Consumers register with the dispatcher by sending a `RegisterConsumer(Subject(Se
 Registration happens in two ways:
 
 1. **Automatic** — when using `start_supervised()` or `start()`, consumer specs accumulated on the config are started and registered as part of the startup sequence.
-2. **Dynamic** — any process can send `RegisterConsumer` to the dispatcher at runtime. This is useful for mid-session debugging. Dynamically attached consumers are not supervised.
+2. **Dynamic** — callers can register a `StartedConsumer` endpoint with the dispatcher at runtime. This is useful for mid-session debugging. Dynamically attached consumers are not supervised by the dispatcher.
 
 ### Dead consumer handling
 
-When a consumer's actor crashes, its `Subject` becomes invalid. `process.send` to a dead subject is a no-op on the BEAM — the message lands in a dead mailbox and gets garbage collected. The dispatcher doesn't crash and doesn't need to explicitly detect dead consumers. If pruning becomes necessary later, a periodic sweep using `process.is_alive` can be added.
+The dispatcher delivers through `StartedConsumer` endpoints rather than knowing each actor's message protocol. Delivery to a dead BEAM process remains a no-op, so the dispatcher does not crash or need to detect dead consumers. Supervised endpoints resolve their named process on delivery and therefore survive consumer reconstruction. If pruning becomes necessary later, health tracking can be added at the endpoint boundary.
 
 ### Consumer specs
 
 `pig/obs/consumer_spec.gleam` defines `ConsumerSpec` — a deferred recipe for starting a consumer. It bundles three things:
 
 - `spec`: a `ChildSpecification(Nil)` for starting in a supervision tree
-- `name`: a `Name(SessionEvent)` for recovering the subject after supervisor start
-- `start_fn`: a `fn() -> Result(Subject(SessionEvent), StartError)` for the unsupervised start path
+- `name`: a `Name(SessionEvent)` used by the supervised endpoint
+- `start_fn`: a `fn() -> Result(StartedConsumer, StartError)` for the unsupervised start path
 
-Builder functions like `pig.with_session_writer(path)` accumulate `ConsumerSpec` values on the config. No actors are spawned at config-construction time — the builder is pure data.
+A `StartedConsumer` owns both event delivery and shutdown operations. This lets standalone startup roll back every process it has already acquired without exposing consumer-specific control messages to the dispatcher. Builder functions like `pig.with_session_writer(path)` accumulate `ConsumerSpec` values on the config. No actors are spawned at config-construction time — the builder is pure data.
 
 ---
 
 ## 6. Dispatcher Actor
 
-The dispatcher (`pig/obs/dispatcher.gleam`) is a standard Gleam OTP actor. Its internal state is a list of consumer subjects. It handles three messages:
+The dispatcher (`pig/obs/dispatcher.gleam`) is a standard Gleam OTP actor. Its internal state is a list of consumer endpoints. It handles four messages:
 
 - **`Event(SessionEvent)`** — emits telemetry, then fans out to all consumers. Always continues.
-- **`RegisterConsumer(Subject)`** — adds the subject to the consumer list.
+- **`RegisterConsumer(StartedConsumer)`** — asynchronously adds the endpoint.
+- **`RegisterConsumerSync(StartedConsumer, Subject(Nil))`** — adds the endpoint and acknowledges registration.
 - **`Stop`** — stops the actor.
 
 The dispatcher is intentionally simple. It does not buffer events, does not retry failed sends, and does not track consumer health. This keeps it fast and crash-resistant — the agent never blocks on observability.
@@ -169,15 +170,15 @@ AppSupervisor (OneForOne)
   └── pig_agent (named)
 ```
 
-After `static_supervisor.start` returns, consumer subjects are recovered by name and registered with the dispatcher via `RegisterConsumer` messages. The agent is guaranteed to be idle at this point — it only processes events inside `Run` messages, which are sent later via `supervisor.run()`.
+The dispatcher child is initialized with endpoints backed by each consumer's name. Because those endpoints resolve the current named process on every delivery, `OneForAll` reconstruction preserves registration without a post-start race.
 
 **Error handling:** supervisor start failures are returned as `Error(StartError)`.
 
 ### Standalone (`pig.gleam`)
 
-`pig.start(config)` starts the dispatcher and consumers individually, without a supervisor. The dispatcher subject is wired directly into `RuntimeConfig` as a `Subject`. Each consumer's `start_fn` is called, and on success, the returned subject is registered with the dispatcher.
+`pig.start(config)` starts the dispatcher and consumers individually, without a supervisor. The dispatcher subject is wired directly into `RuntimeConfig` as a `Subject`. Each consumer's `start_fn` returns an owned endpoint, and all endpoints are registered synchronously before the runtime starts.
 
-**Error handling:** if the dispatcher fails to start, or if any consumer fails to start, the function returns `Error(StartError)` rather than crashing. Previously started consumers are left running (no rollback) — this is acceptable for the standalone path since there's no supervision tree to clean up.
+**Error handling:** consumer acquisition short-circuits on the first failure. A consumer-start, registration, or runtime-start failure stops every consumer already acquired and then stops the dispatcher before returning the typed `StartError`. A successful `Agent` retains those owned handles so `pig.stop` also stops its runtime, consumers, and dispatcher.
 
 ---
 

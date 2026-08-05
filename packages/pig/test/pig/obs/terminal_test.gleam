@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActionDetail, InferenceStarted, MaxIterationsExceeded,
@@ -238,7 +239,11 @@ pub fn terminal_consumer_receives_events_via_dispatcher_test() {
 
   // Start a sync consumer to verify dispatcher processed the message
   let sync_consumer = process.new_subject()
-  let assert Ok(Nil) = dispatcher.register_consumer(disp, sync_consumer)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(
+      disp,
+      consumer_spec.subject_endpoint(sync_consumer),
+    )
 
   // Start terminal consumer actor
   let assert Ok(terminal_consumer) = terminal.start_consumer()
@@ -261,16 +266,17 @@ pub fn terminal_consumer_receives_events_via_dispatcher_test() {
 
   // Cleanup
   process.send(disp, dispatcher.Stop)
+  terminal.stop(terminal_consumer)
 }
 
-/// start_consumer() creates a Subject that can receive SessionEvent directly.
-pub fn start_consumer_creates_valid_subject_test() {
+/// start_consumer() creates an owned endpoint that consumes SessionEvents.
+pub fn start_consumer_creates_valid_endpoint_test() {
   let assert Ok(consumer) = terminal.start_consumer()
 
   // Verify the subject is valid by checking it can be used with process.send
   // We don't send actual events because the terminal actor would try to
   // io.println and could crash during test teardown when stdout is gone.
   // The real logic (format_event) is tested separately as a pure function.
-  let _ = consumer
+  terminal.stop(consumer)
   Nil
 }
