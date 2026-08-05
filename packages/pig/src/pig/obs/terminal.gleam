@@ -9,14 +9,14 @@ import gleam/io
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
+import pig/obs/events.{
+  type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
+  Interrupted, MaxIterationsExceeded, NormalEnd, settings_to_string,
+}
 import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
 import pig_protocol/stop_reason
-import pig/obs/events.{
-  type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
-  Interrupted, MaxIterationsExceeded, NormalEnd,
-}
 
 // ── State ─────────────────────────────────────────────────────────────
 
@@ -45,11 +45,13 @@ pub fn format_event(event: SessionEvent) -> String {
       "[START] Session started | model: " <> model <> agent_part
     }
 
-    events.InferenceStarted(model:, message_count:) -> {
+    events.InferenceStarted(model:, message_count:, settings:) -> {
       "[INF] Started | model: "
       <> model
       <> " | messages: "
       <> int.to_string(message_count)
+      <> " | thinking: "
+      <> settings_to_string(settings)
     }
 
     events.InferenceCompleted(
@@ -61,6 +63,7 @@ pub fn format_event(event: SessionEvent) -> String {
       output_tokens:,
       duration_ms:,
       input_messages: _,
+      settings: _,
     ) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let token_part = case input_tokens, output_tokens {
@@ -103,11 +106,20 @@ pub fn format_event(event: SessionEvent) -> String {
       <> action.action_type
     }
 
-    events.InferenceFailed(error:, duration_ms:, input_messages: _) -> {
+    events.InferenceFailed(
+      model: _,
+      error:,
+      duration_ms:,
+      input_messages: _,
+      settings: _,
+    ) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let error_str = format_error(error)
       "[ERR] Inference failed | " <> duration_str <> " | " <> error_str
     }
+
+    events.InferenceSettingsChanged(settings:) ->
+      "[SETTINGS] Thinking changed | " <> settings_to_string(settings)
 
     events.SessionEnded(reason) -> {
       "[END] Session ended | " <> format_end_reason(reason)

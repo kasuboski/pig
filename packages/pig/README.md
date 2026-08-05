@@ -50,39 +50,45 @@ were correct that thinking levels could not be set.
 
 ### Configuration
 
-Configure reasoning-capable OpenAI-compatible models on the provider before
-passing its callable function to `pig.new`:
+Inference settings belong to the agent, not to an individual run. Configure
+them while building the agent:
 
 ```gleam
 import pig_protocol/thinking
 
-let provider =
-  openai.provider("your-api-key", "gpt-5")
-  |> openai.with_thinking_level(thinking.Medium)
-
-let config = pig.new(provider.call)
+let provider = openai.provider("your-api-key", "gpt-5")
+let config =
+  pig.new(provider.call)
+  |> pig.with_thinking_level(thinking.Medium)
 ```
 
 Available levels are `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, and
-`Max`. Pig sends these as the Chat Completions `reasoning_effort` field. Model
-support varies; the provider returns an API error when a selected level is not
-supported. Leaving the level unset omits the field and preserves the provider's
-default.
+`Max`. The setting is included in every inference request. Use
+`pig.set_thinking_level(agent, level)` to change it durably mid-session, or
+`pig.reset_thinking_level(agent)` to restore provider-default behavior; session
+restoration reapplies the saved setting. `Off` is explicit: it asks the
+provider not to use reasoning, while the unset/default setting uses the
+provider's default. Runtime-only agents update their in-memory settings and
+history; configure a `SessionStore` to make setting and conversation changes
+durable across restarts.
 
-Use `responses_provider` for OpenAI's Responses API. It uses the same provider
-interface, so it runs through the normal Pig runtime:
+A provider default is still useful when demonstrating a provider outside an
+agent or when an agent has no explicit setting:
 
 ```gleam
 let provider =
-  openai.responses_provider("your-api-key", "gpt-5")
-  |> openai.with_thinking_level(thinking.Medium)
-
-let config = pig.new(provider.call)
+  openai.provider("your-api-key", "gpt-5")
+  |> openai.with_default_thinking_level(thinking.Medium)
 ```
 
-Responses requests send `reasoning.effort`; enabled levels also request an
-automatic provider-generated reasoning summary. System messages are mapped to
-Responses `instructions`.
+Use `responses_provider` for OpenAI's Responses API. It uses the same
+one-argument `Provider(InferenceRequest)` interface. Responses requests send
+`reasoning.effort`; enabled levels also request an automatic provider-generated
+reasoning summary. System messages are mapped to Responses `instructions`.
+Pig does not maintain a model capability catalog, clamp levels, or promise that
+a model supports a selected level; unsupported values are reported by the
+provider. Setting changes and inference start/stop events are observable through
+Pig's normal events and session persistence.
 
 ## Tools
 
@@ -156,7 +162,7 @@ message, supporting checkpoint-and-resume workflows.
 - **OTP agent isolation** — each running agent owns its state in an actor.
 - **Parallel tool execution** — independent tool calls run concurrently.
 - **Skills and hooks** — compose reusable capabilities and lifecycle policy.
-- **Durable history** — preload and continue checkpointed conversations.
+- **Durable history with `SessionStore`** — preload and continue checkpointed conversations.
 - **Observability** — structured `:telemetry`, terminal output, and JSONL sessions.
 - **Workspace tools** — optional SQLite-backed key/value and virtual-file storage.
 - **Supervision** — child specifications for OTP supervision trees.

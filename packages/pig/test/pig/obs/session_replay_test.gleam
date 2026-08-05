@@ -3,15 +3,19 @@
 //// Tests verify that replay() reads a JSONL file and reconstructs
 //// the conversation history accurately.
 
+import pig/provider
+
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
-import pig_protocol/message.{Assistant, Tool, ToolCall, User}
 import pig/obs/events.{
-  InferenceCompleted, InferenceStarted, ToolBlocked, ToolExecuted,
+  InferenceCompleted, InferenceSettingsChanged, InferenceStarted, ToolBlocked,
+  ToolExecuted,
 }
 import pig/obs/session
+import pig_protocol/message.{Assistant, Tool, ToolCall, User}
+import pig_protocol/thinking
 import simplifile
 import temporary
 
@@ -48,6 +52,53 @@ pub fn replay_empty_file_returns_empty_list_test() {
 pub fn replay_file_not_found_returns_error_test() {
   let result = session.replay("/nonexistent/path/session.jsonl")
   let assert Error(_) = result
+}
+
+pub fn replay_old_jsonl_has_no_settings_baseline_test() {
+  use path <- with_temp_file("old_settings")
+  write_jsonl(path, [
+    "{\"ts\":\"2024-01-01T00:00:00Z\",\"event\":\"inference_started\",\"model\":\"gpt-4\",\"message_count\":1}",
+  ])
+  let assert Ok(#([], None)) = session.replay_with_settings(path)
+}
+
+pub fn replay_settings_changes_follow_jsonl_order_test() {
+  use path <- with_temp_file("settings_order")
+  let requested =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 1,
+      settings: provider.with_thinking_level(thinking.High),
+    )
+    |> session.format_event
+  let first_change =
+    InferenceSettingsChanged(settings: provider.with_thinking_level(
+      thinking.Off,
+    ))
+    |> session.format_event
+  let second_requested =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 1,
+      settings: provider.with_thinking_level(thinking.Low),
+    )
+    |> session.format_event
+  let second_change =
+    InferenceSettingsChanged(settings: provider.with_thinking_level(
+      thinking.Medium,
+    ))
+    |> session.format_event
+  write_jsonl(path, [requested, first_change, second_requested, second_change])
+  let assert Ok(#([], Some(settings))) = session.replay_with_settings(path)
+  assert settings == provider.with_thinking_level(thinking.Medium)
+}
+
+pub fn replay_unknown_persisted_settings_is_parse_error_test() {
+  use path <- with_temp_file("settings_invalid")
+  write_jsonl(path, [
+    "{\"event\":\"inference_settings_changed\",\"settings\":{\"thinking\":\"none\"}}",
+  ])
+  let assert Error(session.ParseError(_)) = session.replay_with_settings(path)
 }
 
 pub fn replay_single_inference_reconstructs_messages_test() {
@@ -143,7 +194,11 @@ pub fn round_trip_single_inference_test() {
   let input_messages = [User("Hello")]
   let assistant_msg = Assistant("Hi there!", [], None, None)
   let line1 =
-    InferenceStarted(model: "gpt-4", message_count: 1)
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
     |> session.format_event
   let line2 =
     InferenceCompleted(
@@ -155,6 +210,7 @@ pub fn round_trip_single_inference_test() {
       output_tokens: None,
       duration_ms: 100,
       input_messages: input_messages,
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [line1, line2])
@@ -183,7 +239,11 @@ pub fn round_trip_full_tool_loop_test() {
   ]
   let final_response = Assistant("Done!", [], None, None)
   let line1 =
-    InferenceStarted(model: "gpt-4", message_count: 4)
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 4,
+      settings: provider.default_settings(),
+    )
     |> session.format_event
   let line2 =
     InferenceCompleted(
@@ -195,6 +255,7 @@ pub fn round_trip_full_tool_loop_test() {
       output_tokens: None,
       duration_ms: 80,
       input_messages: history,
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [line1, line2])
@@ -230,6 +291,7 @@ pub fn round_trip_no_system_prompt_in_history_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: history,
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [line])
@@ -263,6 +325,7 @@ pub fn round_trip_blocked_tool_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: history,
+      settings: provider.default_settings(),
     )
     |> session.format_event
   let blocked_line =
@@ -306,6 +369,7 @@ pub fn round_trip_transformed_result_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: [User("search for test")],
+      settings: provider.default_settings(),
     )
     |> session.format_event
   // ToolExecuted with transformed (redacted) content — post-hook result
@@ -327,6 +391,7 @@ pub fn round_trip_transformed_result_test() {
       output_tokens: None,
       duration_ms: 80,
       input_messages: history,
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [inference1, tool_line, inference2])
@@ -366,6 +431,7 @@ pub fn round_trip_partial_session_with_transformed_tool_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: [User("read passwd")],
+      settings: provider.default_settings(),
     )
     |> session.format_event
   // ToolExecuted with transformed result (hook rewrote it)

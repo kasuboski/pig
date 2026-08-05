@@ -12,7 +12,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
+import gleam/result
 import gleam/string
+import pig/obs/events.{
+  type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
+  AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
+  InferenceCompleted, InferenceFailed, InferenceStarted, Interrupted,
+  MaxIterationsExceeded, NormalEnd, OnComplete, OnError, OnSessionShutdown,
+  OnSessionStart, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
+  ToolStarted, settings_to_string,
+}
+import pig/provider.{type InferenceSettings}
 import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
@@ -21,14 +31,6 @@ import pig_protocol/message.{
   ToolCall, User,
 }
 import pig_protocol/stop_reason
-import pig/obs/events.{
-  type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
-  AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
-  InferenceCompleted, InferenceFailed, InferenceStarted, Interrupted,
-  MaxIterationsExceeded, NormalEnd, OnComplete, OnError, OnSessionShutdown,
-  OnSessionStart, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
-  ToolStarted,
-}
 import simplifile
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
@@ -105,10 +107,21 @@ pub type ReplayError {
 
 /// Replay a JSONL session file and reconstruct the message history.
 ///
-/// Strategy: find the last InferenceCompleted event. Its input_messages +
-/// message give the complete history. For partial sessions (crash mid-loop),
-/// also include Tool messages from ToolExecuted events after the last inference.
+/// This compatibility wrapper keeps the original message-only API. New code
+/// that also needs the durable inference settings can use `replay_with_settings`.
 pub fn replay(path: String) -> Result(List(Message), ReplayError) {
+  replay_with_settings(path)
+  |> result.map(fn(result) { result.0 })
+}
+
+/// Replay a JSONL session and return its history and latest persisted settings.
+///
+/// Sessions written before settings were persisted return `None`. Only an
+/// explicit `inference_settings_changed` event changes the persisted setting;
+/// requested settings on inference events describe that request only.
+pub fn replay_with_settings(
+  path: String,
+) -> Result(#(List(Message), Option(InferenceSettings)), ReplayError) {
   case simplifile.read(path) {
     Error(e) -> Error(FileError(string.inspect(e)))
     Ok(content) -> {
@@ -116,26 +129,22 @@ pub fn replay(path: String) -> Result(List(Message), ReplayError) {
         content
         |> string.split("\n")
         |> list.filter(fn(l) { l != "" })
-      case lines {
-        [] -> Ok([])
-        _ -> replay_lines(lines)
-      }
+      replay_lines(lines)
     }
   }
 }
 
 /// Replay from a list of JSONL lines.
-fn replay_lines(lines: List(String)) -> Result(List(Message), ReplayError) {
-  // Find the last InferenceCompleted event
+fn replay_lines(
+  lines: List(String),
+) -> Result(#(List(Message), Option(InferenceSettings)), ReplayError) {
+  use settings <- result.try(latest_settings(lines))
   let last_inference = find_last_inference_completed(lines)
   case last_inference {
-    None -> Ok([])
+    None -> Ok(#([], settings))
     Some(input_messages_json) -> {
-      // Parse input_messages + message
       case parse_inference_messages(input_messages_json) {
         Ok(messages) -> {
-          // Also check for ToolExecuted events after this line
-          // (partial session: tools ran but no final inference)
           let remaining = lines_after(lines, input_messages_json)
           let tool_msgs =
             remaining
@@ -146,12 +155,85 @@ fn replay_lines(lines: List(String)) -> Result(List(Message), ReplayError) {
                 _ -> Error(Nil)
               }
             })
-          Ok(list.append(messages, tool_msgs))
+          Ok(#(list.append(messages, tool_msgs), settings))
         }
         Error(e) -> Error(e)
       }
     }
   }
+}
+
+fn latest_settings(
+  lines: List(String),
+) -> Result(Option(InferenceSettings), ReplayError) {
+  list.fold(lines, Ok(None), fn(acc, line) {
+    use current <- result.try(acc)
+    use next <- result.try(settings_from_line(line))
+    case next {
+      Some(settings) -> Ok(Some(settings))
+      None -> Ok(current)
+    }
+  })
+}
+
+fn settings_from_line(
+  line: String,
+) -> Result(Option(InferenceSettings), ReplayError) {
+  let event_type = decode_event_type_str(line)
+  case event_type {
+    "inference_settings_changed" -> {
+      let decoder =
+        dynamic_decode.at(["settings", "thinking"], dynamic_decode.string)
+      case json.parse(from: line, using: decoder) {
+        Ok(value) ->
+          case parse_persisted_settings(line, value) {
+            Ok(settings) -> Ok(Some(settings))
+            Error(error) -> Error(error)
+          }
+        Error(_) ->
+          Error(ParseError("Failed to parse inference settings: " <> line))
+      }
+    }
+    "inference_started" | "inference_completed" | "inference_failed" -> {
+      let decoder = settings_decoder()
+      case json.parse(from: line, using: decoder) {
+        Ok(Some(value)) ->
+          case parse_persisted_settings(line, value) {
+            Ok(_) -> Ok(None)
+            Error(error) -> Error(error)
+          }
+        Ok(None) -> Ok(None)
+        Error(_) ->
+          Error(ParseError("Failed to parse inference settings: " <> line))
+      }
+    }
+    _ -> Ok(None)
+  }
+}
+
+fn parse_persisted_settings(
+  line: String,
+  value: String,
+) -> Result(InferenceSettings, ReplayError) {
+  case events.settings_from_string(value) {
+    Ok(settings) -> Ok(settings)
+    Error(Nil) ->
+      Error(ParseError("Unknown inference settings in JSONL: " <> line))
+  }
+}
+
+fn settings_decoder() -> dynamic_decode.Decoder(Option(String)) {
+  use settings <- dynamic_decode.optional_field(
+    "settings",
+    None,
+    settings_object_decoder(),
+  )
+  dynamic_decode.success(settings)
+}
+
+fn settings_object_decoder() -> dynamic_decode.Decoder(Option(String)) {
+  use thinking <- dynamic_decode.field("thinking", dynamic_decode.string)
+  dynamic_decode.success(Some(thinking))
 }
 
 /// Find the last InferenceCompleted line.
@@ -381,16 +463,19 @@ pub fn format_event(event: SessionEvent) -> String {
           list.append(with_provider, [#("system_prompt", json.string(v))])
         None -> with_provider
       }
-
       json.object(with_system) |> json.to_string()
     }
 
-    InferenceStarted(model:, message_count:) -> {
+    InferenceStarted(model:, message_count:, settings:) -> {
       json.object([
         #("ts", json.string(ts)),
         #("event", json.string("inference_started")),
         #("model", json.string(model)),
         #("message_count", json.int(message_count)),
+        #(
+          "settings",
+          json.object([#("thinking", json.string(settings_to_string(settings)))]),
+        ),
       ])
       |> json.to_string()
     }
@@ -404,8 +489,13 @@ pub fn format_event(event: SessionEvent) -> String {
       output_tokens:,
       duration_ms:,
       input_messages:,
+      settings:,
     ) -> {
       let fields = [
+        #(
+          "settings",
+          json.object([#("thinking", json.string(settings_to_string(settings)))]),
+        ),
         #("ts", json.string(ts)),
         #("event", json.string("inference_completed")),
         #("duration_ms", json.int(duration_ms)),
@@ -490,13 +580,30 @@ pub fn format_event(event: SessionEvent) -> String {
       |> json.to_string()
     }
 
-    InferenceFailed(error:, duration_ms:, input_messages:) -> {
+    InferenceFailed(model:, error:, duration_ms:, input_messages:, settings:) -> {
       json.object([
         #("ts", json.string(ts)),
         #("event", json.string("inference_failed")),
+        #("model", json.string(model)),
         #("duration_ms", json.int(duration_ms)),
         #("error", error_to_json(error)),
         #("input_messages", json.array(input_messages, message_to_json)),
+        #(
+          "settings",
+          json.object([#("thinking", json.string(settings_to_string(settings)))]),
+        ),
+      ])
+      |> json.to_string()
+    }
+
+    events.InferenceSettingsChanged(settings:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("inference_settings_changed")),
+        #(
+          "settings",
+          json.object([#("thinking", json.string(settings_to_string(settings)))]),
+        ),
       ])
       |> json.to_string()
     }

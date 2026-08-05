@@ -20,13 +20,16 @@ import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher
 import pig/obs/session
 import pig/obs/terminal
-import pig/provider.{type Provider, from_message}
+import pig/provider.{
+  type InferenceSettings, type Provider, default_settings, from_message,
+}
 import pig/run_error.{type RunError}
 import pig/session_store.{type Session, type SessionError, type SessionStore}
 import pig/skill
 import pig/skill/librarian
 import pig/tool
 import pig_protocol/message.{type Message}
+import pig_protocol/thinking.{type ThinkingLevel}
 
 /// Opaque configuration builder. Construct with `new`, customize with
 /// `with_*` functions, then `start` to spawn an agent actor.
@@ -104,6 +107,25 @@ pub fn with_skill(config: PigConfig, s: skill.Skill) -> PigConfig {
 /// Register a hooks set for lifecycle mediation.
 pub fn with_hooks(config: PigConfig, h: Hooks) -> PigConfig {
   PigConfig(..config, hooks: list.append(config.hooks, [h]))
+}
+
+/// Set the initial inference settings for this agent.
+pub fn with_inference_settings(
+  config: PigConfig,
+  settings: InferenceSettings,
+) -> PigConfig {
+  PigConfig(
+    ..config,
+    agent_config: state.with_inference_settings(config.agent_config, settings),
+  )
+}
+
+/// Set the initial thinking level for this agent.
+pub fn with_thinking_level(
+  config: PigConfig,
+  level: ThinkingLevel,
+) -> PigConfig {
+  with_inference_settings(config, provider.with_thinking_level(level))
 }
 
 /// Set the system prompt.
@@ -313,13 +335,11 @@ fn start_with_session(
           Error(ActorStart(e))
         }
         _ -> {
-          // All consumers started OK — register them
+          // All consumers started OK — synchronously register them before
+          // the agent can emit any events.
           let consumer_subjects = list.filter_map(consumer_results, fn(r) { r })
           list.each(consumer_subjects, fn(consumer_subject) {
-            process.send(
-              dispatcher_subject,
-              dispatcher.RegisterConsumer(consumer_subject),
-            )
+            dispatcher.register_consumer(dispatcher_subject, consumer_subject)
           })
 
           let runtime_config =
@@ -330,27 +350,32 @@ fn start_with_session(
               dispatcher: dispatcher_subject,
               model: final_config.model,
               max_iterations: final_config.max_iterations,
+              inference_settings: final_config.inference_settings,
             )
           // A durable store is authoritative when configured. Otherwise retain
           // the legacy best-effort event-trace replay behavior.
-          let agent_st = case loaded_session {
-            option.Some(LoadedSession(session: loaded, ..)) ->
+          let #(agent_st, replayed_settings) = case loaded_session {
+            option.Some(LoadedSession(session: loaded, ..)) -> #(
               list.fold(
                 state.strip_system_messages(loaded.messages),
                 state.new(final_config),
                 state.add_message,
-              )
+              ),
+              loaded.inference_settings,
+            )
             option.None ->
               case final_config.session_path {
                 option.Some(path) -> {
                   let st = state.new(final_config)
-                  case session.replay(path) {
-                    Ok(replayed) ->
+                  case session.replay_with_settings(path) {
+                    Ok(#(replayed, restored_settings)) -> #(
                       list.fold(
                         state.strip_system_messages(replayed),
                         st,
                         state.add_message,
-                      )
+                      ),
+                      restored_settings,
+                    )
                     Error(err) -> {
                       logging.log(
                         logging.Warning,
@@ -359,11 +384,11 @@ fn start_with_session(
                           <> ": "
                           <> string.inspect(err),
                       )
-                      st
+                      #(st, option.None)
                     }
                   }
                 }
-                option.None -> state.new(final_config)
+                option.None -> #(state.new(final_config), option.None)
               }
           }
           // Apply initial history on top of session replay
@@ -373,6 +398,10 @@ fn start_with_session(
               agent_st,
               state.add_message,
             )
+          let initial_settings = case replayed_settings {
+            option.Some(settings) -> settings
+            option.None -> final_config.inference_settings
+          }
           let runtime_session = case loaded_session {
             option.Some(LoadedSession(store:, session: loaded)) ->
               runtime.SessionReady(store:, head: loaded.head)
@@ -383,6 +412,7 @@ fn start_with_session(
               agent_state: agent_st,
               config: runtime_config,
               session: runtime_session,
+              inference_settings: initial_settings,
             )
           case runtime.start_with_state(runtime_config, rt_state) {
             Ok(subject) -> Ok(Agent(subject))
@@ -459,6 +489,45 @@ pub fn run_continue(agent: Agent) -> Result(Message, RunError) {
   run_continue_with_timeout(agent, 120_000)
 }
 
+/// Set inference settings on a running agent.
+///
+/// With a durable session store this waits for the settings-only commit to be
+/// accepted before returning. A failed ambiguous commit leaves the setting
+/// unchanged and can be retried by repeating the same call.
+pub fn set_inference_settings(
+  agent: Agent,
+  settings: InferenceSettings,
+) -> Result(Nil, RunError) {
+  set_inference_settings_with_timeout(agent, settings, 120_000)
+}
+
+/// Set inference settings on a running agent with an explicit timeout.
+pub fn set_inference_settings_with_timeout(
+  agent: Agent,
+  settings: InferenceSettings,
+  timeout_ms: Int,
+) -> Result(Nil, RunError) {
+  runtime.set_inference_settings(agent.subject, settings, timeout_ms)
+}
+
+/// Set the thinking level on a running agent.
+pub fn set_thinking_level(
+  agent: Agent,
+  level: ThinkingLevel,
+) -> Result(Nil, RunError) {
+  set_inference_settings(agent, provider.with_thinking_level(level))
+}
+
+/// Reset the running agent to the provider's default thinking behavior.
+pub fn reset_inference_settings(agent: Agent) -> Result(Nil, RunError) {
+  set_inference_settings(agent, default_settings())
+}
+
+/// Reset the running agent to the provider's default thinking behavior.
+pub fn reset_thinking_level(agent: Agent) -> Result(Nil, RunError) {
+  reset_inference_settings(agent)
+}
+
 /// Stop the agent actor.
 pub fn stop(agent: Agent) -> Nil {
   runtime.stop(agent.subject)
@@ -477,7 +546,7 @@ pub fn history(agent: Agent) -> List(message.Message) {
 pub fn test_harness() -> PigConfig {
   let response =
     message.Assistant("mock response", [], option.None, option.None)
-  new(fn(_msgs, _tools) { Ok(from_message(response)) })
+  new(fn(_request: provider.InferenceRequest) { Ok(from_message(response)) })
 }
 
 /// Build the final AgentConfig from a PigConfig.

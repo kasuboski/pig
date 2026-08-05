@@ -8,15 +8,27 @@ import gleeunit
 import pig
 import pig/hooks
 import pig/obs/consumer_spec
-import pig/obs/events.{type SessionEvent}
-import pig/provider.{type Provider}
+import pig/obs/events.{type SessionEvent, InferenceSettingsChanged}
+import pig/obs/session
+import pig/provider.{type InferenceRequest, type Provider}
 import pig/session_store
 import pig_protocol/message
+import pig_protocol/thinking
 import simplifile
 import temporary
 
 pub fn main() {
   gleeunit.main()
+}
+
+fn messages_in_commit(
+  commit: session_store.SessionCommit,
+) -> List(message.Message) {
+  let session_store.SessionCommit(delta:, ..) = commit
+  case delta {
+    session_store.MessagesAppended(messages) -> messages
+    session_store.InferenceSettingsChanged(_) -> []
+  }
 }
 
 // ── Test Helpers ──────────────────────────────────────────────────────
@@ -189,18 +201,19 @@ fn capture_handler(
   }
 }
 
-// Test 4a: add_consumer registers a custom consumer that receives events
+// Test 4a: add_consumer registers a custom consumer that receives the first event
 pub fn add_consumer_registers_custom_consumer_test() {
   let capture = process.new_subject()
   let spec = capturing_consumer_spec(capture)
   let config = pig.test_harness() |> pig.add_consumer(spec)
 
   let assert Ok(agent) = pig.start(config)
+  // This is intentionally the first operation after startup. The event must
+  // not race an asynchronous consumer registration.
   let assert Ok(_response) = pig.run(agent, "test")
 
-  // The custom consumer should receive at least one SessionEvent
-  // (SessionStarted is emitted on start, InferenceStarted on run).
-  let assert Ok(_event) = process.receive(capture, 2000)
+  let assert Ok(event) = process.receive(capture, 2000)
+  let assert events.InferenceStarted(..) = event
 
   pig.stop(agent)
 }
@@ -438,7 +451,8 @@ pub fn with_initial_history_provider_sees_messages_test() {
   let seen = process.new_subject()
   let mock_response =
     message.Assistant("mock response", [], option.None, option.None)
-  let provider_fn = fn(msgs, _tools) {
+  let provider_fn = fn(request: InferenceRequest) {
+    let msgs = request.messages
     let user_contents =
       msgs
       |> list.filter(fn(m) {
@@ -479,7 +493,8 @@ pub fn with_initial_history_strips_system_messages_test() {
   let seen = process.new_subject()
   let mock_response =
     message.Assistant("mock response", [], option.None, option.None)
-  let provider_fn = fn(msgs, _tools) {
+  let provider_fn = fn(request: InferenceRequest) {
+    let msgs = request.messages
     let system_msgs =
       msgs
       |> list.filter(fn(m) {
@@ -520,11 +535,13 @@ pub fn session_store_rejects_initial_history_before_load_or_provider_test() {
     session_store.SessionStore(
       load: fn() {
         increment_counter(load_calls)
-        Ok(session_store.Session(option.None, []))
+        Ok(session_store.Session(option.None, [], option.None))
       },
-      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+      commit: fn(_commit) {
+        Ok(session_store.Session(option.None, [], option.None))
+      },
     )
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment_counter(provider_calls)
     Ok(
       provider.from_message(message.Assistant(
@@ -553,9 +570,11 @@ pub fn session_store_load_failure_prevents_provider_use_test() {
   let store =
     session_store.SessionStore(
       load: fn() { Error(session_store.Unavailable("offline")) },
-      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+      commit: fn(_commit) {
+        Ok(session_store.Session(option.None, [], option.None))
+      },
     )
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment_counter(provider_calls)
     Ok(
       provider.from_message(message.Assistant(
@@ -581,11 +600,17 @@ pub fn session_store_loaded_terminal_assistant_continues_without_provider_test()
   let store =
     session_store.SessionStore(
       load: fn() {
-        Ok(session_store.Session(option.Some("loaded-head"), loaded_history))
+        Ok(session_store.Session(
+          option.Some("loaded-head"),
+          loaded_history,
+          option.None,
+        ))
       },
-      commit: fn(_commit) { Ok(session_store.Session(option.None, [])) },
+      commit: fn(_commit) {
+        Ok(session_store.Session(option.None, [], option.None))
+      },
     )
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment_counter(provider_calls)
     Ok(
       provider.from_message(message.Assistant(
@@ -616,15 +641,24 @@ pub fn session_store_continue_commits_only_new_assistant_delta_test() {
   let store =
     session_store.SessionStore(
       load: fn() {
-        Ok(session_store.Session(option.Some("loaded-head"), loaded_history))
+        Ok(session_store.Session(
+          option.Some("loaded-head"),
+          loaded_history,
+          option.None,
+        ))
       },
       commit: fn(commit) {
         increment_counter(commit_counter)
         process.send(commits, commit)
-        Ok(session_store.Session(option.Some(commit.id), commit.messages))
+        Ok(session_store.Session(
+          option.Some(commit.id),
+          messages_in_commit(commit),
+          option.None,
+        ))
       },
     )
-  let provider_fn = fn(messages, _tools) {
+  let provider_fn = fn(request: InferenceRequest) {
+    let messages = request.messages
     increment_counter(provider_calls)
     process.send(provider_messages, messages)
     Ok(provider.from_message(final))
@@ -637,9 +671,43 @@ pub fn session_store_continue_commits_only_new_assistant_delta_test() {
   assert messages == loaded_history
   let assert Ok(commit) = process.receive(commits, 2000)
   assert commit.parent == option.Some("loaded-head")
-  assert commit.messages == [final]
+  assert messages_in_commit(commit) == [final]
   assert counter_count(commit_counter) == 1
   assert counter_count(provider_calls) == 1
   assert pig.history(agent) == list.append(loaded_history, [final])
+  pig.stop(agent)
+}
+
+/// A standalone JSONL restart restores persisted settings ahead of config.
+pub fn standalone_jsonl_restart_restores_settings_test() {
+  use path <- with_temp_file("jsonl_settings_restart")
+  let restored = provider.with_thinking_level(thinking.High)
+  let configured = provider.with_thinking_level(thinking.Low)
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      session.format_event(InferenceSettingsChanged(settings: restored)) <> "\n",
+    )
+  let seen = process.new_subject()
+  let provider_fn = fn(request: InferenceRequest) {
+    process.send(seen, request.settings)
+    Ok(
+      provider.from_message(message.Assistant(
+        "ok",
+        [],
+        option.None,
+        option.None,
+      )),
+    )
+  }
+  let config =
+    pig.new(provider_fn)
+    |> pig.with_thinking_level(thinking.Low)
+    |> pig.with_session_writer(path)
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_) = pig.run(agent, "restart")
+  let assert Ok(actual) = process.receive(seen, 1000)
+  assert actual == restored
+  assert configured != restored
   pig.stop(agent)
 }

@@ -68,6 +68,7 @@ pub fn configured_provider_builds_request_with_thinking_test() {
     openai_harness.check_request(
       openai_harness.Chat,
       [message.User("solve this")],
+      None,
       Some(thinking.Medium),
     )
 
@@ -80,10 +81,35 @@ pub fn responses_provider_builds_request_with_thinking_test() {
     openai_harness.check_request(
       openai_harness.Responses,
       [message.User("solve this")],
+      None,
       Some(thinking.High),
     )
 
   let assert Ok("high") =
+    json.parse(body, decode.at(["reasoning", "effort"], decode.string))
+}
+
+pub fn provider_default_is_used_when_request_defers_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Chat,
+      [message.User("solve this")],
+      Some(thinking.High),
+      None,
+    )
+  let assert Ok("high") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+pub fn request_level_overrides_provider_default_for_responses_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [message.User("solve this")],
+      Some(thinking.High),
+      Some(thinking.Off),
+    )
+  let assert Ok("none") =
     json.parse(body, decode.at(["reasoning", "effort"], decode.string))
 }
 
@@ -96,6 +122,7 @@ pub fn responses_provider_maps_system_messages_to_instructions_test() {
         message.System("second instruction"),
         message.User("hello"),
       ],
+      None,
       None,
     )
 

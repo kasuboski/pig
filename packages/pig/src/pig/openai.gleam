@@ -2,7 +2,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import pig/provider.{type InferenceResult, type Provider}
+import pig/provider.{
+  type InferenceRequest, type InferenceResult, type Provider, UseProviderDefault,
+  UseThinkingLevel,
+}
 import pig_protocol/auth
 import pig_protocol/codec/chat
 import pig_protocol/codec/responses
@@ -27,7 +30,7 @@ pub type OpenAIConfig {
     model: String,
     base_url: String,
     http_timeout_ms: Int,
-    thinking_level: Option(ThinkingLevel),
+    default_thinking_level: Option(ThinkingLevel),
   )
 }
 
@@ -113,7 +116,7 @@ fn provider_for_api(
     model:,
     base_url:,
     http_timeout_ms:,
-    thinking_level: None,
+    default_thinking_level: None,
   ))
 }
 
@@ -125,30 +128,29 @@ pub fn with_http_timeout(
   build_provider(OpenAIConfig(..provider.config, http_timeout_ms: timeout_ms))
 }
 
-/// Set the model thinking level for all calls made by this provider.
+/// Set the fallback thinking level for calls made by this provider.
 ///
-/// Chat Completions sends this as `reasoning_effort`; Responses sends it as
-/// `reasoning.effort`. Model support varies; an unsupported level is returned
-/// as an API error by the provider.
-pub fn with_thinking_level(
+/// A request-level setting overrides this default. Chat Completions sends the
+/// resolved level as `reasoning_effort`; Responses sends it as
+/// `reasoning.effort`. Unsupported levels are returned as provider API errors.
+pub fn with_default_thinking_level(
   provider: OpenAIProvider,
   level: ThinkingLevel,
 ) -> OpenAIProvider {
-  build_provider(OpenAIConfig(..provider.config, thinking_level: Some(level)))
+  build_provider(
+    OpenAIConfig(..provider.config, default_thinking_level: Some(level)),
+  )
 }
 
 /// Wrap an `OpenAIConfig` in an `OpenAIProvider` whose `call` closure
 /// invokes `do_inference` with that config.
 fn build_provider(config: OpenAIConfig) -> OpenAIProvider {
-  OpenAIProvider(
-    config: config,
-    call: fn(messages: List(Message), tools: List(ToolDefinition)) -> Result(
-      InferenceResult,
-      AiError,
-    ) {
-      do_inference(config, messages, tools)
-    },
-  )
+  OpenAIProvider(config: config, call: fn(request: InferenceRequest) -> Result(
+    InferenceResult,
+    AiError,
+  ) {
+    do_inference(config, request)
+  })
 }
 
 /// Build the JSON request body for the OpenAI Chat Completions API.
@@ -165,10 +167,9 @@ pub fn build_request_body(
 /// Pure function — useful for inspecting provider configuration without IO.
 pub fn build_provider_request_body(
   provider: OpenAIProvider,
-  messages: List(Message),
-  tools: List(ToolDefinition),
+  request: InferenceRequest,
 ) -> String {
-  request_body(provider.config, messages, tools)
+  request_body(provider.config, request)
 }
 
 /// Parse an OpenAI Chat Completions JSON response into an InferenceResult.
@@ -181,19 +182,18 @@ pub fn parse_response(raw: String) -> Result(InferenceResult, AiError) {
 
 fn do_inference(
   config: OpenAIConfig,
-  messages: List(Message),
-  tools: List(ToolDefinition),
+  request: InferenceRequest,
 ) -> Result(InferenceResult, AiError) {
   let mode = auth.StandardApi(config.api_key, config.base_url)
   let #(url, body, parse) = case config.api {
     ChatCompletions -> #(
       auth.chat_url(mode),
-      request_body(config, messages, tools),
+      request_body(config, request),
       chat.parse_response,
     )
     Responses -> #(
       auth.responses_url(mode),
-      request_body(config, messages, tools),
+      request_body(config, request),
       responses.parse_response,
     )
   }
@@ -204,26 +204,26 @@ fn do_inference(
   parse(raw)
 }
 
-fn request_body(
-  config: OpenAIConfig,
-  messages: List(Message),
-  tools: List(ToolDefinition),
-) -> String {
+fn request_body(config: OpenAIConfig, request: InferenceRequest) -> String {
+  let thinking_level = case request.settings.thinking {
+    UseProviderDefault -> config.default_thinking_level
+    UseThinkingLevel(level) -> Some(level)
+  }
   case config.api {
     ChatCompletions ->
       chat.build_request_body_with_thinking(
-        messages,
-        tools,
+        request.messages,
+        request.tools,
         config.model,
-        config.thinking_level,
+        thinking_level,
       )
     Responses ->
       responses.build_request_body_with_thinking(
-        messages,
-        tools,
+        request.messages,
+        request.tools,
         config.model,
-        instructions(messages),
-        config.thinking_level,
+        instructions(request.messages),
+        thinking_level,
       )
   }
 }

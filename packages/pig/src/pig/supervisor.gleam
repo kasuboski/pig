@@ -13,9 +13,11 @@ import pig/agent/runtime
 import pig/agent/state
 import pig/obs/consumer_spec
 import pig/obs/dispatcher
+import pig/provider.{type InferenceSettings}
 import pig/run_error.{type RunError}
 import pig/session_store.{type SessionError, type SessionStore, SessionStore}
 import pig_protocol/message.{type Message}
+import pig_protocol/thinking.{type ThinkingLevel}
 
 /// Handle to a supervised agent.
 ///
@@ -96,12 +98,17 @@ fn start_with_runtime(
   let dispatcher_name = process.new_name("pig_event_dispatcher")
   let agent_name = process.new_name("pig_agent")
 
-  // Build event subtree: dispatcher + consumers
-  // OneForAll ensures that if the dispatcher restarts, consumers restart too
-  // and re-register via their init logic.
+  // Build event subtree: dispatcher + consumers.
+  // OneForAll ensures that if either side restarts, the named subjects still
+  // point at the reconstructed consumers and dispatcher.
+  let consumer_subjects =
+    list.map(consumer_specs, fn(entry) { process.named_subject(entry.name) })
   let event_tree =
     static_supervisor.new(static_supervisor.OneForAll)
-    |> static_supervisor.add(dispatcher.supervised(dispatcher_name))
+    |> static_supervisor.add(dispatcher.supervised_with_consumers(
+      dispatcher_name,
+      consumer_subjects,
+    ))
     |> list.fold(consumer_specs, _, fn(builder, entry) {
       static_supervisor.add(builder, entry.spec)
     })
@@ -114,18 +121,7 @@ fn start_with_runtime(
 
   case static_supervisor.start(app_tree) {
     Ok(started) -> {
-      let dispatcher_subject = process.named_subject(dispatcher_name)
       let agent_subject = process.named_subject(agent_name)
-
-      // Register all consumers with the dispatcher
-      list.each(consumer_specs, fn(entry) {
-        let consumer_subject = process.named_subject(entry.name)
-        process.send(
-          dispatcher_subject,
-          dispatcher.RegisterConsumer(consumer_subject),
-        )
-      })
-
       Ok(SupervisedAgent(subject: agent_subject, sup_pid: started.pid))
     }
     Error(e) -> Error(ActorStart(e))
@@ -157,6 +153,41 @@ pub fn run_continue_with_timeout(
   timeout_ms: Int,
 ) -> Result(Message, RunError) {
   runtime.run_continue(sup.subject, timeout_ms)
+}
+
+/// Set inference settings on the supervised agent.
+pub fn set_inference_settings(
+  sup: SupervisedAgent,
+  settings: InferenceSettings,
+) -> Result(Nil, RunError) {
+  set_inference_settings_with_timeout(sup, settings, 120_000)
+}
+
+/// Set inference settings on the supervised agent with an explicit timeout.
+pub fn set_inference_settings_with_timeout(
+  sup: SupervisedAgent,
+  settings: InferenceSettings,
+  timeout_ms: Int,
+) -> Result(Nil, RunError) {
+  runtime.set_inference_settings(sup.subject, settings, timeout_ms)
+}
+
+/// Set the thinking level on the supervised agent.
+pub fn set_thinking_level(
+  sup: SupervisedAgent,
+  level: ThinkingLevel,
+) -> Result(Nil, RunError) {
+  set_inference_settings(sup, provider.with_thinking_level(level))
+}
+
+/// Reset the supervised agent to the provider's default thinking behavior.
+pub fn reset_inference_settings(sup: SupervisedAgent) -> Result(Nil, RunError) {
+  set_inference_settings(sup, provider.default_settings())
+}
+
+/// Reset the supervised agent to the provider's default thinking behavior.
+pub fn reset_thinking_level(sup: SupervisedAgent) -> Result(Nil, RunError) {
+  reset_inference_settings(sup)
 }
 
 /// Stop the supervised agent.

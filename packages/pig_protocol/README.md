@@ -52,6 +52,14 @@ pub fn parse_response(body: String) {
 The Responses API has the same pure request/response shape through
 `pig_protocol/codec/responses`.
 
+`pig` providers receive one `InferenceRequest` containing messages, tools, and
+agent-owned settings. An explicit `Off` thinking level disables reasoning;
+an unset level leaves the provider default in control. Settings survive durable
+restoration and can be changed mid-session. They are not per-run overrides, and
+providers do not clamp levels or advertise model capabilities. Inference start
+and stop (and setting changes) are exposed through the agent event/session
+stream.
+
 For direct HTTP calls, construct a `pig_protocol/transport.HttpRequest` and use
 `pig_protocol/transport/httpc.transport`, or provide your own function matching
 `pig_protocol/transport.Transport`.

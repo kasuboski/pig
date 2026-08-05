@@ -37,7 +37,9 @@ fn state_for_update(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   // Provider is never called by update — it's a runtime concern.
   // But we need one to construct AgentConfig.
-  let provider = fn(_msgs, _tools) {
+  let provider = fn(request: provider.InferenceRequest) {
+    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
@@ -50,7 +52,9 @@ fn state_for_update_with_max(
   max: Int,
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = fn(_msgs, _tools) {
+  let provider = fn(request: provider.InferenceRequest) {
+    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
@@ -125,7 +129,9 @@ pub fn user_prompt_call_provider_includes_tools_test() {
 
 /// System prompt is prepended to messages in the effect when configured.
 pub fn user_prompt_system_prompt_prepended_test() {
-  let provider = fn(_msgs, _tools) {
+  let provider = fn(request: provider.InferenceRequest) {
+    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
   let st =

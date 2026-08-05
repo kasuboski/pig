@@ -1,15 +1,16 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
-import pig_protocol/error.{ApiError}
-import pig_protocol/message.{Assistant, ToolCall}
-import pig_protocol/stop_reason
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActionDetail, InferenceStarted, MaxIterationsExceeded,
   NormalEnd,
 }
 import pig/obs/terminal
+import pig/provider
+import pig_protocol/error.{ApiError}
+import pig_protocol/message.{Assistant, ToolCall}
+import pig_protocol/stop_reason
 
 pub fn format_session_started_shows_model_test() {
   let event =
@@ -39,6 +40,7 @@ pub fn format_inference_completed_shows_duration_test() {
       output_tokens: None,
       duration_ms: 150,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let result = terminal.format_event(event)
@@ -59,6 +61,7 @@ pub fn format_inference_completed_shows_token_counts_test() {
       output_tokens: Some(15),
       duration_ms: 150,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let result = terminal.format_event(event)
@@ -81,6 +84,7 @@ pub fn format_inference_completed_without_tokens_test() {
       output_tokens: None,
       duration_ms: 200,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let result = terminal.format_event(event)
@@ -106,9 +110,11 @@ pub fn format_tool_executed_shows_tool_name_test() {
 pub fn format_inference_failed_shows_error_test() {
   let event =
     events.InferenceFailed(
+      model: "requested-model",
       error: ApiError("rate limited"),
       duration_ms: 100,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let result = terminal.format_event(event)
@@ -141,7 +147,12 @@ pub fn format_session_ended_max_iterations_test() {
 // ── Tests for new SessionEvent variants ─────────────────────────────
 
 pub fn format_inference_started_shows_model_test() {
-  let event = events.InferenceStarted(model: "gpt-4", message_count: 3)
+  let event =
+    events.InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
 
   let result = terminal.format_event(event)
 
@@ -227,19 +238,24 @@ pub fn terminal_consumer_receives_events_via_dispatcher_test() {
 
   // Start a sync consumer to verify dispatcher processed the message
   let sync_consumer = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(sync_consumer))
+  dispatcher.register_consumer(disp, sync_consumer)
 
   // Start terminal consumer actor
   let assert Ok(terminal_consumer) = terminal.start_consumer()
-  process.send(disp, dispatcher.RegisterConsumer(terminal_consumer))
+  dispatcher.register_consumer(disp, terminal_consumer)
 
   // Send event through dispatcher
-  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  let event =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
   process.send(disp, dispatcher.Event(event))
 
   // Wait for sync consumer to receive (confirms dispatcher processed the message)
   let assert Ok(received) = process.receive(sync_consumer, 2000)
-  let assert InferenceStarted(model:, message_count:) = received
+  let assert InferenceStarted(model:, message_count:, settings: _) = received
   assert model == "gpt-4"
   assert message_count == 3
 

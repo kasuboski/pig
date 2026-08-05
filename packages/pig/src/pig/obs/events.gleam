@@ -11,9 +11,11 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import pig/provider
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
 import pig_protocol/stop_reason.{type StopReason}
+import pig_protocol/thinking
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
 
@@ -46,7 +48,11 @@ pub fn execute_telemetry(
 // ── Event Union Type ─────────────────────────────────────────────────
 
 pub type Event {
-  InferenceStart(model: String, message_count: Int)
+  InferenceStart(
+    model: String,
+    message_count: Int,
+    settings: provider.InferenceSettings,
+  )
   InferenceStop(
     model: String,
     message_count: Int,
@@ -55,8 +61,14 @@ pub type Event {
     stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    settings: provider.InferenceSettings,
   )
-  InferenceException(model: String, message_count: Int, error_type: String)
+  InferenceException(
+    model: String,
+    message_count: Int,
+    error_type: String,
+    settings: provider.InferenceSettings,
+  )
   ToolStart(tool_name: String, tool_call_id: String, arguments_json: String)
   ToolStop(
     tool_name: String,
@@ -134,13 +146,17 @@ pub fn name_to_string(name: List(String)) -> String {
 /// Emit a typed telemetry event.
 pub fn emit(event: Event) -> Nil {
   case event {
-    InferenceStart(model:, message_count:) -> {
+    InferenceStart(model:, message_count:, settings:) -> {
       let measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
           #("message_count", message_count),
         ])
-      let metadata = dict.from_list([#("model", model)])
+      let metadata =
+        dict.from_list([
+          #("model", model),
+          #("thinking", settings_to_string(settings)),
+        ])
       ffi_execute(inference_start_name(), measurements, metadata)
     }
     InferenceStop(
@@ -151,6 +167,7 @@ pub fn emit(event: Event) -> Nil {
       stop_reason:,
       input_tokens:,
       output_tokens:,
+      settings:,
     ) -> {
       // Build measurements with optional token counts
       let base_measurements =
@@ -165,7 +182,11 @@ pub fn emit(event: Event) -> Nil {
         |> maybe_insert_int("output_tokens", output_tokens)
 
       // Build metadata with optional string fields
-      let base_metadata = dict.from_list([#("model", model)])
+      let base_metadata =
+        dict.from_list([
+          #("model", model),
+          #("thinking", settings_to_string(settings)),
+        ])
       let metadata =
         base_metadata
         |> maybe_insert_string("response_id", response_id)
@@ -176,14 +197,18 @@ pub fn emit(event: Event) -> Nil {
 
       ffi_execute(inference_stop_name(), measurements, metadata)
     }
-    InferenceException(model:, message_count:, error_type:) -> {
+    InferenceException(model:, message_count:, error_type:, settings:) -> {
       let measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
           #("message_count", message_count),
         ])
       let metadata =
-        dict.from_list([#("model", model), #("error_type", error_type)])
+        dict.from_list([
+          #("model", model),
+          #("error_type", error_type),
+          #("thinking", settings_to_string(settings)),
+        ])
       ffi_execute(inference_exception_name(), measurements, metadata)
     }
     ToolStart(tool_name:, tool_call_id:, arguments_json:) -> {
@@ -291,6 +316,45 @@ fn maybe_get_int(dict: Dict(String, Int), key: String) -> Option(Int) {
   }
 }
 
+/// Convert inference settings to the provider-neutral stable string used by
+/// telemetry and session serialization.
+pub fn settings_to_string(settings: provider.InferenceSettings) -> String {
+  case settings {
+    provider.InferenceSettings(thinking: provider.UseProviderDefault) ->
+      "provider_default"
+    provider.InferenceSettings(thinking: provider.UseThinkingLevel(level)) ->
+      thinking.to_string(level)
+  }
+}
+
+/// Parse the provider-neutral representation of inference settings.
+pub fn settings_from_string(
+  value: String,
+) -> Result(provider.InferenceSettings, Nil) {
+  case value {
+    "provider_default" -> Ok(provider.default_settings())
+    _ ->
+      case thinking.from_string(value) {
+        Ok(level) -> Ok(provider.with_thinking_level(level))
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+fn settings_from_metadata(
+  metadata: Dict(String, String),
+) -> provider.InferenceSettings {
+  case maybe_get_string(metadata, "thinking") {
+    Some(value) -> {
+      case settings_from_string(value) {
+        Ok(settings) -> settings
+        Error(Nil) -> provider.default_settings()
+      }
+    }
+    None -> provider.default_settings()
+  }
+}
+
 // ── Decoding ─────────────────────────────────────────────────────────
 // Reconstruct typed Events from raw captured data (used by the test listener).
 
@@ -310,7 +374,8 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
     ["pig", "inference", "start"] -> {
       let assert Ok(model) = dict.get(raw.metadata, "model")
       let assert Ok(count) = dict.get(raw.measurements, "message_count")
-      InferenceStart(model:, message_count: count)
+      let settings = settings_from_metadata(raw.metadata)
+      InferenceStart(model:, message_count: count, settings:)
     }
     ["pig", "inference", "stop"] -> {
       let assert Ok(model) = dict.get(raw.metadata, "model")
@@ -321,6 +386,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       let sr = option.map(raw_stop_reason, stop_reason.from_string)
       let input_tokens = maybe_get_int(raw.measurements, "input_tokens")
       let output_tokens = maybe_get_int(raw.measurements, "output_tokens")
+      let settings = settings_from_metadata(raw.metadata)
       InferenceStop(
         model:,
         message_count: count,
@@ -329,13 +395,15 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
         stop_reason: sr,
         input_tokens:,
         output_tokens:,
+        settings:,
       )
     }
     ["pig", "inference", "exception"] -> {
       let assert Ok(model) = dict.get(raw.metadata, "model")
       let assert Ok(count) = dict.get(raw.measurements, "message_count")
       let assert Ok(error_type) = dict.get(raw.metadata, "error_type")
-      InferenceException(model:, message_count: count, error_type:)
+      let settings = settings_from_metadata(raw.metadata)
+      InferenceException(model:, message_count: count, error_type:, settings:)
     }
     ["pig", "tool", "start"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
@@ -401,7 +469,11 @@ pub type SessionEvent {
     provider_name: Option(String),
     system_prompt: Option(String),
   )
-  InferenceStarted(model: String, message_count: Int)
+  InferenceStarted(
+    model: String,
+    message_count: Int,
+    settings: provider.InferenceSettings,
+  )
   InferenceCompleted(
     message: Message,
     response_id: Option(String),
@@ -411,15 +483,19 @@ pub type SessionEvent {
     output_tokens: Option(Int),
     duration_ms: Int,
     input_messages: List(Message),
+    settings: provider.InferenceSettings,
   )
   ToolStarted(tool_call: ToolCall)
   ToolExecuted(tool_call: ToolCall, result: String, duration_ms: Int)
   ToolBlocked(tool_call: ToolCall, hook_name: String, reason: String)
   HookActed(hook_name: String, hook_point: HookPoint, action: HookActionDetail)
   InferenceFailed(
+    model: String,
     error: AiError,
     duration_ms: Int,
     input_messages: List(Message),
+    settings: provider.InferenceSettings,
   )
+  InferenceSettingsChanged(settings: provider.InferenceSettings)
   SessionEnded(reason: SessionEndReason)
 }

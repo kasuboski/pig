@@ -26,6 +26,7 @@ import pig/run_error
 import pig/tool/web_fetch
 import pig_protocol/error
 import pig_protocol/message
+import pig_protocol/thinking
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ pub fn main() {
   let cfg =
     pig.new(provider.call)
     |> pig.with_model("url_summarizer")
+    |> pig.with_thinking_level(thinking.Off)
     |> pig.with_system_prompt(
       "You summarize web pages. When given a URL, use the web_fetch tool "
       <> "to retrieve it, then provide a concise summary of the page content. "

@@ -7,11 +7,14 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/otp/actor
+import gleam/otp/supervision
+import gleam/result
 import gleeunit
 import pig
 import pig/agent/runtime
 import pig/agent/state
 import pig/obs/consumer_spec
+import pig/obs/events.{type SessionEvent, InferenceCompleted, InferenceStarted}
 import pig/obs/session
 import pig/obs/terminal
 import pig/provider
@@ -20,6 +23,7 @@ import pig/session_store/memory
 import pig/supervisor
 import pig_protocol/message
 import pig_protocol/stop_reason
+import pig_protocol/thinking
 import support/harness
 import temporary
 
@@ -35,6 +39,16 @@ fn with_temp_file(name: String, run test_fn: fn(String) -> a) -> a {
 
 pub fn main() -> Nil {
   gleeunit.main()
+}
+
+fn messages_in_commit(
+  commit: session_store.SessionCommit,
+) -> List(message.Message) {
+  let session_store.SessionCommit(delta:, ..) = commit
+  case delta {
+    session_store.MessagesAppended(messages) -> messages
+    session_store.InferenceSettingsChanged(_) -> []
+  }
 }
 
 // ── Helper: build AgentConfig from pig.PigConfig ─────────────────
@@ -74,6 +88,60 @@ fn counter_handler(
 
 fn increment(counter: process.Subject(CounterMessage)) -> Nil {
   actor.call(counter, 1000, Increment)
+}
+
+fn capturing_consumer_spec(
+  capture: process.Subject(SessionEvent),
+  started: process.Subject(Nil),
+) -> consumer_spec.ConsumerSpec {
+  let name = process.new_name("test_supervised_capture")
+  let spec =
+    supervision.worker(fn() { start_capture_named(capture, started, name) })
+  let start_fn = fn() { start_capture(capture) }
+  consumer_spec.ConsumerSpec(spec:, name:, start_fn:)
+}
+
+fn start_capture(
+  capture: process.Subject(SessionEvent),
+) -> Result(process.Subject(SessionEvent), actor.StartError) {
+  let builder =
+    actor.new(Nil)
+    |> actor.on_message(capture_handler(capture))
+  actor.start(builder)
+  |> result.map(fn(started) { started.data })
+}
+
+fn start_capture_named(
+  capture: process.Subject(SessionEvent),
+  started_subject: process.Subject(Nil),
+  name: process.Name(SessionEvent),
+) -> Result(actor.Started(Nil), actor.StartError) {
+  let builder =
+    actor.new(Nil)
+    |> actor.on_message(capture_handler(capture))
+    |> actor.named(name)
+  case actor.start(builder) {
+    Ok(started) -> {
+      process.send(started_subject, Nil)
+      Ok(actor.Started(data: Nil, pid: started.pid))
+    }
+    Error(error) -> Error(error)
+  }
+}
+
+fn capture_handler(
+  capture: process.Subject(SessionEvent),
+) -> fn(Nil, SessionEvent) -> actor.Next(Nil, SessionEvent) {
+  fn(state, event) {
+    process.send(capture, event)
+    actor.continue(state)
+  }
+}
+
+fn assert_inference_events(capture: process.Subject(SessionEvent)) -> Nil {
+  let assert Ok(InferenceStarted(..)) = process.receive(capture, 2000)
+  let assert Ok(InferenceCompleted(..)) = process.receive(capture, 2000)
+  Nil
 }
 
 fn count(counter: process.Subject(CounterMessage)) -> Int {
@@ -266,6 +334,40 @@ pub fn consumers_receive_events_test() {
   supervisor.stop(sup)
 }
 
+/// Initial consumers remain registered when the OneForAll event subtree is
+/// reconstructed after a consumer failure.
+pub fn supervised_consumers_survive_event_tree_restart_test() {
+  let capture = process.new_subject()
+  let consumer_started = process.new_subject()
+  let consumer_spec = capturing_consumer_spec(capture, consumer_started)
+  let response = message.Assistant("restart event", [], None, None)
+  let config = pig.new(harness.fixed_provider(response)) |> agent_config
+
+  let assert Ok(sup) = supervisor.start_supervised(config, [consumer_spec])
+  let assert Ok(Nil) = process.receive(consumer_started, 2000)
+
+  // The consumer is configured in the dispatcher's initial state, so the
+  // first event is available immediately after supervised startup.
+  let assert Ok(_first) = supervisor.run(sup, "first")
+  assert_inference_events(capture)
+
+  // Force the OneForAll subtree to reconstruct both dispatcher and consumer.
+  let consumer_subject = process.named_subject(consumer_spec.name)
+  let assert Ok(original_pid) = process.subject_owner(consumer_subject)
+  let monitor = process.monitor(original_pid)
+  process.kill(original_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+  let assert Ok(Nil) = process.receive(consumer_started, 2000)
+
+  let assert Ok(_second) = supervisor.run(sup, "second")
+  assert_inference_events(capture)
+  supervisor.stop(sup)
+}
+
 /// stop kills the entire supervision tree.
 pub fn stop_kills_tree_test() {
   use session_path <- with_temp_file("stop_tree")
@@ -328,9 +430,9 @@ pub fn supervised_session_load_failure_is_distinct_test() {
   let store =
     session_store.SessionStore(
       load: fn() { Error(session_store.Unavailable("offline")) },
-      commit: fn(_commit) { Ok(session_store.Session(None, [])) },
+      commit: fn(_commit) { Ok(session_store.Session(None, [], None)) },
     )
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment(provider_calls)
     Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
   }
@@ -349,16 +451,15 @@ pub fn supervised_loaded_terminal_assistant_returns_without_provider_test() {
   let store =
     session_store.SessionStore(
       load: fn() {
-        Ok(
-          session_store.Session(Some("loaded-head"), [
-            message.User("previous question"),
-            completed,
-          ]),
-        )
+        Ok(session_store.Session(
+          Some("loaded-head"),
+          [message.User("previous question"), completed],
+          None,
+        ))
       },
-      commit: fn(_commit) { Ok(session_store.Session(None, [])) },
+      commit: fn(_commit) { Ok(session_store.Session(None, [], None)) },
     )
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment(provider_calls)
     Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
   }
@@ -381,13 +482,20 @@ pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
   let final = message.Assistant("continued", [], None, Some(stop_reason.Stop))
   let store =
     session_store.SessionStore(
-      load: fn() { Ok(session_store.Session(Some("loaded-head"), loaded)) },
+      load: fn() {
+        Ok(session_store.Session(Some("loaded-head"), loaded, option.None))
+      },
       commit: fn(commit) {
         process.send(commits, commit)
-        Ok(session_store.Session(Some(commit.id), commit.messages))
+        Ok(session_store.Session(
+          Some(commit.id),
+          messages_in_commit(commit),
+          None,
+        ))
       },
     )
-  let provider_fn = fn(messages, _tools) {
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    let messages = request.messages
     increment(provider_calls)
     process.send(provider_messages, messages)
     Ok(provider.from_message(final))
@@ -402,7 +510,7 @@ pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
   assert sent_to_provider == [message.User("resume from here")]
   let assert Ok(commit) = process.receive(commits, 1000)
   assert commit.parent == Some("loaded-head")
-  assert commit.messages == [final]
+  assert messages_in_commit(commit) == [final]
   assert count(provider_calls) == 1
   supervisor.stop(sup)
 }
@@ -413,9 +521,10 @@ pub fn supervised_durable_runtime_restart_reloads_latest_session_test() {
   let provider_calls = start_counter()
   let completed =
     message.Assistant("durably complete", [], None, Some(stop_reason.Stop))
-  let assert Ok(memory_store) = memory.start(session_store.Session(None, []))
+  let assert Ok(memory_store) =
+    memory.start(session_store.Session(None, [], None))
   let store = memory.store(memory_store)
-  let provider_fn = fn(_messages, _tools) {
+  let provider_fn = fn(_request) {
     increment(provider_calls)
     Ok(provider.from_message(completed))
   }
@@ -446,6 +555,53 @@ pub fn supervised_durable_runtime_restart_reloads_latest_session_test() {
   assert resumed == completed
   assert count(provider_calls) == 1
 
+  supervisor.stop(sup)
+  memory.stop(memory_store)
+}
+
+/// A supervised durable restart restores persisted inference settings ahead of
+/// the configured value.
+pub fn supervised_durable_restart_restores_inference_settings_test() {
+  let restored = provider.with_thinking_level(thinking.High)
+  let configured = provider.with_thinking_level(thinking.Low)
+  let seen = process.new_subject()
+  let response = message.Assistant("done", [], None, Some(stop_reason.Stop))
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(seen, request.settings)
+    Ok(provider.from_message(response))
+  }
+  let assert Ok(memory_store) =
+    memory.start(session_store.Session(None, [], Some(restored)))
+  let config =
+    pig.new(provider_fn)
+    |> pig.with_thinking_level(thinking.Low)
+    |> agent_config
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(
+      config,
+      [],
+      memory.store(memory_store),
+    )
+  let assert Ok(_) = supervisor.run_with_timeout(sup, "first", 5000)
+  let assert Ok(first_settings) = process.receive(seen, 1000)
+  assert first_settings == restored
+
+  let assert Ok(original_pid) = process.subject_owner(sup.subject)
+  let monitor = process.monitor(original_pid)
+  process.kill(original_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+  let restarted = process.new_subject()
+  let _ = process.spawn(fn() { await_subject_owner(sup.subject, restarted) })
+  let assert Ok(_restarted_pid) = process.receive(restarted, 5000)
+
+  let assert Ok(_) = supervisor.run_with_timeout(sup, "second", 5000)
+  let assert Ok(second_settings) = process.receive(seen, 1000)
+  assert second_settings == restored
+  assert configured != restored
   supervisor.stop(sup)
   memory.stop(memory_store)
 }

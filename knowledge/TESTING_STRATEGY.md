@@ -58,12 +58,18 @@ pub fn provider_error_increments_iterations_test() {
   let assert Failed(_, _) = result
 }
 
-// Bad: testing Gleam constructors
-pub fn effect_call_provider_has_fields_test() {
-  let e = CallProvider(messages: [], tools: [], on_response: fn(x) { x })
-  should.equal(e.messages, [])  // This tests Gleam, not pig
+// Good: assert the effect's behavior, not its constructor fields
+pub fn prompt_produces_provider_effect_test() {
+  let assert Continue(_, [CallProvider(messages:, tools:, on_response: _)]) =
+    update(make_state([]), UserPrompt("hello"))
+  should.equal(messages, [User("hello")])
+  should.equal(tools, [])
 }
 ```
+
+`CallProvider` intentionally contains only messages, tools, and `on_response`.
+The runtime owns inference settings and constructs the one-argument
+`InferenceRequest`; test those settings at the runtime/provider boundary.
 
 ### Hook Composition Tests (`hooks_test`)
 Hooks are *functions* — `fn(Event) -> Action` — but they may be impure at runtime (querying databases, calling guardrail LLMs, fetching policy from remote services). The *composition functions* (`decide_tool_call`, `decide_tool_result`, `decide_messages`) are pure: they take a list of hooks and an event, run handlers in order, and return a decision.

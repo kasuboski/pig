@@ -2,6 +2,11 @@
 
 A persistent workspace for pig agents, backed by SQLite. Agents get a sandboxed virtual filesystem and a key-value memory store that survive across sessions.
 
+Agent-owned inference settings are durable state too. Restoring an agent/session
+restores the setting used for subsequent `InferenceRequest` values. A mid-session
+change affects later requests and emits the normal setting and inference events;
+it is not a per-run override.
+
 Based on the [AgentFS spec](https://github.com/tursodatabase/agentfs/blob/main/SPEC.md) v0.4, stripped down to what pig needs.
 
 ## Overview

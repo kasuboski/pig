@@ -4,13 +4,16 @@
 //// Tests verify the renamed Hooks type (was Extension) and composition
 //// functions that take List(Hooks) instead of ExtensionStack.
 
+import pig/provider
+
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
 import gleeunit
+import pig/hooks
 import pig_protocol/error
 import pig_protocol/message
-import pig/hooks
+import pig_protocol/thinking
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -57,7 +60,12 @@ pub fn new_hooks_keeps_results_by_default_test() {
 pub fn new_hooks_keeps_messages_by_default_test() {
   let h = hooks.new("test")
   let messages = [message.User("hello"), message.System("system")]
-  let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages: messages)
+  let event =
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages: messages,
+      settings: provider.default_settings(),
+    )
   let action = case h {
     hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
   }
@@ -104,9 +112,13 @@ pub fn on_before_inference_replaces_handler_test() {
     hooks.new("test")
     |> hooks.on_before_inference(fn(_) { hooks.ReplaceMessages(new_messages) })
   let event =
-    hooks.BeforeInferenceEvent(model: "gpt-4", messages: [
-      message.User("original"),
-    ])
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages: [
+        message.User("original"),
+      ],
+      settings: provider.default_settings(),
+    )
   let action = case h {
     hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
   }
@@ -123,6 +135,7 @@ pub fn on_after_inference_replaces_handler_test() {
       model: "gpt-4",
       message: message.Assistant("response", [], None, None),
       duration_ms: 100,
+      settings: provider.default_settings(),
     )
   let _ = case h {
     hooks.Hooks(on_after_inference: handler, ..) -> handler(event)
@@ -136,7 +149,11 @@ pub fn on_error_replaces_handler_test() {
     hooks.new("test")
     |> hooks.on_error(fn(_) { process.send(signal, Nil) })
   let event =
-    hooks.ErrorEvent(model: "gpt-4", error: error.ApiError("test error"))
+    hooks.ErrorEvent(
+      model: "gpt-4",
+      error: error.ApiError("test error"),
+      settings: provider.default_settings(),
+    )
   let _ = case h {
     hooks.Hooks(on_error: handler, ..) -> handler(event)
   }
@@ -175,6 +192,7 @@ pub fn notify_after_inference_calls_all_handlers_test() {
       model: "gpt-4",
       message: message.Assistant("response", [], None, None),
       duration_ms: 100,
+      settings: provider.default_settings(),
     )
   hooks.notify_after_inference([h1, h2], event)
   let assert Ok(Nil) = process.receive(signal, 1000)
@@ -190,7 +208,11 @@ pub fn notify_error_calls_all_handlers_test() {
     hooks.new("error_handler2")
     |> hooks.on_error(fn(_) { process.send(signal, Nil) })
   let event =
-    hooks.ErrorEvent(model: "gpt-4", error: error.ApiError("test error"))
+    hooks.ErrorEvent(
+      model: "gpt-4",
+      error: error.ApiError("test error"),
+      settings: provider.default_settings(),
+    )
   hooks.notify_error([h1, h2], event)
   let assert Ok(Nil) = process.receive(signal, 1000)
   let assert Ok(Nil) = process.receive(signal, 1000)
@@ -404,14 +426,24 @@ pub fn decide_tool_result_chain_carries_all_transformers_test() {
 
 pub fn decide_messages_unchanged_when_no_hooks_test() {
   let messages = [message.User("hello")]
-  let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages:)
+  let event =
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages:,
+      settings: provider.default_settings(),
+    )
   let decision = hooks.decide_messages([], event)
   assert decision == hooks.MessagesUnchanged(original: messages)
 }
 
 pub fn decide_messages_unchanged_when_all_keep_test() {
   let messages = [message.User("hello")]
-  let event = hooks.BeforeInferenceEvent(model: "gpt-4", messages:)
+  let event =
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages:,
+      settings: provider.default_settings(),
+    )
   let h =
     hooks.new("noop")
     |> hooks.on_before_inference(fn(_) { hooks.KeepMessages })
@@ -425,7 +457,11 @@ pub fn decide_messages_replaced_carries_attribution_test() {
     hooks.new("injector")
     |> hooks.on_before_inference(fn(_) { hooks.ReplaceMessages(new_msgs) })
   let event =
-    hooks.BeforeInferenceEvent(model: "gpt-4", messages: [message.User("hello")])
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages: [message.User("hello")],
+      settings: provider.default_settings(),
+    )
   let decision = hooks.decide_messages([h], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
   assert final_messages == new_msgs
@@ -448,7 +484,11 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
       )
     })
   let event =
-    hooks.BeforeInferenceEvent(model: "gpt-4", messages: [message.User("hello")])
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages: [message.User("hello")],
+      settings: provider.default_settings(),
+    )
   let decision = hooks.decide_messages([h1, h2], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
   // Only proper chaining produces: [System("ctx"), User("hello"), User("suffix")]
@@ -462,6 +502,26 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
 }
 
 // ── Session Lifecycle Hook Tests ──────────────────────────────────────
+
+pub fn hooks_keep_requested_settings_in_before_inference_test() {
+  let requested = provider.with_thinking_level(thinking.Off)
+  let seen = process.new_subject()
+  let h =
+    hooks.new("observer")
+    |> hooks.on_before_inference(fn(event) {
+      process.send(seen, event.settings)
+      hooks.KeepMessages
+    })
+  let event =
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      messages: [message.User("hello")],
+      settings: requested,
+    )
+  let assert hooks.MessagesUnchanged(_) = hooks.decide_messages([h], event)
+  let assert Ok(settings) = process.receive(seen, 1000)
+  assert settings == requested
+}
 
 pub fn new_hooks_has_no_session_start_by_default_test() {
   let h = hooks.new("test")

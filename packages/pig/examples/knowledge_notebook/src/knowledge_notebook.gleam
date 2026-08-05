@@ -37,6 +37,7 @@ import pig/run_error
 import pig/workspace
 import pig_protocol/error
 import pig_protocol/message
+import pig_protocol/thinking
 
 // ── Source Content ───────────────────────────────────────────────────
 // Pre-seeded reference texts for the agent to read and organize.
@@ -264,6 +265,7 @@ pub fn main() {
   let cfg =
     pig.new(provider.call)
     |> pig.with_model("knowledge_notebook")
+    |> pig.with_thinking_level(thinking.Medium)
     |> pig.with_system_prompt(system_prompt())
     |> pig.with_tools(workspace.all_tools(ws))
     |> pig.with_terminal_output()

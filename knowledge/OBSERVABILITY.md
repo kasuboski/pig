@@ -60,9 +60,10 @@ The variants are:
 | Event | Purpose | Produced by |
 |-------|---------|-------------|
 | `SessionStarted` | Session begun with identity and model info | (reserved, not yet emitted) |
-| `InferenceStarted` | Provider call beginning, with model and message count | `runtime` before provider call |
-| `InferenceCompleted` | Provider call succeeded, with full message, tokens, timing | `runtime` after successful response |
-| `InferenceFailed` | Provider call failed, with error details and timing | `runtime` after error |
+| `InferenceStarted` | Provider call beginning, with model, message count, and requested settings | `runtime` before provider call |
+| `InferenceCompleted` | Provider call succeeded, with full message, tokens, timing, and requested settings | `runtime` after successful response |
+| `InferenceFailed` | Provider call failed, with error details, timing, and requested settings | `runtime` after error |
+| `InferenceSettingsChanged` | Durable agent setting changed | `runtime` after the setting is committed |
 | `ToolStarted` | Tool execution beginning | `runtime` when executing tools |
 | `ToolExecuted` | Tool execution finished, with result and timing | `runtime` after tool completion |
 | `ToolBlocked` | Tool blocked by a hook | (reserved for hooks system) |
@@ -91,9 +92,10 @@ The projection maps each `SessionEvent` to a flat telemetry event with string-ke
 
 | SessionEvent | Telemetry name | What's projected |
 |-------------|---------------|-----------------|
-| `InferenceStarted` | `[:pig, :inference, :start]` | model, message_count |
-| `InferenceCompleted` | `[:pig, :inference, :stop]` | model, duration, tokens (if present), finish_reason (if present) |
-| `InferenceFailed` | `[:pig, :inference, :exception]` | model, error_type, duration, message_count |
+| `InferenceStarted` | `[:pig, :inference, :start]` | model, message_count; metadata includes requested `thinking` |
+| `InferenceCompleted` | `[:pig, :inference, :stop]` | model, duration, tokens (if present), finish_reason (if present); metadata includes requested `thinking` |
+| `InferenceFailed` | `[:pig, :inference, :exception]` | model, message_count; metadata includes error_type and requested `thinking` |
+| `InferenceSettingsChanged` | *(session event only)* | durable requested settings |
 | `ToolStarted` | `[:pig, :tool, :start]` | tool_name, tool_call_id, arguments_json |
 | `ToolExecuted` | `[:pig, :tool, :stop]` | tool_name, tool_call_id, duration, result |
 | `ToolBlocked` | `[:pig, :tool, :blocked]` | tool_name, tool_call_id, hook_name, reason |
@@ -101,7 +103,7 @@ The projection maps each `SessionEvent` to a flat telemetry event with string-ke
 | `HookActed` | *(not projected)* | — |
 | `SessionEnded` | *(not projected)* | — |
 
-**Heavy fields stay out of telemetry.** Full message content, tool results, and input message lists are pig-consumer territory. Telemetry gets lightweight identifiers and metrics only. This keeps `:telemetry` events cheap enough to fire on every agent step without impacting throughput.
+**Heavy fields stay out of telemetry.** Full message content, tool results, and input message lists are pig-consumer territory. Telemetry gets lightweight identifiers and metrics only. The `thinking` field is the requested setting, not an effective level reported by the provider; pig does not infer, clamp, or maintain model capabilities. This keeps `:telemetry` events cheap enough to fire on every agent step without impacting throughput.
 
 The actual FFI call goes through `pig_obs_ffi.execute/3` (Erlang), which converts string-keyed dicts to atom-keyed maps and calls `:telemetry.execute/3`.
 

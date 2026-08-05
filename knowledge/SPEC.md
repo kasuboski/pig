@@ -37,7 +37,7 @@ A unified type system for messages and a common interface for model providers.
     *   `ToolDefinition`: The JSON Schema representation of a tool.
     *   `InferenceResult`: Wraps a `Message` with `InferenceMetadata` (response ID, model, finish reason, token counts).
     *   `ThinkingLevel`: Provider-neutral reasoning effort (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, or `Max`).
-*   **Interface:** A provider is a function: `fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)`. Provider constructors capture model-specific request configuration such as thinking level; the OpenAI Chat Completions provider maps it to `reasoning_effort`, while the Responses provider maps it to `reasoning.effort`.
+*   **Interface:** A provider is `fn(InferenceRequest) -> Result(InferenceResult, AiError)`. `InferenceRequest` carries messages, tools, and agent-owned inference settings. Providers may also have a default for requests without an explicit agent setting. OpenAI Chat Completions maps thinking level to `reasoning_effort`; Responses maps it to `reasoning.effort`.
 
 ### 3.2 `pig/agent`: Sans-IO State Machine + Runtime
 
@@ -48,7 +48,7 @@ The agent is split into two layers:
 The core operates on three types:
 
 *   **`AgentMsg`:** `UserPrompt(String)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
-*   **`Effect(msg):** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it.
+*   **`Effect(msg):** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it. Inference settings remain runtime-owned.
 *   **`StepResult(msg):** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
 
 **Runtime interpreter (`pig/agent/runtime.gleam`):** An OTP actor that holds the provider function, tool registry, hooks list, and dispatcher subject. The runtime loop:
@@ -88,7 +88,7 @@ The observability system uses a dispatcher-actor pattern.
 
 When `pig.run(agent, prompt)` is called:
 1.  **Entry:** The runtime receives `Run(prompt)`, wraps it in `UserPrompt`, calls `update(state, UserPrompt(prompt))`. The core returns `Continue(state, [CallProvider(messages, tools, on_response)])`.
-2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (may transform messages), calls the provider, fires `on_after_inference` hooks, emits `InferenceStarted`/`InferenceCompleted` events, then feeds the response back as `ProviderResponded`.
+2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (which may transform messages), builds an `InferenceRequest` from the resulting messages, tools, and the agent's current settings, calls the one-argument provider, fires `on_after_inference` hooks, emits inference start/stop events, then feeds the response back as `ProviderResponded`.
 3.  **Branching:** The core processes `ProviderResponded`:
     *   **If text:** Returns `Done(state, message)`. The runtime returns the message to the caller.
     *   **If tool calls:** Returns `Continue(state, [ExecuteTools(calls, on_results)])`. The runtime applies `on_tool_call` hooks (allow/block), executes allowed tools in parallel, applies `on_tool_result` hooks, emits events, then feeds results back as `ToolResults`.

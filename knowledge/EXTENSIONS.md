@@ -552,6 +552,7 @@ Deferred until there's a real need:
 - **Command/shortcut system** — pig has no command system yet.
 - **Filesystem extension discovery** — Gleam is compiled. Extensions are functions in code.
 - **Provider registration from hooks** — can't swap the provider mid-loop.
+- **Inference settings from hooks** — settings belong to the agent and are sent in each `InferenceRequest`; hooks do not provide per-run overrides. Agent setting changes are durable and observable through the normal session/events pipeline.
 - **Branching/compaction** — single linear history for now. Can be added as hooks later.
 - **Session switching** — application-level concern. Keep a `Dict(String, Agent)`.
 

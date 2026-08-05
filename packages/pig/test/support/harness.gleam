@@ -51,17 +51,15 @@ pub fn failing_tool() -> tool.Tool {
 // ── Public: mock providers ───────────────────────────────────────
 
 /// Provider that returns a fixed response every call.
-pub fn fixed_provider(
-  response: message.Message,
-) -> fn(List(message.Message), List(tool_definition.ToolDefinition)) ->
-  Result(provider.InferenceResult, error.AiError) {
-  fn(_msgs, _tools) { Ok(provider.from_message(response)) }
+pub fn fixed_provider(response: message.Message) -> provider.Provider {
+  fn(_request: provider.InferenceRequest) {
+    Ok(provider.from_message(response))
+  }
 }
 
 /// Provider that always fails.
 pub fn failing_provider(
-  _msgs: List(message.Message),
-  _tools: List(tool_definition.ToolDefinition),
+  _request: provider.InferenceRequest,
 ) -> Result(provider.InferenceResult, error.AiError) {
   Error(error.ApiError("provider failed"))
 }
@@ -72,9 +70,9 @@ pub fn failing_provider(
 /// Tracks position by counting assistant messages in the history it receives.
 pub fn sequenced_provider_for_actor(
   responses: List(message.Message),
-) -> fn(List(message.Message), List(tool_definition.ToolDefinition)) ->
-  Result(provider.InferenceResult, error.AiError) {
-  fn(msgs, _tools) {
+) -> provider.Provider {
+  fn(request: provider.InferenceRequest) {
+    let msgs = request.messages
     let idx = count_assistant_messages(msgs)
     case nth(responses, idx) {
       Ok(msg) -> Ok(provider.from_message(msg))

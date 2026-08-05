@@ -24,12 +24,14 @@ gleam add pig
 import pig
 import pig/openai
 import pig_protocol/message
+import pig_protocol/thinking
 
 pub fn main() {
   let provider = openai.provider("your-api-key", "gpt-4o-mini")
   let config =
     pig.new(provider.call)
     |> pig.with_system_prompt("You are a helpful assistant.")
+    |> pig.with_thinking_level(thinking.Medium)
 
   let assert Ok(agent) = pig.start(config)
   let assert Ok(message.Assistant(content:, ..)) =
