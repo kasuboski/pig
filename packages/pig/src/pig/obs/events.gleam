@@ -15,7 +15,6 @@ import pig/provider
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
 import pig_protocol/stop_reason.{type StopReason}
-import pig_protocol/thinking
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
 
@@ -155,7 +154,7 @@ pub fn emit(event: Event) -> Nil {
       let metadata =
         dict.from_list([
           #("model", model),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       ffi_execute(inference_start_name(), measurements, metadata)
     }
@@ -185,7 +184,7 @@ pub fn emit(event: Event) -> Nil {
       let base_metadata =
         dict.from_list([
           #("model", model),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       let metadata =
         base_metadata
@@ -207,7 +206,7 @@ pub fn emit(event: Event) -> Nil {
         dict.from_list([
           #("model", model),
           #("error_type", error_type),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       ffi_execute(inference_exception_name(), measurements, metadata)
     }
@@ -221,7 +220,7 @@ pub fn emit(event: Event) -> Nil {
         ])
       ffi_execute(tool_start_name(), measurements, metadata)
     }
-    ToolStop(tool_name:, tool_call_id:, duration_ms:, result:) -> {
+    ToolStop(tool_name:, tool_call_id:, duration_ms:, result: _) -> {
       let measurements =
         dict.from_list([
           #("system_time", ffi_system_time()),
@@ -231,7 +230,6 @@ pub fn emit(event: Event) -> Nil {
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
-          #("result", result),
         ])
       ffi_execute(tool_stop_name(), measurements, metadata)
     }
@@ -316,37 +314,15 @@ fn maybe_get_int(dict: Dict(String, Int), key: String) -> Option(Int) {
   }
 }
 
-/// Convert inference settings to the provider-neutral stable string used by
-/// telemetry and session serialization.
-pub fn settings_to_string(settings: provider.InferenceSettings) -> String {
-  case settings {
-    provider.InferenceSettings(thinking: provider.UseProviderDefault) ->
-      "provider_default"
-    provider.InferenceSettings(thinking: provider.UseThinkingLevel(level)) ->
-      thinking.to_string(level)
-  }
-}
-
-/// Parse the provider-neutral representation of inference settings.
-pub fn settings_from_string(
-  value: String,
-) -> Result(provider.InferenceSettings, Nil) {
-  case value {
-    "provider_default" -> Ok(provider.default_settings())
-    _ ->
-      case thinking.from_string(value) {
-        Ok(level) -> Ok(provider.with_thinking_level(level))
-        Error(Nil) -> Error(Nil)
-      }
-  }
-}
-
+// Decode settings from a telemetry capture, defaulting when the capture
+// predates persisted settings or contains an unrecognized informational value.
+// This intentional default preserves replay compatibility for old captures.
 fn settings_from_metadata(
   metadata: Dict(String, String),
 ) -> provider.InferenceSettings {
   case maybe_get_string(metadata, "thinking") {
     Some(value) -> {
-      case settings_from_string(value) {
+      case provider.settings_from_string(value) {
         Ok(settings) -> settings
         Error(Nil) -> provider.default_settings()
       }
@@ -369,6 +345,8 @@ pub type RawCapturedEvent {
 
 /// Decode a raw captured event into a typed Event.
 /// Panics on unknown event names or missing fields (internal consistency).
+/// Missing or unrecognized settings metadata defaults to provider settings so
+/// captures made before settings were recorded remain replay-compatible.
 pub fn decode(raw: RawCapturedEvent) -> Event {
   case raw.name {
     ["pig", "inference", "start"] -> {
@@ -415,8 +393,11 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
       let assert Ok(dur) = dict.get(raw.measurements, "duration")
-      let assert Ok(res) = dict.get(raw.metadata, "result")
-      ToolStop(tool_name: name, tool_call_id: id, duration_ms: dur, result: res)
+      let result = case maybe_get_string(raw.metadata, "result") {
+        Some(value) -> value
+        None -> ""
+      }
+      ToolStop(tool_name: name, tool_call_id: id, duration_ms: dur, result:)
     }
     ["pig", "tool", "exception"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")

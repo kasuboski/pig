@@ -5,8 +5,7 @@ import gleeunit
 import pig/provider
 import pig/session_store.{
   type Session, type SessionStore, Corrupt, InferenceSettingsChanged,
-  InvalidCommit, MessagesAppended, ParentConflict, Session, SessionCommit,
-  SessionStore,
+  MessagesAppended, ParentConflict, Session, SessionCommit, SessionStore,
 }
 import pig/session_store/memory
 import pig_protocol/message.{User}
@@ -35,6 +34,7 @@ fn settings() -> provider.InferenceSettings {
   provider.with_thinking_level(High)
 }
 
+/// Verify commit appends all messages and advances head.
 pub fn commit_appends_all_messages_and_advances_head_test() {
   check(initial_session(), fn(store, handle) {
     let SessionStore(commit:, ..) = store
@@ -42,7 +42,7 @@ pub fn commit_appends_all_messages_and_advances_head_test() {
       commit(SessionCommit(
         id: "first",
         parent: None,
-        delta: MessagesAppended([User("one"), User("two")]),
+        delta: MessagesAppended(first: User("one"), rest: [User("two")]),
       ))
 
     assert session
@@ -55,6 +55,7 @@ pub fn commit_appends_all_messages_and_advances_head_test() {
   })
 }
 
+/// Verify settings only commit updates settings and head.
 pub fn settings_only_commit_updates_settings_and_head_test() {
   check(initial_session(), fn(store, handle) {
     let SessionStore(commit:, ..) = store
@@ -75,6 +76,7 @@ pub fn settings_only_commit_updates_settings_and_head_test() {
   })
 }
 
+/// Verify identical commit id is idempotent.
 pub fn identical_commit_id_is_idempotent_test() {
   check(initial_session(), fn(store, handle) {
     let SessionStore(commit:, ..) = store
@@ -82,7 +84,7 @@ pub fn identical_commit_id_is_idempotent_test() {
       SessionCommit(
         id: "first",
         parent: None,
-        delta: MessagesAppended([User("one")]),
+        delta: MessagesAppended(first: User("one"), rest: []),
       )
     let assert Ok(first) = commit(next)
     let assert Ok(second) = commit(next)
@@ -92,6 +94,7 @@ pub fn identical_commit_id_is_idempotent_test() {
   })
 }
 
+/// Verify duplicate id with different delta is corrupt.
 pub fn duplicate_id_with_different_delta_is_corrupt_test() {
   check(initial_session(), fn(store, handle) {
     let SessionStore(commit:, ..) = store
@@ -99,7 +102,7 @@ pub fn duplicate_id_with_different_delta_is_corrupt_test() {
       commit(SessionCommit(
         id: "first",
         parent: None,
-        delta: MessagesAppended([User("one")]),
+        delta: MessagesAppended(first: User("one"), rest: []),
       ))
     let assert Error(Corrupt(_)) =
       commit(SessionCommit(
@@ -112,6 +115,7 @@ pub fn duplicate_id_with_different_delta_is_corrupt_test() {
   })
 }
 
+/// Verify parent conflict leaves session unchanged.
 pub fn parent_conflict_leaves_session_unchanged_test() {
   check(
     Session(
@@ -126,25 +130,10 @@ pub fn parent_conflict_leaves_session_unchanged_test() {
         commit(SessionCommit(
           id: "next",
           parent: None,
-          delta: MessagesAppended([User("new")]),
+          delta: MessagesAppended(first: User("new"), rest: []),
         ))
 
       assert memory.snapshot(handle) == initial
     },
   )
-}
-
-pub fn empty_messages_commit_is_invalid_and_leaves_session_unchanged_test() {
-  check(initial_session(), fn(store, handle) {
-    let SessionStore(commit:, ..) = store
-    let initial = memory.snapshot(handle)
-    let assert Error(InvalidCommit(_)) =
-      commit(SessionCommit(
-        id: "empty",
-        parent: None,
-        delta: MessagesAppended([]),
-      ))
-
-    assert memory.snapshot(handle) == initial
-  })
 }

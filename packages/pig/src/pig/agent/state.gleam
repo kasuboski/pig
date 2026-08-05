@@ -46,9 +46,9 @@ pub type AgentState {
 }
 
 /// Create an AgentConfig with defaults.
-pub fn config(provider: Provider) -> AgentConfig {
+pub fn config(provider_fn: Provider) -> AgentConfig {
   AgentConfig(
-    provider:,
+    provider: provider_fn,
     inference_settings: provider.default_settings(),
     tools: tool.new_registry(),
     system_prompt: option.None,

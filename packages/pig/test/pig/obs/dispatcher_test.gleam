@@ -41,7 +41,8 @@ fn send_and_confirm(
 fn setup() {
   let assert Ok(dispatcher_subject) = dispatcher.start()
   let consumer_subject = process.new_subject()
-  dispatcher.register_consumer(dispatcher_subject, consumer_subject)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(dispatcher_subject, consumer_subject)
   #(#(dispatcher_subject, consumer_subject), fn() {
     process.send(dispatcher_subject, dispatcher.Stop)
   })
@@ -51,7 +52,8 @@ fn setup_with_listener() {
   let listener_handle = listener.attach()
   let assert Ok(dispatcher_subject) = dispatcher.start()
   let consumer_subject = process.new_subject()
-  dispatcher.register_consumer(dispatcher_subject, consumer_subject)
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(dispatcher_subject, consumer_subject)
   #(#(dispatcher_subject, consumer_subject, listener_handle), fn() {
     listener.detach(listener_handle)
     process.send(dispatcher_subject, dispatcher.Stop)
@@ -264,8 +266,8 @@ pub fn dispatcher_fans_out_to_multiple_consumers_test() {
   let assert Ok(disp) = dispatcher.start()
   let c1 = process.new_subject()
   let c2 = process.new_subject()
-  dispatcher.register_consumer(disp, c1)
-  dispatcher.register_consumer(disp, c2)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, c1)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, c2)
 
   let event =
     InferenceStarted(
@@ -299,7 +301,7 @@ pub fn dispatcher_supports_dynamic_registration_test() {
 
   // Now register consumer
   let consumer = process.new_subject()
-  dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
 
   // Second event — consumer should receive it
   let event2 =
@@ -319,12 +321,30 @@ pub fn dispatcher_supports_dynamic_registration_test() {
 
 // ── Dead Consumer Resilience Tests ─────────────────────────────────────
 
+pub fn register_consumer_sync_returns_ok_after_acknowledgement_test() {
+  let assert Ok(disp) = dispatcher.start()
+  let consumer = process.new_subject()
+
+  assert dispatcher.register_consumer_sync(disp, consumer) == Ok(Nil)
+
+  process.send(disp, dispatcher.Stop)
+}
+
+pub fn register_consumer_returns_typed_timeout_when_dispatcher_is_stopped_test() {
+  let assert Ok(disp) = dispatcher.start()
+  process.send(disp, dispatcher.Stop)
+  let consumer = process.new_subject()
+
+  assert dispatcher.register_consumer_with_timeout(disp, consumer, 10)
+    == Error(dispatcher.RegistrationTimeout)
+}
+
 pub fn dispatcher_does_not_crash_on_dead_consumer_test() {
   let assert Ok(disp) = dispatcher.start()
 
   // Register a consumer that we'll abandon (no process listening)
   let dead_consumer = process.new_subject()
-  dispatcher.register_consumer(disp, dead_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, dead_consumer)
 
   // Send event — dispatcher should not crash
   let event =
@@ -337,7 +357,7 @@ pub fn dispatcher_does_not_crash_on_dead_consumer_test() {
 
   // Register a new consumer and confirm dispatcher is still alive
   let live_consumer = process.new_subject()
-  dispatcher.register_consumer(disp, live_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, live_consumer)
 
   let event2 =
     InferenceStarted(

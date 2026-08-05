@@ -41,16 +41,6 @@ pub fn main() -> Nil {
   gleeunit.main()
 }
 
-fn messages_in_commit(
-  commit: session_store.SessionCommit,
-) -> List(message.Message) {
-  let session_store.SessionCommit(delta:, ..) = commit
-  case delta {
-    session_store.MessagesAppended(messages) -> messages
-    session_store.InferenceSettingsChanged(_) -> []
-  }
-}
-
 // ── Helper: build AgentConfig from pig.PigConfig ─────────────────
 
 fn agent_config(config: pig.PigConfig) -> state.AgentConfig {
@@ -489,7 +479,7 @@ pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
         process.send(commits, commit)
         Ok(session_store.Session(
           Some(commit.id),
-          messages_in_commit(commit),
+          harness.messages_in_commit(commit),
           None,
         ))
       },
@@ -510,7 +500,7 @@ pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
   assert sent_to_provider == [message.User("resume from here")]
   let assert Ok(commit) = process.receive(commits, 1000)
   assert commit.parent == Some("loaded-head")
-  assert messages_in_commit(commit) == [final]
+  assert harness.messages_in_commit(commit) == [final]
   assert count(provider_calls) == 1
   supervisor.stop(sup)
 }

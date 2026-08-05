@@ -57,6 +57,7 @@ pub fn event_name_matches_inference_start_test() {
     == events.inference_start_name()
 }
 
+/// Verify event name matches inference stop.
 pub fn event_name_matches_inference_stop_test() {
   assert events.event_name(events.InferenceStop(
       model: "x",
@@ -71,6 +72,7 @@ pub fn event_name_matches_inference_stop_test() {
     == events.inference_stop_name()
 }
 
+/// Verify event name matches tool start.
 pub fn event_name_matches_tool_start_test() {
   assert events.event_name(events.ToolStart(
       tool_name: "x",
@@ -87,35 +89,39 @@ pub fn name_to_string_joins_with_dots_test() {
   assert events.name_to_string(["a", "b", "c"]) == "a.b.c"
 }
 
+/// Verify name to string single segment.
 pub fn name_to_string_single_segment_test() {
   assert events.name_to_string(["pig"]) == "pig"
 }
 
+/// Verify name to string empty.
 pub fn name_to_string_empty_test() {
   assert events.name_to_string([]) == ""
 }
 
+/// Verify settings use provider neutral strings.
 pub fn settings_use_provider_neutral_strings_test() {
-  assert events.settings_to_string(provider.default_settings())
+  assert provider.settings_to_string(provider.default_settings())
     == "provider_default"
-  assert events.settings_to_string(provider.with_thinking_level(thinking.Off))
+  assert provider.settings_to_string(provider.with_thinking_level(thinking.Off))
     == "off"
-  assert events.settings_to_string(provider.with_thinking_level(thinking.High))
+  assert provider.settings_to_string(provider.with_thinking_level(thinking.High))
     == "high"
 }
 
+/// Verify settings parse rejects unknown values.
 pub fn settings_parse_rejects_unknown_values_test() {
-  assert
-    events.settings_from_string("provider_default")
+  assert provider.settings_from_string("provider_default")
     == Ok(provider.default_settings())
-  assert events.settings_from_string("none") == Error(Nil)
-  assert events.settings_from_string("not-a-level") == Error(Nil)
+  assert provider.settings_from_string("none") == Error(Nil)
+  assert provider.settings_from_string("not-a-level") == Error(Nil)
 }
 
 // ── Event Equality ───────────────────────────────────────────────────
 // Structural equality is a property worth testing — it means events
 // can be used in assertions and dict keys.
 
+/// Verify same event is equal.
 pub fn same_event_is_equal_test() {
   let e1 =
     events.InferenceStart(
@@ -132,6 +138,7 @@ pub fn same_event_is_equal_test() {
   assert e1 == e2
 }
 
+/// Verify different fields not equal.
 pub fn different_fields_not_equal_test() {
   let e1 =
     events.InferenceStart(
@@ -148,6 +155,7 @@ pub fn different_fields_not_equal_test() {
   assert e1 != e2
 }
 
+/// Verify different variants not equal.
 pub fn different_variants_not_equal_test() {
   let e1 =
     events.InferenceStart(
@@ -163,6 +171,7 @@ pub fn different_variants_not_equal_test() {
 // ── emit Does Not Crash ──────────────────────────────────────────────
 // Each variant must be emittable without error. Tests real :telemetry integration.
 
+/// Verify emit all variants.
 pub fn emit_all_variants_test() {
   events.emit(events.InferenceStart(
     model: "gpt-4",
@@ -206,18 +215,21 @@ pub fn emit_all_variants_test() {
 
 // ── Generic Emit Helpers ─────────────────────────────────────────────
 
+/// Verify generic emit start does not crash.
 pub fn generic_emit_start_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_start(["pig", "custom", "start"], meta)
   Nil
 }
 
+/// Verify generic emit stop does not crash.
 pub fn generic_emit_stop_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_stop(["pig", "custom", "stop"], 100, meta)
   Nil
 }
 
+/// Verify generic emit exception does not crash.
 pub fn generic_emit_exception_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_exception(["pig", "custom", "exception"], meta)
@@ -229,6 +241,7 @@ pub fn generic_emit_exception_does_not_crash_test() {
 // Test that emit → capture → decode preserves the original event data.
 // We verify field preservation, not exact struct equality.
 
+/// Verify decode preserves non default inference settings.
 pub fn decode_preserves_non_default_inference_settings_test() {
   let raw =
     events.RawCapturedEvent(
@@ -240,6 +253,7 @@ pub fn decode_preserves_non_default_inference_settings_test() {
   assert settings == provider.with_thinking_level(thinking.Off)
 }
 
+/// Verify decode preserves inference start.
 pub fn decode_preserves_inference_start_test() {
   let raw =
     events.RawCapturedEvent(
@@ -256,6 +270,7 @@ pub fn decode_preserves_inference_start_test() {
   assert message_count == 5
 }
 
+/// Verify decode preserves inference stop.
 pub fn decode_preserves_inference_stop_test() {
   let raw =
     events.RawCapturedEvent(
@@ -286,6 +301,7 @@ pub fn decode_preserves_inference_stop_test() {
   assert output_tokens == None
 }
 
+/// Verify decode preserves tool start.
 pub fn decode_preserves_tool_start_test() {
   let raw =
     events.RawCapturedEvent(
@@ -304,6 +320,7 @@ pub fn decode_preserves_tool_start_test() {
   assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves tool stop.
 pub fn decode_preserves_tool_stop_test() {
   let raw =
     events.RawCapturedEvent(
@@ -323,6 +340,7 @@ pub fn decode_preserves_tool_stop_test() {
   assert result == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves tool exception.
 pub fn decode_preserves_tool_exception_test() {
   let raw =
     events.RawCapturedEvent(
@@ -341,6 +359,7 @@ pub fn decode_preserves_tool_exception_test() {
   assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves inference exception.
 pub fn decode_preserves_inference_exception_test() {
   let raw =
     events.RawCapturedEvent(
@@ -492,7 +511,7 @@ pub fn decode_preserves_inference_exception_error_type_test() {
 pub fn to_dispatcher_sends_event_to_dispatcher_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
 
   let event =
     InferenceStarted(
@@ -516,7 +535,7 @@ pub fn to_dispatcher_triggers_telemetry_test() {
   let handle = listener.attach()
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
 
   let event =
     InferenceStarted(
@@ -541,7 +560,7 @@ pub fn to_dispatcher_triggers_telemetry_test() {
 pub fn to_dispatcher_sends_all_variants_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  dispatcher.register_consumer(disp, consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, consumer)
 
   // Send multiple events and verify they're all received
   emit.to_dispatcher(

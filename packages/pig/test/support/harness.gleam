@@ -13,10 +13,24 @@ import gleam/json
 import gleam/list
 import jscheam/schema
 import pig/provider
+import pig/session_store
 import pig/tool
 import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/tool_definition
+
+// ── Public: session helpers ───────────────────────────────────────
+
+/// Extract messages from a commit, returning no messages for settings changes.
+pub fn messages_in_commit(
+  commit: session_store.SessionCommit,
+) -> List(message.Message) {
+  let session_store.SessionCommit(delta:, ..) = commit
+  case delta {
+    session_store.MessagesAppended(first:, rest:) -> [first, ..rest]
+    session_store.InferenceSettingsChanged(_) -> []
+  }
+}
 
 // ── Public: test tools ───────────────────────────────────────────
 

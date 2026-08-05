@@ -535,11 +535,11 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 
   // Start a test consumer as sync mechanism
   let sync_consumer = process.new_subject()
-  dispatcher.register_consumer(disp, sync_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, sync_consumer)
 
   // Start session consumer actor with the consumer handler
   let assert Ok(session_consumer) = session.start_consumer(path)
-  dispatcher.register_consumer(disp, session_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, session_consumer)
 
   // Send events through dispatcher and verify sync consumer receives them
   // This confirms the dispatcher is processing messages and sending to consumers

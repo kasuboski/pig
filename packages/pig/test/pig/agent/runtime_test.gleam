@@ -32,6 +32,7 @@ import pig_protocol/stop_reason
 import pig_protocol/thinking
 import pig_protocol/tool_definition
 import simplifile
+import support/harness
 import temporary
 
 pub fn main() -> Nil {
@@ -98,16 +99,6 @@ fn context_tool() -> tool.Tool {
       )
     },
   )
-}
-
-fn messages_in_commit(
-  commit: session_store.SessionCommit,
-) -> List(message.Message) {
-  let session_store.SessionCommit(delta:, ..) = commit
-  case delta {
-    session_store.MessagesAppended(messages) -> messages
-    session_store.InferenceSettingsChanged(_) -> []
-  }
 }
 
 fn fixed_provider(response: message.Message) {
@@ -369,7 +360,7 @@ fn controlled_store(
         True ->
           Ok(session_store.Session(
             Some(commit.id),
-            messages_in_commit(commit),
+            harness.messages_in_commit(commit),
             None,
           ))
         False -> Error(session_store.Unavailable("offline"))
@@ -378,8 +369,6 @@ fn controlled_store(
   )
 }
 
-/// Returns an unrelated head after successful commits, modelling another writer
-/// advancing the session before the caller observes the commit result.
 fn start_settings_failure_control(
   failures: List(session_store.SessionError),
 ) -> process.Subject(SettingsFailureControlMessage) {
@@ -418,10 +407,10 @@ fn settings_failure_store(
         session_store.InferenceSettingsChanged(_) -> {
           Error(actor.call(failures, 1000, NextSettingsFailure))
         }
-        session_store.MessagesAppended(messages) ->
+        session_store.MessagesAppended(..) ->
           Ok(session_store.Session(
             Some(commit.id),
-            messages,
+            harness.messages_in_commit(commit),
             Some(provider.default_settings()),
           ))
       }
@@ -429,6 +418,8 @@ fn settings_failure_store(
   )
 }
 
+/// Returns an unrelated head after successful commits, modelling another writer
+/// advancing the session before the caller observes the commit result.
 fn foreign_head_controlled_store(
   control: process.Subject(StoreControlMessage),
   commits: process.Subject(session_store.SessionCommit),
@@ -442,12 +433,42 @@ fn foreign_head_controlled_store(
         True ->
           Ok(session_store.Session(
             Some(foreign_head),
-            messages_in_commit(commit),
+            harness.messages_in_commit(commit),
             None,
           ))
         False -> Error(session_store.Unavailable("offline"))
       }
     },
+  )
+}
+
+fn recording_memory_store(
+  handle: memory.MemoryStore,
+  commits: process.Subject(session_store.SessionCommit),
+) -> session_store.SessionStore {
+  let durable = memory.store(handle)
+  let session_store.SessionStore(load:, commit: store_commit) = durable
+  session_store.SessionStore(load:, commit: fn(next) {
+    process.send(commits, next)
+    store_commit(next)
+  })
+}
+
+fn gated_recording_memory_store(
+  handle: memory.MemoryStore,
+  load_control: process.Subject(StoreControlMessage),
+  commits: process.Subject(session_store.SessionCommit),
+) -> session_store.SessionStore {
+  let durable = recording_memory_store(handle, commits)
+  let session_store.SessionStore(load: store_load, commit:) = durable
+  session_store.SessionStore(
+    load: fn() {
+      case actor.call(load_control, 1000, Next) {
+        True -> store_load()
+        False -> Error(session_store.Unavailable("reload offline"))
+      }
+    },
+    commit:,
   )
 }
 
@@ -1132,7 +1153,7 @@ pub fn session_terminal_run_commits_ordered_transitions_test() {
         process.send(commit_count, Increment)
         Ok(session_store.Session(
           Some(commit.id),
-          messages_in_commit(commit),
+          harness.messages_in_commit(commit),
           None,
         ))
       },
@@ -1148,8 +1169,8 @@ pub fn session_terminal_run_commits_ordered_transitions_test() {
   ]
   let assert Ok(first_commit) = first
   let assert Ok(second_commit) = second
-  assert messages_in_commit(first_commit) == [message.User("hi")]
-  assert messages_in_commit(second_commit) == [reply]
+  assert harness.messages_in_commit(first_commit) == [message.User("hi")]
+  assert harness.messages_in_commit(second_commit) == [reply]
   assert second_commit.parent == Some(first_commit.id)
   assert count(commit_count) == 2
 
@@ -1164,12 +1185,12 @@ pub fn session_user_commit_failure_prevents_inference_test() {
     session_store.SessionStore(
       load: fn() { Ok(session_store.Session(None, [], None)) },
       commit: fn(commit) {
-        case messages_in_commit(commit) {
+        case harness.messages_in_commit(commit) {
           [message.User(_)] -> Error(session_store.Unavailable("offline"))
           _ ->
             Ok(session_store.Session(
               Some(commit.id),
-              messages_in_commit(commit),
+              harness.messages_in_commit(commit),
               None,
             ))
         }
@@ -1351,12 +1372,12 @@ pub fn session_assistant_commit_failure_retains_user_history_test() {
     session_store.SessionStore(
       load: fn() { Ok(session_store.Session(None, [], None)) },
       commit: fn(commit) {
-        case messages_in_commit(commit) {
+        case harness.messages_in_commit(commit) {
           [message.Assistant(..)] -> Error(session_store.Unavailable("offline"))
           _ ->
             Ok(session_store.Session(
               Some(commit.id),
-              messages_in_commit(commit),
+              harness.messages_in_commit(commit),
               None,
             ))
         }
@@ -1393,12 +1414,12 @@ pub fn session_assistant_tool_request_commit_failure_prevents_tool_start_test() 
     session_store.SessionStore(
       load: fn() { Ok(session_store.Session(None, [], None)) },
       commit: fn(commit) {
-        case messages_in_commit(commit) {
+        case harness.messages_in_commit(commit) {
           [message.Assistant(..)] -> Error(session_store.Unavailable("offline"))
           _ ->
             Ok(session_store.Session(
               Some(commit.id),
-              messages_in_commit(commit),
+              harness.messages_in_commit(commit),
               None,
             ))
         }
@@ -1478,13 +1499,13 @@ pub fn session_tool_batch_commit_failure_retains_assistant_history_test() {
     session_store.SessionStore(
       load: fn() { Ok(session_store.Session(None, [], None)) },
       commit: fn(commit) {
-        case messages_in_commit(commit) {
+        case harness.messages_in_commit(commit) {
           [message.Tool(..), message.Tool(..)] ->
             Error(session_store.Unavailable("offline"))
           _ ->
             Ok(session_store.Session(
               Some(commit.id),
-              messages_in_commit(commit),
+              harness.messages_in_commit(commit),
               None,
             ))
         }
@@ -1519,7 +1540,7 @@ pub fn session_two_tool_results_commit_as_one_delta_test() {
         process.send(commit_count, Increment)
         Ok(session_store.Session(
           Some(commit.id),
-          messages_in_commit(commit),
+          harness.messages_in_commit(commit),
           None,
         ))
       },
@@ -1544,7 +1565,7 @@ pub fn session_two_tool_results_commit_as_one_delta_test() {
   let assert Ok(_) = process.receive(commits, 1000)
   let assert Ok(tool_commit) = process.receive(commits, 1000)
   let assert Ok(_) = process.receive(commits, 1000)
-  assert messages_in_commit(tool_commit)
+  assert harness.messages_in_commit(tool_commit)
     == [
       message.Tool(tool_call_id: "one", content: "{\"echo\":\"a\"}"),
       message.Tool(tool_call_id: "two", content: "{\"echo\":\"b\"}"),
@@ -1595,14 +1616,15 @@ fn is_crash_boundary(
   commit: session_store.SessionCommit,
 ) -> Bool {
   let session_store.SessionCommit(delta:, ..) = commit
-  let assert session_store.MessagesAppended(messages) = delta
-  case boundary, messages {
-    AfterUserCommit, [message.User(_)] -> True
-    AfterToolRequestCommit, [message.Assistant(tool_calls: [_, ..], ..)] -> True
-    AfterToolBatchCommit, [message.Tool(..), message.Tool(..)] -> True
-    AfterTerminalAssistantCommit, [message.Assistant(tool_calls: [], ..)] ->
+  let assert session_store.MessagesAppended(first:, rest:) = delta
+  case boundary, first, rest {
+    AfterUserCommit, message.User(_), [] -> True
+    AfterToolRequestCommit, message.Assistant(tool_calls: [_, ..], ..), [] ->
       True
-    _, _ -> False
+    AfterToolBatchCommit, message.Tool(..), [message.Tool(..)] -> True
+    AfterTerminalAssistantCommit, message.Assistant(tool_calls: [], ..), [] ->
+      True
+    _, _, _ -> False
   }
 }
 
@@ -2156,6 +2178,257 @@ pub fn durable_settings_setter_succeeds_and_persists_test() {
   memory.stop(store_handle)
 }
 
+/// A settings parent conflict replaces the runtime with the authoritative
+/// transcript before leaving it fenced for the caller to resolve.
+pub fn durable_settings_parent_conflict_replaces_runtime_snapshot_test() {
+  let authoritative_history = [
+    message.User("authoritative prompt"),
+    message.Assistant("authoritative reply", [], None, None),
+  ]
+  let authoritative_settings = provider.with_thinking_level(thinking.High)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      authoritative_history,
+      Some(authoritative_settings),
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+  let requested = provider.with_thinking_level(thinking.Medium)
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  assert runtime.history(subject, 1000) == authoritative_history
+  let assert Ok(first) = process.receive(commits, 1000)
+  assert first.parent == Some("stale-head")
+  let assert session_store.Session(
+    head: Some("authoritative-head"),
+    messages: persisted_history,
+    inference_settings: Some(settings),
+  ) = memory.snapshot(handle)
+  assert persisted_history == authoritative_history
+  assert settings == authoritative_settings
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// After a settings conflict, the next request commits against the loaded
+/// authoritative head rather than the stale commit's parent.
+pub fn durable_settings_parent_conflict_retries_with_new_parent_test() {
+  let authoritative_settings = provider.with_thinking_level(thinking.High)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [message.User("authoritative")],
+      Some(authoritative_settings),
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+  let requested = provider.with_thinking_level(thinking.Medium)
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(first) = process.receive(commits, 1000)
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(second) = process.receive(commits, 1000)
+  assert second.parent == Some("authoritative-head")
+  assert second.id != first.id
+  let session_store.SessionCommit(delta:, ..) = second
+  assert delta == session_store.InferenceSettingsChanged(requested)
+  assert memory.snapshot(handle).inference_settings == Some(requested)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// If the authoritative snapshot already has the requested setting, resolving
+/// the fenced request succeeds without writing another commit.
+pub fn durable_settings_parent_conflict_already_satisfied_needs_no_commit_test() {
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [message.User("authoritative")],
+      Some(requested),
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(_) = process.receive(commits, 1000)
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  assert process.receive(commits, 100) == Error(Nil)
+  assert runtime.history(subject, 1000) == [message.User("authoritative")]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// An absent authoritative setting is a fallback, so recovery persists the
+/// requested value explicitly against the reloaded head.
+pub fn durable_settings_parent_conflict_with_unset_setting_commits_test() {
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [message.User("authoritative")],
+      None,
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(_) = process.receive(commits, 1000)
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(recovery_commit) = process.receive(commits, 1000)
+  assert recovery_commit.parent == Some("authoritative-head")
+  assert memory.snapshot(handle).inference_settings == Some(requested)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// A failed authoritative reload keeps the runtime fenced; the next identical
+/// setter retries loading, and only a later setter may create a fresh commit.
+pub fn durable_settings_parent_conflict_reload_failure_then_recovery_test() {
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [message.User("authoritative")],
+      Some(provider.with_thinking_level(thinking.High)),
+    ))
+  let commits = process.new_subject()
+  let load_control = start_store_control([False, True])
+  let store = gated_recording_memory_store(handle, load_control, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.Unavailable(_))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  assert runtime.history(subject, 1000) == []
+  let assert Ok(first) = process.receive(commits, 1000)
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  assert process.receive(commits, 100) == Error(Nil)
+  assert runtime.history(subject, 1000) == [message.User("authoritative")]
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(second) = process.receive(commits, 1000)
+  assert second.parent == Some("authoritative-head")
+  assert second.id != first.id
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// A conflict never retries the discarded settings commit ID.
+pub fn durable_settings_parent_conflict_does_not_retry_stale_commit_test() {
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [],
+      Some(provider.with_thinking_level(thinking.High)),
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(discarded) = process.receive(commits, 1000)
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(fresh) = process.receive(commits, 1000)
+  assert fresh.id != discarded.id
+  assert fresh.parent == Some("authoritative-head")
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// While conflict recovery is pending, a different setting cannot displace
+/// the request being recovered.
+pub fn durable_settings_parent_conflict_rejects_different_setting_test() {
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let different = provider.with_thinking_level(thinking.Low)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [],
+      Some(provider.with_thinking_level(thinking.High)),
+    ))
+  let commits = process.new_subject()
+  let store = recording_memory_store(handle, commits)
+  let #(subject, disp) =
+    start_with_session_store(
+      fixed_provider(message.Assistant("unused", [], None, None)),
+      [],
+      store,
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(_) = process.receive(commits, 1000)
+  let assert Error(run_error.Runtime(reason)) =
+    runtime.set_inference_settings(subject, different, 5000)
+  assert string.contains(reason, "different")
+  assert process.receive(commits, 100) == Error(Nil)
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
 /// An ambiguous durable settings commit is retried exactly, while another
 /// setting is rejected until the original commit is resolved.
 pub fn durable_settings_failure_exact_retry_and_different_rejection_test() {
@@ -2212,12 +2485,14 @@ fn assert_settings_error_is_non_pending(
   process.send(disp, dispatcher.Stop)
 }
 
+/// An invalid settings commit leaves future runs available.
 pub fn invalid_settings_commit_does_not_block_future_runs_test() {
   assert_settings_error_is_non_pending(session_store.InvalidCommit(
     "bad settings",
   ))
 }
 
+/// A corrupt settings commit leaves future runs available.
 pub fn corrupt_settings_commit_does_not_block_future_runs_test() {
   assert_settings_error_is_non_pending(session_store.Corrupt("damaged settings"))
 }
@@ -2257,12 +2532,14 @@ fn assert_settings_retry_error_is_non_pending(
   process.send(disp, dispatcher.Stop)
 }
 
+/// An invalid retry result clears the settings pending state.
 pub fn invalid_settings_retry_does_not_remain_pending_test() {
   assert_settings_retry_error_is_non_pending(session_store.InvalidCommit(
     "bad settings",
   ))
 }
 
+/// A corrupt retry result clears the settings pending state.
 pub fn corrupt_settings_retry_does_not_remain_pending_test() {
   assert_settings_retry_error_is_non_pending(session_store.Corrupt(
     "damaged settings",

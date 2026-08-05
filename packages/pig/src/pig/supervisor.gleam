@@ -185,11 +185,6 @@ pub fn reset_inference_settings(sup: SupervisedAgent) -> Result(Nil, RunError) {
   set_inference_settings(sup, provider.default_settings())
 }
 
-/// Reset the supervised agent to the provider's default thinking behavior.
-pub fn reset_thinking_level(sup: SupervisedAgent) -> Result(Nil, RunError) {
-  reset_inference_settings(sup)
-}
-
 /// Stop the supervised agent.
 ///
 /// Sends an exit signal to the supervisor process. OTP cascades

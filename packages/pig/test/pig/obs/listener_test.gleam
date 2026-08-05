@@ -77,7 +77,7 @@ pub fn captures_multiple_events_in_order_test() {
         tool_name: "read_file",
         tool_call_id: "call_1",
         duration_ms: 10,
-        result: "{\"files\":[]}",
+        result: "",
       ),
       events.InferenceStop(
         model: "gpt-4",
@@ -171,7 +171,7 @@ pub fn attach_to_specific_events_test() {
         tool_name: "bash",
         tool_call_id: "c1",
         duration_ms: 5,
-        result: "\"ok\"",
+        result: "",
       ),
     ]
 }

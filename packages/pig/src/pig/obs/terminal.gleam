@@ -11,8 +11,9 @@ import gleam/otp/actor
 import gleam/otp/supervision
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
-  Interrupted, MaxIterationsExceeded, NormalEnd, settings_to_string,
+  Interrupted, MaxIterationsExceeded, NormalEnd,
 }
+import pig/provider
 import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
@@ -51,7 +52,7 @@ pub fn format_event(event: SessionEvent) -> String {
       <> " | messages: "
       <> int.to_string(message_count)
       <> " | thinking: "
-      <> settings_to_string(settings)
+      <> provider.settings_to_string(settings)
     }
 
     events.InferenceCompleted(
@@ -119,7 +120,7 @@ pub fn format_event(event: SessionEvent) -> String {
     }
 
     events.InferenceSettingsChanged(settings:) ->
-      "[SETTINGS] Thinking changed | " <> settings_to_string(settings)
+      "[SETTINGS] Thinking changed | " <> provider.settings_to_string(settings)
 
     events.SessionEnded(reason) -> {
       "[END] Session ended | " <> format_end_reason(reason)

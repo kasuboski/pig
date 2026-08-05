@@ -194,10 +194,10 @@ For each `CallProvider` effect:
 
 1. Run `on_before_inference` hooks — may transform messages (may do IO)
 2. Build `InferenceRequest` with the transformed messages, tools, and current runtime-owned settings
-3. Call the LLM with that request
-4. Fire `on_after_inference` notification hooks
-5. Produce `InferenceStarted` and `InferenceCompleted` (or `InferenceFailed`) session events
-6. Emit the inference stop event and feed `ProviderResponded` back to the core as a new `AgentMsg`
+3. Emit `InferenceStarted`
+4. Call the LLM with that request
+5. Produce and emit `InferenceCompleted` (or `InferenceFailed`), then fire `on_after_inference` notification hooks on success
+6. Feed `ProviderResponded` back to the core as a new `AgentMsg`
 
 For each `ExecuteTools` effect:
 

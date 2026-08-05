@@ -16,15 +16,22 @@ import pig/obs/events.{
   type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
   InferenceStarted, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
   ToolStarted, execute_telemetry, inference_exception_name, inference_start_name,
-  inference_stop_name, settings_to_string, system_time, tool_blocked_name,
-  tool_start_name, tool_stop_name,
+  inference_stop_name, system_time, tool_blocked_name, tool_start_name,
+  tool_stop_name,
 }
+import pig/provider
 import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
 }
 import pig_protocol/stop_reason
 
 // ── Public Types ─────────────────────────────────────────────────────
+
+/// Errors returned when registering a dispatcher consumer.
+pub type RegistrationError {
+  /// The dispatcher did not acknowledge registration before the timeout.
+  RegistrationTimeout
+}
 
 /// Messages that the dispatcher actor can receive.
 pub type DispatcherMessage {
@@ -61,23 +68,36 @@ pub fn start() -> Result(Subject(DispatcherMessage), StartError) {
 /// Register a consumer and wait until the dispatcher has installed it.
 ///
 /// The barrier makes it safe to emit an event immediately after registration.
-/// The asynchronous `RegisterConsumer` message remains available for startup
-/// paths that do not need this guarantee.
+/// Returns a typed error if the dispatcher does not acknowledge registration.
 pub fn register_consumer(
   dispatcher: Subject(DispatcherMessage),
   consumer: Subject(SessionEvent),
-) -> Nil {
+) -> Result(Nil, RegistrationError) {
+  register_consumer_with_timeout(dispatcher, consumer, 5000)
+}
+
+/// Register a consumer with an explicit acknowledgement timeout.
+///
+/// This is useful for callers that need a bounded startup failure and for
+/// deterministic tests; successful registration remains synchronous.
+pub fn register_consumer_with_timeout(
+  dispatcher: Subject(DispatcherMessage),
+  consumer: Subject(SessionEvent),
+  timeout_ms: Int,
+) -> Result(Nil, RegistrationError) {
   let reply_subject = process.new_subject()
   process.send(dispatcher, RegisterConsumerSync(consumer, reply_subject))
-  let assert Ok(Nil) = process.receive(reply_subject, 5000)
-  Nil
+  case process.receive(reply_subject, timeout_ms) {
+    Ok(Nil) -> Ok(Nil)
+    Error(Nil) -> Error(RegistrationTimeout)
+  }
 }
 
 /// Synchronous alias for `register_consumer`.
 pub fn register_consumer_sync(
   dispatcher: Subject(DispatcherMessage),
   consumer: Subject(SessionEvent),
-) -> Nil {
+) -> Result(Nil, RegistrationError) {
   register_consumer(dispatcher, consumer)
 }
 
@@ -149,7 +169,7 @@ fn emit_telemetry(event: SessionEvent) {
       let metadata =
         dict.from_list([
           #("model", model),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       execute_telemetry(inference_start_name(), measurements, metadata)
     }
@@ -185,7 +205,7 @@ fn emit_telemetry(event: SessionEvent) {
       let base_metadata =
         dict.from_list([
           #("model", model),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       let metadata =
         base_metadata
@@ -209,7 +229,7 @@ fn emit_telemetry(event: SessionEvent) {
         dict.from_list([
           #("model", model),
           #("error_type", error_type),
-          #("thinking", settings_to_string(settings)),
+          #("thinking", provider.settings_to_string(settings)),
         ])
       execute_telemetry(inference_exception_name(), measurements, metadata)
     }
@@ -223,7 +243,7 @@ fn emit_telemetry(event: SessionEvent) {
         ])
       execute_telemetry(tool_start_name(), measurements, metadata)
     }
-    ToolExecuted(tool_call:, result:, duration_ms:) -> {
+    ToolExecuted(tool_call:, result: _, duration_ms:) -> {
       let measurements =
         dict.from_list([
           #("system_time", system_time()),
@@ -233,7 +253,6 @@ fn emit_telemetry(event: SessionEvent) {
         dict.from_list([
           #("tool_name", tool_call.name),
           #("tool_call_id", tool_call.id),
-          #("result", result),
         ])
       execute_telemetry(tool_stop_name(), measurements, metadata)
     }

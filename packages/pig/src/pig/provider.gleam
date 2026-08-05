@@ -10,7 +10,7 @@ import pig_protocol/error.{type AiError}
 import pig_protocol/inference
 import pig_protocol/message.{type Message}
 import pig_protocol/stop_reason.{type StopReason}
-import pig_protocol/thinking.{type ThinkingLevel}
+import pig_protocol/thinking
 import pig_protocol/tool_definition.{type ToolDefinition}
 
 /// The thinking configuration for one inference request.
@@ -18,7 +18,7 @@ pub type ThinkingSetting {
   /// Let the provider choose whether and how to think.
   UseProviderDefault
   /// Request a specific thinking level for this inference.
-  UseThinkingLevel(ThinkingLevel)
+  UseThinkingLevel(thinking.ThinkingLevel)
 }
 
 /// Inference settings passed to a provider.
@@ -41,8 +41,30 @@ pub fn default_settings() -> InferenceSettings {
 }
 
 /// Return settings requesting the given thinking level.
-pub fn with_thinking_level(level: ThinkingLevel) -> InferenceSettings {
+pub fn with_thinking_level(level: thinking.ThinkingLevel) -> InferenceSettings {
   InferenceSettings(thinking: UseThinkingLevel(level))
+}
+
+/// Encode inference settings using the stable provider-neutral representation
+/// persisted in telemetry and JSONL session events.
+pub fn settings_to_string(settings: InferenceSettings) -> String {
+  case settings {
+    InferenceSettings(thinking: UseProviderDefault) -> "provider_default"
+    InferenceSettings(thinking: UseThinkingLevel(level)) ->
+      thinking.to_string(level)
+  }
+}
+
+/// Decode the stable provider-neutral representation of inference settings.
+pub fn settings_from_string(value: String) -> Result(InferenceSettings, Nil) {
+  case value {
+    "provider_default" -> Ok(default_settings())
+    _ ->
+      case thinking.from_string(value) {
+        Ok(level) -> Ok(with_thinking_level(level))
+        Error(Nil) -> Error(Nil)
+      }
+  }
 }
 
 /// Result of a provider call — the message plus metadata from the API response.

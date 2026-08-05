@@ -10,14 +10,14 @@ import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
 /// The OpenAI request API exercised by a test case.
-pub type Api {
+pub type OpenAIRequestApi {
   Chat
   Responses
 }
 
 /// Build a request, allowing the request setting to override the provider default.
 pub fn check_request(
-  api: Api,
+  api: OpenAIRequestApi,
   messages: List(Message),
   provider_default: Option(ThinkingLevel),
   request_level: Option(ThinkingLevel),

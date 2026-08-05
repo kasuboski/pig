@@ -99,12 +99,23 @@ pub type SessionState {
     candidate: state.AgentState,
     disposition: PostCommitDisposition,
   )
-  /// A settings commit failed ambiguously and must be retried unchanged.
+  /// A settings transition is fenced until its durable outcome is resolved.
   SessionSettingsPending(
     store: session_store.SessionStore,
-    commit: session_store.SessionCommit,
     settings: InferenceSettings,
+    mode: SettingsPendingMode,
   )
+}
+
+/// The recovery protocol for a durable settings transition.
+///
+/// `RetryCommit` is the only mode that retains a commit, and it must be
+/// retried byte-for-byte. A parent conflict discards that commit and reloads
+/// the authoritative snapshot before allowing a fresh request.
+pub type SettingsPendingMode {
+  RetryCommit(commit: session_store.SessionCommit)
+  ReloadPending(conflict: session_store.SessionError)
+  Reloaded(snapshot: session_store.Session)
 }
 
 /// Internal state held by the runtime actor.
@@ -444,16 +455,16 @@ fn handle_message(
       ))
     }
     SetInferenceSettings(settings, reply_to) -> {
-      let #(next_session, outcome) = case st.session {
+      let #(next_state, outcome) = case st.session {
         SessionPending(..) -> #(
-          st.session,
+          st,
           Error(run_error.Runtime(
             "cannot change settings while a session commit is pending",
           )),
         )
         SessionSettingsPending(..) as pending ->
-          retry_or_reject_settings(pending, settings)
-        _ -> set_settings(st.session, settings)
+          retry_or_reject_settings(st, pending, settings)
+        _ -> set_settings(st, settings)
       }
       process.send(reply_to, outcome)
       case outcome {
@@ -463,14 +474,10 @@ fn handle_message(
             events.InferenceSettingsChanged(settings:),
           )
           actor.continue(
-            RuntimeState(
-              ..st,
-              session: next_session,
-              inference_settings: settings,
-            ),
+            RuntimeState(..next_state, inference_settings: settings),
           )
         }
-        Error(_) -> actor.continue(RuntimeState(..st, session: next_session))
+        Error(_) -> actor.continue(next_state)
       }
     }
     GetHistory(reply_to) -> {
@@ -482,95 +489,216 @@ fn handle_message(
 }
 
 fn set_settings(
-  session: SessionState,
+  st: RuntimeState,
   settings: InferenceSettings,
-) -> #(SessionState, Result(Nil, run_error.RunError)) {
-  case session {
-    SessionDisabled -> #(SessionDisabled, Ok(Nil))
-    SessionReady(store:, head:) -> {
-      let commit = session_store.new_settings_commit(head, settings)
-      let session_store.SessionStore(commit: store_commit, ..) = store
-      case store_commit(commit) {
-        Error(error) ->
-          settings_commit_error(store, head, commit, settings, error)
-        Ok(committed) ->
-          case committed.head == option.Some(commit.id) {
-            True -> #(SessionReady(store:, head: committed.head), Ok(Nil))
-            False -> #(
-              SessionSettingsPending(store:, commit:, settings:),
-              Error(
-                run_error.Session(session_store.ParentConflict(
-                  expected: option.Some(commit.id),
-                  actual: committed.head,
-                )),
-              ),
-            )
-          }
-      }
-    }
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case st.session {
+    SessionDisabled -> #(st, Ok(Nil))
+    SessionReady(store:, head:) -> commit_settings(st, store, head, settings)
     SessionPending(..) -> #(
-      session,
+      st,
       Error(run_error.Runtime(
         "cannot change settings while a session commit is pending",
       )),
     )
     SessionSettingsPending(..) -> #(
-      session,
+      st,
       Error(run_error.Runtime("inference settings commit is pending")),
     )
   }
 }
 
+fn commit_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  head: option.Option(String),
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let commit = session_store.new_settings_commit(head, settings)
+  let session_store.SessionStore(commit: store_commit, ..) = store
+  case store_commit(commit) {
+    Error(error) ->
+      settings_commit_error(st, store, head, commit, settings, error)
+    Ok(committed) ->
+      case committed.head == option.Some(commit.id) {
+        True -> #(
+          RuntimeState(
+            ..st,
+            session: SessionReady(store:, head: committed.head),
+          ),
+          Ok(Nil),
+        )
+        False ->
+          reload_settings(
+            st,
+            store,
+            settings,
+            session_store.ParentConflict(
+              expected: option.Some(commit.id),
+              actual: committed.head,
+            ),
+          )
+      }
+  }
+}
+
 fn retry_or_reject_settings(
+  st: RuntimeState,
   pending: SessionState,
   settings: InferenceSettings,
-) -> #(SessionState, Result(Nil, run_error.RunError)) {
-  let assert SessionSettingsPending(store:, commit:, settings: pending_settings) =
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let assert SessionSettingsPending(store:, settings: pending_settings, mode:) =
     pending
   case pending_settings == settings {
     False -> #(
-      pending,
+      st,
       Error(run_error.Runtime(
         "a different inference settings commit is pending",
       )),
     )
-    True -> {
-      let session_store.SessionStore(commit: store_commit, ..) = store
-      case store_commit(commit) {
-        Error(error) ->
-          settings_commit_error(store, commit.parent, commit, settings, error)
-        Ok(committed) ->
-          case committed.head == option.Some(commit.id) {
-            True -> #(SessionReady(store:, head: committed.head), Ok(Nil))
-            False -> #(
-              pending,
-              Error(
-                run_error.Session(session_store.ParentConflict(
-                  expected: option.Some(commit.id),
-                  actual: committed.head,
-                )),
-              ),
-            )
+    True ->
+      case mode {
+        RetryCommit(commit) -> {
+          let session_store.SessionStore(commit: store_commit, ..) = store
+          case store_commit(commit) {
+            Error(error) ->
+              settings_commit_error(
+                st,
+                store,
+                commit.parent,
+                commit,
+                settings,
+                error,
+              )
+            Ok(committed) ->
+              case committed.head == option.Some(commit.id) {
+                True -> #(
+                  RuntimeState(
+                    ..st,
+                    session: SessionReady(store:, head: committed.head),
+                  ),
+                  Ok(Nil),
+                )
+                False ->
+                  reload_settings(
+                    st,
+                    store,
+                    settings,
+                    session_store.ParentConflict(
+                      expected: option.Some(commit.id),
+                      actual: committed.head,
+                    ),
+                  )
+              }
           }
+        }
+        ReloadPending(conflict) ->
+          reload_settings(st, store, settings, conflict)
+        Reloaded(snapshot) ->
+          retry_reloaded_settings(st, store, settings, snapshot)
       }
-    }
   }
 }
 
 fn settings_commit_error(
+  st: RuntimeState,
   store: session_store.SessionStore,
   head: option.Option(String),
   commit: session_store.SessionCommit,
   settings: InferenceSettings,
   error: session_store.SessionError,
-) -> #(SessionState, Result(Nil, run_error.RunError)) {
-  let next_session = case error {
-    session_store.InvalidCommit(_) | session_store.Corrupt(_) ->
-      SessionReady(store:, head:)
-    session_store.Unavailable(_) | session_store.ParentConflict(..) ->
-      SessionSettingsPending(store:, commit:, settings:)
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case error {
+    session_store.ParentConflict(..) ->
+      reload_settings(st, store, settings, error)
+    session_store.InvalidCommit(_) | session_store.Corrupt(_) -> #(
+      RuntimeState(..st, session: SessionReady(store:, head:)),
+      Error(run_error.Session(error)),
+    )
+    session_store.Unavailable(_) -> #(
+      RuntimeState(
+        ..st,
+        session: SessionSettingsPending(
+          store:,
+          settings:,
+          mode: RetryCommit(commit:),
+        ),
+      ),
+      Error(run_error.Session(error)),
+    )
   }
-  #(next_session, Error(run_error.Session(error)))
+}
+
+fn reload_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  conflict: session_store.SessionError,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let session_store.SessionStore(load:, ..) = store
+  case load() {
+    Ok(snapshot) -> #(
+      replace_with_snapshot(st, store, settings, snapshot),
+      Error(run_error.Session(conflict)),
+    )
+    Error(error) -> #(
+      RuntimeState(
+        ..st,
+        session: SessionSettingsPending(
+          store:,
+          settings:,
+          mode: ReloadPending(conflict:),
+        ),
+      ),
+      Error(run_error.Session(error)),
+    )
+  }
+}
+
+fn replace_with_snapshot(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  snapshot: session_store.Session,
+) -> RuntimeState {
+  let active_settings = case snapshot.inference_settings {
+    option.Some(loaded_settings) -> loaded_settings
+    option.None -> st.config.inference_settings
+  }
+  let agent_state =
+    state.AgentState(
+      ..st.agent_state,
+      history: state.strip_system_messages(snapshot.messages),
+      iterations: 0,
+    )
+  RuntimeState(
+    agent_state:,
+    config: st.config,
+    session: SessionSettingsPending(
+      store:,
+      settings:,
+      mode: Reloaded(snapshot:),
+    ),
+    inference_settings: active_settings,
+  )
+}
+
+fn retry_reloaded_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  snapshot: session_store.Session,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case snapshot.inference_settings {
+    option.Some(loaded_settings) if loaded_settings == settings -> #(
+      RuntimeState(..st, session: SessionReady(store:, head: snapshot.head)),
+      Ok(Nil),
+    )
+    // An absent persisted setting is only a configured fallback. Commit the
+    // request explicitly so it survives restart and later config changes.
+    option.Some(_) | option.None ->
+      commit_settings(st, store, snapshot.head, settings)
+  }
 }
 
 // ── The Loop ─────────────────────────────────────────────────────
@@ -666,20 +794,21 @@ fn commit_transition(
       panic as "cannot commit while a session commit is pending"
     _, [] -> Ok(session)
     SessionDisabled, _ -> Ok(session)
-    SessionReady(store:, head:), messages ->
-      commit_messages(store, head, messages, candidate, disposition)
+    SessionReady(store:, head:), [first, ..rest] ->
+      commit_messages(store, head, first, rest, candidate, disposition)
   }
 }
 
 fn commit_messages(
   store: session_store.SessionStore,
   head: option.Option(String),
-  messages: List(Message),
+  first: Message,
+  rest: List(Message),
   candidate: state.AgentState,
   disposition: PostCommitDisposition,
 ) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
   let session_store.SessionStore(commit: store_commit, ..) = store
-  let commit = session_store.new_commit(head, messages)
+  let commit = session_store.new_commit(head, first, rest)
   case store_commit(commit) {
     Ok(committed) ->
       accept_committed_session(store, commit, candidate, disposition, committed)
@@ -962,6 +1091,8 @@ fn execute_call_provider(
     }
   }
 
+  let request =
+    provider.InferenceRequest(messages: final_msgs, tools:, settings:)
   let msg_count = list.length(final_msgs)
   emit.to_dispatcher(
     disp,
@@ -969,8 +1100,6 @@ fn execute_call_provider(
   )
   let start_time = events.system_time()
 
-  let request =
-    provider.InferenceRequest(messages: final_msgs, tools:, settings:)
   let result = case config.provider(request) {
     Ok(inference_result) -> {
       let msg = inference_result.message

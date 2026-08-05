@@ -48,7 +48,7 @@ The agent is split into two layers:
 The core operates on three types:
 
 *   **`AgentMsg`:** `UserPrompt(String)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
-*   **`Effect(msg):** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it. Inference settings remain runtime-owned.
+*   **`Effect(msg)`:** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it. Inference settings remain runtime-owned.
 *   **`StepResult(msg):** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
 
 **Runtime interpreter (`pig/agent/runtime.gleam`):** An OTP actor that holds the provider function, tool registry, hooks list, and dispatcher subject. The runtime loop:
@@ -88,7 +88,7 @@ The observability system uses a dispatcher-actor pattern.
 
 When `pig.run(agent, prompt)` is called:
 1.  **Entry:** The runtime receives `Run(prompt)`, wraps it in `UserPrompt`, calls `update(state, UserPrompt(prompt))`. The core returns `Continue(state, [CallProvider(messages, tools, on_response)])`.
-2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (which may transform messages), builds an `InferenceRequest` from the resulting messages, tools, and the agent's current settings, calls the one-argument provider, fires `on_after_inference` hooks, emits inference start/stop events, then feeds the response back as `ProviderResponded`.
+2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (which may transform messages), builds an `InferenceRequest` from the resulting messages, tools, and the agent's current settings, emits `InferenceStarted`, calls the one-argument provider, then emits `InferenceCompleted` or `InferenceFailed`. On success it fires `on_after_inference` hooks before feeding the response back as `ProviderResponded`.
 3.  **Branching:** The core processes `ProviderResponded`:
     *   **If text:** Returns `Done(state, message)`. The runtime returns the message to the caller.
     *   **If tool calls:** Returns `Continue(state, [ExecuteTools(calls, on_results)])`. The runtime applies `on_tool_call` hooks (allow/block), executes allowed tools in parallel, applies `on_tool_result` hooks, emits events, then feeds results back as `ToolResults`.

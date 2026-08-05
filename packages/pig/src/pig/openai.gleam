@@ -1,3 +1,8 @@
+//// OpenAI-compatible Chat Completions and Responses provider adapters.
+////
+//// Constructors capture transport defaults. Each provider call receives a
+//// provider-neutral inference request whose settings override those defaults.
+
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -166,10 +171,10 @@ pub fn build_request_body(
 /// Build the JSON request body that a configured provider will send.
 /// Pure function — useful for inspecting provider configuration without IO.
 pub fn build_provider_request_body(
-  provider: OpenAIProvider,
+  openai_provider: OpenAIProvider,
   request: InferenceRequest,
 ) -> String {
-  request_body(provider.config, request)
+  request_body(openai_provider.config, request)
 }
 
 /// Parse an OpenAI Chat Completions JSON response into an InferenceResult.
@@ -185,17 +190,10 @@ fn do_inference(
   request: InferenceRequest,
 ) -> Result(InferenceResult, AiError) {
   let mode = auth.StandardApi(config.api_key, config.base_url)
-  let #(url, body, parse) = case config.api {
-    ChatCompletions -> #(
-      auth.chat_url(mode),
-      request_body(config, request),
-      chat.parse_response,
-    )
-    Responses -> #(
-      auth.responses_url(mode),
-      request_body(config, request),
-      responses.parse_response,
-    )
+  let body = request_body(config, request)
+  let #(url, parse) = case config.api {
+    ChatCompletions -> #(auth.chat_url(mode), chat.parse_response)
+    Responses -> #(auth.responses_url(mode), responses.parse_response)
   }
   use headers <- result.try(auth.headers(mode, False))
   let req =
@@ -230,8 +228,8 @@ fn request_body(config: OpenAIConfig, request: InferenceRequest) -> String {
 
 fn instructions(messages: List(Message)) -> Option(String) {
   let system_messages =
-    list.filter_map(messages, fn(message) {
-      case message {
+    list.filter_map(messages, fn(part) {
+      case part {
         message.System(content) -> Ok(content)
         _ -> Error(Nil)
       }

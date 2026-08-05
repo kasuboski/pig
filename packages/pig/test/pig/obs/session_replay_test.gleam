@@ -101,6 +101,38 @@ pub fn replay_unknown_persisted_settings_is_parse_error_test() {
   let assert Error(session.ParseError(_)) = session.replay_with_settings(path)
 }
 
+pub fn replay_missing_informational_settings_preserves_history_test() {
+  use path <- with_temp_file("settings_missing_informational")
+  write_jsonl(path, [
+    "{\"event\":\"inference_completed\",\"duration_ms\":1,\"message\":{\"role\":\"assistant\",\"content\":\"ok\",\"tool_calls\":[]},\"input_messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+  ])
+  let assert Ok([User("hello"), Assistant("ok", ..)]) = session.replay(path)
+}
+
+pub fn replay_malformed_informational_settings_preserves_history_test() {
+  use path <- with_temp_file("settings_malformed_informational")
+  write_jsonl(path, [
+    "{\"event\":\"inference_completed\",\"settings\":{\"thinking\":42},\"duration_ms\":1,\"message\":{\"role\":\"assistant\",\"content\":\"ok\",\"tool_calls\":[]},\"input_messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+  ])
+  let assert Ok([User("hello"), Assistant("ok", ..)]) = session.replay(path)
+}
+
+pub fn replay_unknown_informational_settings_preserves_history_test() {
+  use path <- with_temp_file("settings_unknown_informational")
+  write_jsonl(path, [
+    "{\"event\":\"inference_completed\",\"settings\":{\"thinking\":\"future_level\"},\"duration_ms\":1,\"message\":{\"role\":\"assistant\",\"content\":\"ok\",\"tool_calls\":[]},\"input_messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+  ])
+  let assert Ok([User("hello"), Assistant("ok", ..)]) = session.replay(path)
+}
+
+pub fn replay_missing_authoritative_settings_is_parse_error_test() {
+  use path <- with_temp_file("settings_missing_authoritative")
+  write_jsonl(path, [
+    "{\"event\":\"inference_settings_changed\",\"settings\":{}}",
+  ])
+  let assert Error(session.ParseError(_)) = session.replay_with_settings(path)
+}
+
 pub fn replay_single_inference_reconstructs_messages_test() {
   use path <- with_temp_file("single_inference")
   write_jsonl(path, [

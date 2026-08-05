@@ -15,20 +15,11 @@ import pig/session_store
 import pig_protocol/message
 import pig_protocol/thinking
 import simplifile
+import support/harness
 import temporary
 
 pub fn main() {
   gleeunit.main()
-}
-
-fn messages_in_commit(
-  commit: session_store.SessionCommit,
-) -> List(message.Message) {
-  let session_store.SessionCommit(delta:, ..) = commit
-  case delta {
-    session_store.MessagesAppended(messages) -> messages
-    session_store.InferenceSettingsChanged(_) -> []
-  }
 }
 
 // ── Test Helpers ──────────────────────────────────────────────────────
@@ -652,7 +643,7 @@ pub fn session_store_continue_commits_only_new_assistant_delta_test() {
         process.send(commits, commit)
         Ok(session_store.Session(
           option.Some(commit.id),
-          messages_in_commit(commit),
+          harness.messages_in_commit(commit),
           option.None,
         ))
       },
@@ -671,7 +662,7 @@ pub fn session_store_continue_commits_only_new_assistant_delta_test() {
   assert messages == loaded_history
   let assert Ok(commit) = process.receive(commits, 2000)
   assert commit.parent == option.Some("loaded-head")
-  assert messages_in_commit(commit) == [final]
+  assert harness.messages_in_commit(commit) == [final]
   assert counter_count(commit_counter) == 1
   assert counter_count(provider_calls) == 1
   assert pig.history(agent) == list.append(loaded_history, [final])

@@ -65,7 +65,7 @@ let config =
 Available levels are `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, and
 `Max`. The setting is included in every inference request. Use
 `pig.set_thinking_level(agent, level)` to change it durably mid-session, or
-`pig.reset_thinking_level(agent)` to restore provider-default behavior; session
+`pig.reset_inference_settings(agent)` to restore provider-default behavior; session
 restoration reapplies the saved setting. `Off` is explicit: it asks the
 provider not to use reasoning, while the unset/default setting uses the
 provider's default. Runtime-only agents update their in-memory settings and

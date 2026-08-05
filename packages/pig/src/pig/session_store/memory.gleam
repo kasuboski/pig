@@ -7,8 +7,8 @@ import gleam/option
 import gleam/otp/actor
 import pig/session_store.{
   type Session, type SessionCommit, type SessionDelta, type SessionError,
-  type SessionStore, Corrupt, InferenceSettingsChanged, InvalidCommit,
-  MessagesAppended, ParentConflict, Session, SessionCommit, SessionStore,
+  type SessionStore, Corrupt, InferenceSettingsChanged, MessagesAppended,
+  ParentConflict, Session, SessionCommit, SessionStore,
 }
 
 /// A handle to an in-memory session store.
@@ -85,45 +85,38 @@ fn apply_commit(
   next: SessionCommit,
 ) -> #(Result(Session, SessionError), State) {
   let SessionCommit(id:, parent:, delta:) = next
-  case delta {
-    MessagesAppended([]) -> #(
-      Error(InvalidCommit("a message commit must contain at least one message")),
-      state,
-    )
-    _ ->
-      case dict.get(state.commits, id) {
-        Ok(previous) ->
-          case previous.parent == parent && previous.delta == delta {
-            True -> #(Ok(state.session), state)
-            False -> #(
-              Error(Corrupt("commit ID was reused with different contents")),
-              state,
-            )
-          }
-        Error(_) ->
-          case parent == state.session.head {
-            False -> #(
-              Error(ParentConflict(expected: parent, actual: state.session.head)),
-              state,
-            )
-            True -> {
-              let session = apply_delta(state.session, id, delta)
-              #(
-                Ok(session),
-                State(session:, commits: dict.insert(state.commits, id, next)),
-              )
-            }
-          }
+  case dict.get(state.commits, id) {
+    Ok(previous) ->
+      case previous.parent == parent && previous.delta == delta {
+        True -> #(Ok(state.session), state)
+        False -> #(
+          Error(Corrupt("commit ID was reused with different contents")),
+          state,
+        )
+      }
+    Error(_) ->
+      case parent == state.session.head {
+        False -> #(
+          Error(ParentConflict(expected: parent, actual: state.session.head)),
+          state,
+        )
+        True -> {
+          let session = apply_delta(state.session, id, delta)
+          #(
+            Ok(session),
+            State(session:, commits: dict.insert(state.commits, id, next)),
+          )
+        }
       }
   }
 }
 
 fn apply_delta(session: Session, id: String, delta: SessionDelta) -> Session {
   case delta {
-    MessagesAppended(messages) ->
+    MessagesAppended(first:, rest:) ->
       Session(
         head: option.Some(id),
-        messages: list.append(session.messages, messages),
+        messages: list.append(session.messages, [first, ..rest]),
         inference_settings: session.inference_settings,
       )
     InferenceSettingsChanged(settings) ->

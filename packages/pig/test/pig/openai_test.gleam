@@ -1,3 +1,5 @@
+//// Tests for OpenAI provider configuration and pure request construction.
+
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
@@ -63,6 +65,7 @@ pub fn with_http_timeout_overrides_test() {
     && updated.http_timeout_ms == 5000
 }
 
+/// Chat requests encode an explicit request thinking level.
 pub fn configured_provider_builds_request_with_thinking_test() {
   let body =
     openai_harness.check_request(
@@ -76,6 +79,7 @@ pub fn configured_provider_builds_request_with_thinking_test() {
     json.parse(body, decode.at(["reasoning_effort"], decode.string))
 }
 
+/// Responses requests encode an explicit request thinking level.
 pub fn responses_provider_builds_request_with_thinking_test() {
   let body =
     openai_harness.check_request(
@@ -89,6 +93,7 @@ pub fn responses_provider_builds_request_with_thinking_test() {
     json.parse(body, decode.at(["reasoning", "effort"], decode.string))
 }
 
+/// Provider thinking defaults apply when a request defers configuration.
 pub fn provider_default_is_used_when_request_defers_test() {
   let body =
     openai_harness.check_request(
@@ -101,6 +106,7 @@ pub fn provider_default_is_used_when_request_defers_test() {
     json.parse(body, decode.at(["reasoning_effort"], decode.string))
 }
 
+/// Explicit request settings override provider defaults.
 pub fn request_level_overrides_provider_default_for_responses_test() {
   let body =
     openai_harness.check_request(
@@ -113,6 +119,7 @@ pub fn request_level_overrides_provider_default_for_responses_test() {
     json.parse(body, decode.at(["reasoning", "effort"], decode.string))
 }
 
+/// Responses providers combine system messages into instructions.
 pub fn responses_provider_maps_system_messages_to_instructions_test() {
   let body =
     openai_harness.check_request(

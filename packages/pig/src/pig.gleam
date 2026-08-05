@@ -18,6 +18,7 @@ import pig/agent/state
 import pig/hooks.{type Hooks}
 import pig/obs/consumer_spec.{type ConsumerSpec}
 import pig/obs/dispatcher
+import pig/obs/events
 import pig/obs/session
 import pig/obs/terminal
 import pig/provider.{
@@ -61,6 +62,8 @@ pub type StartError {
   ActorStart(error: ActorStartError)
   /// The configured durable session could not be loaded.
   SessionLoad(error: SessionError)
+  /// A configured consumer could not be registered with the dispatcher.
+  ConsumerRegistration(error: dispatcher.RegistrationError)
 }
 
 /// Create a new PigConfig with a provider and sensible defaults.
@@ -306,6 +309,19 @@ pub fn start(config: PigConfig) -> Result(Agent, StartError) {
   }
 }
 
+fn register_consumers(
+  dispatcher_subject: process.Subject(dispatcher.DispatcherMessage),
+  consumer_subjects: List(process.Subject(events.SessionEvent)),
+) -> Result(Nil, dispatcher.RegistrationError) {
+  list.fold(consumer_subjects, Ok(Nil), fn(result, consumer_subject) {
+    case result {
+      Error(error) -> Error(error)
+      Ok(Nil) ->
+        dispatcher.register_consumer(dispatcher_subject, consumer_subject)
+    }
+  })
+}
+
 fn start_with_session(
   config: PigConfig,
   loaded_session: option.Option(LoadedSession),
@@ -338,88 +354,94 @@ fn start_with_session(
           // All consumers started OK — synchronously register them before
           // the agent can emit any events.
           let consumer_subjects = list.filter_map(consumer_results, fn(r) { r })
-          list.each(consumer_subjects, fn(consumer_subject) {
-            dispatcher.register_consumer(dispatcher_subject, consumer_subject)
-          })
-
-          let runtime_config =
-            runtime.RuntimeConfig(
-              provider: final_config.provider,
-              tools: final_config.tools,
-              hooks: config.hooks,
-              dispatcher: dispatcher_subject,
-              model: final_config.model,
-              max_iterations: final_config.max_iterations,
-              inference_settings: final_config.inference_settings,
-            )
-          // A durable store is authoritative when configured. Otherwise retain
-          // the legacy best-effort event-trace replay behavior.
-          let #(agent_st, replayed_settings) = case loaded_session {
-            option.Some(LoadedSession(session: loaded, ..)) -> #(
-              list.fold(
-                state.strip_system_messages(loaded.messages),
-                state.new(final_config),
-                state.add_message,
-              ),
-              loaded.inference_settings,
-            )
-            option.None ->
-              case final_config.session_path {
-                option.Some(path) -> {
-                  let st = state.new(final_config)
-                  case session.replay_with_settings(path) {
-                    Ok(#(replayed, restored_settings)) -> #(
-                      list.fold(
-                        state.strip_system_messages(replayed),
-                        st,
-                        state.add_message,
-                      ),
-                      restored_settings,
-                    )
-                    Error(err) -> {
-                      logging.log(
-                        logging.Warning,
-                        "Session replay failed for "
-                          <> path
-                          <> ": "
-                          <> string.inspect(err),
-                      )
-                      #(st, option.None)
-                    }
-                  }
-                }
-                option.None -> #(state.new(final_config), option.None)
-              }
-          }
-          // Apply initial history on top of session replay
-          let agent_st =
-            list.fold(
-              state.strip_system_messages(config.initial_history),
-              agent_st,
-              state.add_message,
-            )
-          let initial_settings = case replayed_settings {
-            option.Some(settings) -> settings
-            option.None -> final_config.inference_settings
-          }
-          let runtime_session = case loaded_session {
-            option.Some(LoadedSession(store:, session: loaded)) ->
-              runtime.SessionReady(store:, head: loaded.head)
-            option.None -> runtime.SessionDisabled
-          }
-          let rt_state =
-            runtime.RuntimeState(
-              agent_state: agent_st,
-              config: runtime_config,
-              session: runtime_session,
-              inference_settings: initial_settings,
-            )
-          case runtime.start_with_state(runtime_config, rt_state) {
-            Ok(subject) -> Ok(Agent(subject))
-            Error(e) -> {
-              // Runtime failed — shut down consumers and dispatcher
+          case register_consumers(dispatcher_subject, consumer_subjects) {
+            Error(error) -> {
+              // Registration failed — shut down the dispatcher before
+              // returning a typed startup error.
               process.send(dispatcher_subject, dispatcher.Stop)
-              Error(ActorStart(e))
+              Error(ConsumerRegistration(error))
+            }
+            Ok(Nil) -> {
+              // A durable store is authoritative when configured. Otherwise retain
+              // the legacy best-effort event-trace replay behavior.
+              let #(agent_st, replayed_settings) = case loaded_session {
+                option.Some(LoadedSession(session: loaded, ..)) -> #(
+                  list.fold(
+                    state.strip_system_messages(loaded.messages),
+                    state.new(final_config),
+                    state.add_message,
+                  ),
+                  loaded.inference_settings,
+                )
+                option.None ->
+                  case final_config.session_path {
+                    option.Some(path) -> {
+                      let st = state.new(final_config)
+                      case session.replay_with_settings(path) {
+                        Ok(#(replayed, restored_settings)) -> #(
+                          list.fold(
+                            state.strip_system_messages(replayed),
+                            st,
+                            state.add_message,
+                          ),
+                          restored_settings,
+                        )
+                        Error(err) -> {
+                          logging.log(
+                            logging.Warning,
+                            "Session replay failed for "
+                              <> path
+                              <> ": "
+                              <> string.inspect(err),
+                          )
+                          #(st, option.None)
+                        }
+                      }
+                    }
+                    option.None -> #(state.new(final_config), option.None)
+                  }
+              }
+              // Apply initial history on top of session replay
+              let agent_st =
+                list.fold(
+                  state.strip_system_messages(config.initial_history),
+                  agent_st,
+                  state.add_message,
+                )
+              let initial_settings = case replayed_settings {
+                option.Some(settings) -> settings
+                option.None -> final_config.inference_settings
+              }
+              let runtime_config =
+                runtime.RuntimeConfig(
+                  provider: final_config.provider,
+                  tools: final_config.tools,
+                  hooks: config.hooks,
+                  dispatcher: dispatcher_subject,
+                  model: final_config.model,
+                  max_iterations: final_config.max_iterations,
+                  inference_settings: initial_settings,
+                )
+              let runtime_session = case loaded_session {
+                option.Some(LoadedSession(store:, session: loaded)) ->
+                  runtime.SessionReady(store:, head: loaded.head)
+                option.None -> runtime.SessionDisabled
+              }
+              let rt_state =
+                runtime.RuntimeState(
+                  agent_state: agent_st,
+                  config: runtime_config,
+                  session: runtime_session,
+                  inference_settings: initial_settings,
+                )
+              case runtime.start_with_state(runtime_config, rt_state) {
+                Ok(subject) -> Ok(Agent(subject))
+                Error(e) -> {
+                  // Runtime failed — shut down consumers and dispatcher
+                  process.send(dispatcher_subject, dispatcher.Stop)
+                  Error(ActorStart(e))
+                }
+              }
             }
           }
         }
@@ -521,11 +543,6 @@ pub fn set_thinking_level(
 /// Reset the running agent to the provider's default thinking behavior.
 pub fn reset_inference_settings(agent: Agent) -> Result(Nil, RunError) {
   set_inference_settings(agent, default_settings())
-}
-
-/// Reset the running agent to the provider's default thinking behavior.
-pub fn reset_thinking_level(agent: Agent) -> Result(Nil, RunError) {
-  reset_inference_settings(agent)
 }
 
 /// Stop the agent actor.

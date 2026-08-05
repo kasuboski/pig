@@ -27,7 +27,7 @@ import pig_protocol/message
 import pig_protocol/thinking
 
 pub fn main() {
-  let provider = openai.provider("your-api-key", "gpt-4o-mini")
+  let provider = openai.provider("your-api-key", "gpt-5")
   let config =
     pig.new(provider.call)
     |> pig.with_system_prompt("You are a helpful assistant.")

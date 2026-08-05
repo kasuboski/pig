@@ -238,11 +238,11 @@ pub fn terminal_consumer_receives_events_via_dispatcher_test() {
 
   // Start a sync consumer to verify dispatcher processed the message
   let sync_consumer = process.new_subject()
-  dispatcher.register_consumer(disp, sync_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, sync_consumer)
 
   // Start terminal consumer actor
   let assert Ok(terminal_consumer) = terminal.start_consumer()
-  dispatcher.register_consumer(disp, terminal_consumer)
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, terminal_consumer)
 
   // Send event through dispatcher
   let event =

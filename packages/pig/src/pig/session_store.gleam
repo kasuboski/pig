@@ -30,7 +30,7 @@ pub type Session {
 /// An atomic change to a durable session.
 pub type SessionDelta {
   /// Append one or more messages to the durable transcript.
-  MessagesAppended(messages: List(Message))
+  MessagesAppended(first: Message, rest: List(Message))
   /// Replace the durable inference settings.
   InferenceSettingsChanged(settings: InferenceSettings)
 }
@@ -43,12 +43,13 @@ pub type SessionCommit {
 /// Create a message commit with a fresh opaque ID and its expected parent.
 pub fn new_commit(
   parent: Option(String),
-  messages: List(Message),
+  first: Message,
+  rest: List(Message),
 ) -> SessionCommit {
   SessionCommit(
     id: fresh_commit_id(),
     parent:,
-    delta: MessagesAppended(messages),
+    delta: MessagesAppended(first:, rest:),
   )
 }
 

@@ -2,16 +2,21 @@
 
 A persistent workspace for pig agents, backed by SQLite. Agents get a sandboxed virtual filesystem and a key-value memory store that survive across sessions.
 
-Agent-owned inference settings are durable state too. Restoring an agent/session
+Agent-owned inference settings are durable state too, but they are persisted by
+Pig's session store rather than by `Workspace`. Restoring an agent/session
 restores the setting used for subsequent `InferenceRequest` values. A mid-session
 change affects later requests and emits the normal setting and inference events;
-it is not a per-run override.
+it is not a per-run override. Workspace files and key-value memory persist
+independently across sessions.
 
 Based on the [AgentFS spec](https://github.com/tursodatabase/agentfs/blob/main/SPEC.md) v0.4, stripped down to what pig needs.
 
 ## Overview
 
-Agents currently have no persistence. Every `pig.run()` starts from scratch. The workspace gives agents:
+Workspace persistence is separate from conversation/session persistence. A
+workspace gives agents durable files and memory, while a configured Pig session
+store restores conversation history and inference settings. Without either
+store, `pig.run()` state is in memory only. The workspace gives agents:
 
 1. **A virtual filesystem** — create, read, list, and delete files in a SQLite-backed directory tree. Agents treat these as normal file operations.
 2. **A key-value memory** — store and retrieve values across conversations. Framed as "remember" and "recall" so the LLM thinks of it as memory.
