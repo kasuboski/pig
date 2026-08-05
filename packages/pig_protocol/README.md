@@ -27,17 +27,20 @@ gleam add pig_protocol
 Build a Chat Completions request and parse its response:
 
 ```gleam
+import gleam/option.{Some}
 import pig_protocol/codec/chat
 import pig_protocol/message
+import pig_protocol/thinking
 
 pub fn request_body() -> String {
-  chat.build_request_body(
+  chat.build_request_body_with_thinking(
     messages: [
       message.System("You are a helpful assistant."),
       message.User("What is 7 plus 3?"),
     ],
     tools: [],
-    model: "gpt-4o-mini",
+    model: "gpt-5",
+    thinking_level: Some(thinking.Medium),
   )
 }
 
@@ -61,6 +64,7 @@ For direct HTTP calls, construct a `pig_protocol/transport.HttpRequest` and use
 | `pig_protocol/inference` | Provider response values and metadata |
 | `pig_protocol/error` | Normalized provider errors |
 | `pig_protocol/stop_reason` | Provider-neutral completion reasons |
+| `pig_protocol/thinking` | Provider-neutral thinking levels |
 | `pig_protocol/tool_definition` | JSON Schema-backed tool definitions |
 | `pig_protocol/codec/chat` | Chat Completions request and response codecs |
 | `pig_protocol/codec/responses` | Responses API and Codex codecs |

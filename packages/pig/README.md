@@ -38,6 +38,52 @@ pub fn main() {
 `provider_with_base_url`, so the same runtime can be used with compatible local
 or hosted providers.
 
+## Thinking levels
+
+### Why this previously appeared supported
+
+Pig already had a `Thinking` field on assistant messages and Responses requests
+included `reasoning.encrypted_content`. Both are response/history features:
+neither selected how much reasoning the model should perform. There was no
+request configuration for `reasoning_effort` or `reasoning.effort`, so users
+were correct that thinking levels could not be set.
+
+### Configuration
+
+Configure reasoning-capable OpenAI-compatible models on the provider before
+passing its callable function to `pig.new`:
+
+```gleam
+import pig_protocol/thinking
+
+let provider =
+  openai.provider("your-api-key", "gpt-5")
+  |> openai.with_thinking_level(thinking.Medium)
+
+let config = pig.new(provider.call)
+```
+
+Available levels are `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, and
+`Max`. Pig sends these as the Chat Completions `reasoning_effort` field. Model
+support varies; the provider returns an API error when a selected level is not
+supported. Leaving the level unset omits the field and preserves the provider's
+default.
+
+Use `responses_provider` for OpenAI's Responses API. It uses the same provider
+interface, so it runs through the normal Pig runtime:
+
+```gleam
+let provider =
+  openai.responses_provider("your-api-key", "gpt-5")
+  |> openai.with_thinking_level(thinking.Medium)
+
+let config = pig.new(provider.call)
+```
+
+Responses requests send `reasoning.effort`; enabled levels also request an
+automatic provider-generated reasoning summary. System messages are mapped to
+Responses `instructions`.
+
 ## Tools
 
 A tool combines a JSON Schema definition with a handler. The agent executes tool

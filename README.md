@@ -72,6 +72,15 @@ gleam build --warnings-as-errors
 gleam test
 ```
 
+### Monorepo package dependencies
+
+The source checkout uses local path dependencies between Pig packages so an
+atomic change to `pig_protocol` and `pig` can build before either package is
+published. Release `pig_protocol` first; before publishing `pig`, replace its
+local dependency with the released `pig_protocol` version and regenerate
+`manifest.toml` with Gleam. The checked-out `pig` package is therefore intended
+for monorepo development, not direct Hex publication without that release step.
+
 Live provider tests are disabled by default. Run them only with the required
 provider credentials configured:
 

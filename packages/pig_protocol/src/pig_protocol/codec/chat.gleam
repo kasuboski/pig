@@ -5,9 +5,12 @@ import gleam/option.{type Option, None}
 import gleam/result
 import jscheam/schema
 import pig_protocol/error.{type AiError}
-import pig_protocol/inference.{type InferenceResult, InferenceResult, InferenceMetadata, default_metadata}
+import pig_protocol/inference.{
+  type InferenceResult, InferenceMetadata, InferenceResult, default_metadata,
+}
 import pig_protocol/message.{type Message}
 import pig_protocol/stop_reason
+import pig_protocol/thinking.{type ThinkingLevel}
 import pig_protocol/tool_definition.{type ToolDefinition}
 
 /// Build the JSON request body for the OpenAI Chat Completions API.
@@ -17,19 +20,35 @@ pub fn build_request_body(
   tools: List(ToolDefinition),
   model: String,
 ) -> String {
-  let msg_entries =
-    messages
-    |> list.map(message_to_json)
+  build_request_body_with_thinking(messages, tools, model, None)
+}
+
+/// Build a Chat Completions request with an optional thinking level.
+///
+/// OpenAI-shaped APIs receive this as `reasoning_effort`. Unsupported levels
+/// are reported by the provider API.
+pub fn build_request_body_with_thinking(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  thinking_level: Option(ThinkingLevel),
+) -> String {
+  let msg_entries = list.map(messages, message_to_json)
   let base = [
     #("model", json.string(model)),
     #("messages", json.preprocessed_array(msg_entries)),
     #("stream", json.bool(False)),
   ]
+  let with_thinking = case thinking_level {
+    option.Some(level) -> [
+      #("reasoning_effort", json.string(thinking.to_openai_effort(level))),
+      ..base
+    ]
+    option.None -> base
+  }
   let with_tools = case tools {
-    [] -> base
-    ts ->
-      base
-      |> list.append([#("tools", json.array(ts, tool_to_json))])
+    [] -> with_thinking
+    ts -> list.append(with_thinking, [#("tools", json.array(ts, tool_to_json))])
   }
   json.object(with_tools) |> json.to_string()
 }

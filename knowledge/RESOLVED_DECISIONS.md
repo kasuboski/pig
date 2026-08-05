@@ -46,6 +46,8 @@ This document captures the key architectural decisions and implementation choice
 
 11. **SessionEvent Canonicality:** For all pig-specific observability modules (session writer, terminal printer, future OTel exporter), `SessionEvent` is the single source of truth. All pig observability modules read from `SessionEvent`s. The `:telemetry` channel serves the broader BEAM ecosystem and is not a replacement for `SessionEvent`.
 
+12. **Thinking Levels:** Investigation found that the existing assistant `Thinking` field only stored provider output and `reasoning.encrypted_content` only requested replay data; neither configured reasoning effort. Reasoning effort is now represented by the provider-neutral `ThinkingLevel` union (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, `Max`). It is captured by concrete provider configuration rather than added to the two-argument `Provider` function, keeping the runtime and sans-IO state machine provider-agnostic. OpenAI Chat Completions maps it to `reasoning_effort`; the first-class Responses provider maps it to `reasoning.effort`. Pig does not maintain a model capability catalog, so provider APIs report unsupported levels.
+
 ---
 
 ## Observability Model — Two First-Class Channels + Logging

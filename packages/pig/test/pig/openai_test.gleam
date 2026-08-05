@@ -1,5 +1,11 @@
+import gleam/dynamic/decode
+import gleam/json
+import gleam/option.{None, Some}
 import gleeunit
 import pig/openai
+import pig_protocol/message
+import pig_protocol/thinking
+import support/openai_harness
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -49,10 +55,50 @@ pub fn with_http_timeout_overrides_test() {
       "http://localhost:11434/v1",
     )
   let openai.OpenAIProvider(config: updated, call: _) =
-    openai.with_http_timeout(original, 5_000)
+    openai.with_http_timeout(original, 5000)
   let assert True =
     updated.api_key == "sk-test"
     && updated.model == "gpt-4o"
     && updated.base_url == "http://localhost:11434/v1"
-    && updated.http_timeout_ms == 5_000
+    && updated.http_timeout_ms == 5000
+}
+
+pub fn configured_provider_builds_request_with_thinking_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Chat,
+      [message.User("solve this")],
+      Some(thinking.Medium),
+    )
+
+  let assert Ok("medium") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+pub fn responses_provider_builds_request_with_thinking_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [message.User("solve this")],
+      Some(thinking.High),
+    )
+
+  let assert Ok("high") =
+    json.parse(body, decode.at(["reasoning", "effort"], decode.string))
+}
+
+pub fn responses_provider_maps_system_messages_to_instructions_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [
+        message.System("first instruction"),
+        message.System("second instruction"),
+        message.User("hello"),
+      ],
+      None,
+    )
+
+  let assert Ok("first instruction\n\nsecond instruction") =
+    json.parse(body, decode.at(["instructions"], decode.string))
 }

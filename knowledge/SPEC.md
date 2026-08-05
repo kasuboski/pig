@@ -36,7 +36,8 @@ A unified type system for messages and a common interface for model providers.
     *   `Message`: A union type of `User`, `Assistant` (containing optional `ToolCalls` and `Thinking` blocks), `Tool` (results), and `System`.
     *   `ToolDefinition`: The JSON Schema representation of a tool.
     *   `InferenceResult`: Wraps a `Message` with `InferenceMetadata` (response ID, model, finish reason, token counts).
-*   **Interface:** A provider is a function: `fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)`.
+    *   `ThinkingLevel`: Provider-neutral reasoning effort (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, or `Max`).
+*   **Interface:** A provider is a function: `fn(List(Message), List(ToolDefinition)) -> Result(InferenceResult, AiError)`. Provider constructors capture model-specific request configuration such as thinking level; the OpenAI Chat Completions provider maps it to `reasoning_effort`, while the Responses provider maps it to `reasoning.effort`.
 
 ### 3.2 `pig/agent`: Sans-IO State Machine + Runtime
 
