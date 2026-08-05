@@ -14,12 +14,13 @@ import gleeunit
 import integration/config
 import integration/gate
 import jscheam/schema
-import pig_protocol/error.{type AiError}
-import pig_protocol/message
 import pig/openai
-import pig_protocol/inference.{InferenceResult}
-import pig_protocol/tool_definition
+import pig/provider
 import pig/tool
+import pig_protocol/error.{type AiError}
+import pig_protocol/inference.{InferenceResult}
+import pig_protocol/message
+import pig_protocol/tool_definition
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -41,7 +42,7 @@ pub fn simple_text_completion_test() {
     False -> {
       let prov = make_provider()
       let messages = [message.User("Say exactly the words: hello world")]
-      let result = prov.call(messages, [])
+      let result = call_provider(prov, messages, [])
       let assert Ok(InferenceResult(message: msg, metadata: _)) = result
       case msg {
         message.Assistant(content:, tool_calls: [], thinking: _, stop_reason: _) -> {
@@ -61,7 +62,7 @@ pub fn response_has_metadata_test() {
     False -> {
       let prov = make_provider()
       let messages = [message.User("Say exactly: test")]
-      let result = prov.call(messages, [])
+      let result = call_provider(prov, messages, [])
       let assert Ok(InferenceResult(message: _, metadata: meta)) = result
       assert option.is_some(meta.stop_reason) == True
     }
@@ -111,7 +112,7 @@ pub fn tool_call_roundtrip_test() {
         message.User("What is 7 plus 3? You MUST use the add tool to answer."),
       ]
 
-      let result = prov.call(messages, defs)
+      let result = call_provider(prov, messages, defs)
 
       case result {
         Ok(InferenceResult(
@@ -148,7 +149,7 @@ pub fn invalid_model_returns_error_test() {
           config.base_url(),
         )
       let messages = [message.User("hello")]
-      let result = prov.call(messages, [])
+      let result = call_provider(prov, messages, [])
       case result {
         Ok(_) | Error(_) -> Nil
       }
@@ -163,7 +164,7 @@ pub fn bad_base_url_returns_error_test() {
       let prov =
         openai.provider_with_base_url("key", "model", "http://127.0.0.1:1/v1")
       let messages = [message.User("hello")]
-      let result = prov.call(messages, [])
+      let result = call_provider(prov, messages, [])
       case result {
         Error(_) -> Nil
         Ok(_) -> panic as "expected error for unreachable URL"
@@ -173,6 +174,18 @@ pub fn bad_base_url_returns_error_test() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+fn call_provider(
+  prov: openai.OpenAIProvider,
+  messages: List(message.Message),
+  tools: List(tool_definition.ToolDefinition),
+) {
+  prov.call(provider.InferenceRequest(
+    messages:,
+    tools:,
+    settings: provider.default_settings(),
+  ))
+}
 
 fn ai_error_to_string(err: AiError) -> String {
   case err {

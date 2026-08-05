@@ -9,14 +9,16 @@ import gleam/io
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
-import pig_protocol/error.{
-  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
-}
-import pig_protocol/stop_reason
+import pig/obs/consumer_spec
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, ErrorEnd,
   Interrupted, MaxIterationsExceeded, NormalEnd,
 }
+import pig/provider
+import pig_protocol/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
+import pig_protocol/stop_reason
 
 // ── State ─────────────────────────────────────────────────────────────
 
@@ -45,11 +47,13 @@ pub fn format_event(event: SessionEvent) -> String {
       "[START] Session started | model: " <> model <> agent_part
     }
 
-    events.InferenceStarted(model:, message_count:) -> {
+    events.InferenceStarted(model:, message_count:, settings:) -> {
       "[INF] Started | model: "
       <> model
       <> " | messages: "
       <> int.to_string(message_count)
+      <> " | thinking: "
+      <> provider.settings_to_string(settings)
     }
 
     events.InferenceCompleted(
@@ -61,6 +65,7 @@ pub fn format_event(event: SessionEvent) -> String {
       output_tokens:,
       duration_ms:,
       input_messages: _,
+      settings: _,
     ) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let token_part = case input_tokens, output_tokens {
@@ -103,11 +108,20 @@ pub fn format_event(event: SessionEvent) -> String {
       <> action.action_type
     }
 
-    events.InferenceFailed(error:, duration_ms:, input_messages: _) -> {
+    events.InferenceFailed(
+      model: _,
+      error:,
+      duration_ms:,
+      input_messages: _,
+      settings: _,
+    ) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
       let error_str = format_error(error)
       "[ERR] Inference failed | " <> duration_str <> " | " <> error_str
     }
+
+    events.InferenceSettingsChanged(settings:) ->
+      "[SETTINGS] Thinking changed | " <> provider.settings_to_string(settings)
 
     events.SessionEnded(reason) -> {
       "[END] Session ended | " <> format_end_reason(reason)
@@ -153,23 +167,46 @@ fn hook_to_string(hook: HookPoint) -> String {
 
 // ── Actor Initialization ───────────────────────────────────────────────
 
-/// Start the terminal printer actor.
-/// The actor will print formatted SessionEvents to stdout.
-pub fn start() -> Result(Subject(SessionEvent), actor.StartError) {
+/// Messages owned by the unsupervised terminal consumer.
+type ConsumerMessage {
+  Consume(SessionEvent)
+  Stop(Subject(Nil))
+}
+
+/// Start a terminal consumer and return its owned endpoint.
+pub fn start() -> Result(consumer_spec.StartedConsumer, actor.StartError) {
   let builder =
     actor.new(State)
-    |> actor.on_message(handle_message)
+    |> actor.on_message(handle_managed_message)
   case actor.start(builder) {
-    Ok(started) -> Ok(started.data)
+    Ok(started) -> {
+      let subject = started.data
+      Ok(
+        consumer_spec.started(
+          fn(event) { process.send(subject, Consume(event)) },
+          fn() {
+            let reply_subject = process.new_subject()
+            process.send(subject, Stop(reply_subject))
+            let _ = process.receive(reply_subject, 5000)
+            Nil
+          },
+        ),
+      )
+    }
     Error(e) -> Error(e)
   }
 }
 
-/// Start a terminal consumer actor that accepts SessionEvent directly.
-/// Used by the dispatcher to fan out events. Returns the Subject for registration.
-/// This is the consumer version of the actor — same as start() since terminal
-/// already receives SessionEvent directly.
-pub fn start_consumer() -> Result(Subject(SessionEvent), actor.StartError) {
+/// Stop a terminal consumer via its typed `Stop` message.
+pub fn stop(consumer: consumer_spec.StartedConsumer) -> Nil {
+  consumer_spec.stop(consumer)
+}
+
+/// Start a terminal consumer for dispatcher registration.
+pub fn start_consumer() -> Result(
+  consumer_spec.StartedConsumer,
+  actor.StartError,
+) {
   start()
 }
 
@@ -198,4 +235,21 @@ fn handle_message(
   let formatted = format_event(event)
   io.println(formatted)
   actor.continue(state)
+}
+
+fn handle_managed_message(
+  state: State,
+  message: ConsumerMessage,
+) -> actor.Next(State, ConsumerMessage) {
+  case message {
+    Consume(event) -> {
+      let formatted = format_event(event)
+      io.println(formatted)
+      actor.continue(state)
+    }
+    Stop(reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.stop()
+    }
+  }
 }

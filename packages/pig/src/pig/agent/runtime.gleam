@@ -28,7 +28,7 @@ import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
-import pig/provider
+import pig/provider.{type InferenceSettings}
 import pig/run_error
 import pig/session_store
 import pig/tool
@@ -51,6 +51,7 @@ pub type RuntimeConfig {
     dispatcher: process.Subject(dispatcher.DispatcherMessage),
     model: String,
     max_iterations: Int,
+    inference_settings: InferenceSettings,
   )
 }
 
@@ -65,6 +66,11 @@ pub type RuntimeMsg {
   )
   /// Resume the agent loop from its current history.
   Continue(reply_to: process.Subject(Result(Message, run_error.RunError)))
+  /// Replace the runtime's inference settings and reply synchronously.
+  SetInferenceSettings(
+    settings: InferenceSettings,
+    reply_to: process.Subject(Result(Nil, run_error.RunError)),
+  )
   /// Get the agent's current message history.
   GetHistory(reply_to: process.Subject(List(Message)))
   /// Stop the actor.
@@ -86,13 +92,30 @@ pub type SessionState {
   SessionDisabled
   /// Commits are written to `store` against the current `head`.
   SessionReady(store: session_store.SessionStore, head: option.Option(String))
-  /// A commit failed ambiguously and must be retried unchanged before new work.
+  /// A message commit failed ambiguously and must be retried unchanged.
   SessionPending(
     store: session_store.SessionStore,
     commit: session_store.SessionCommit,
     candidate: state.AgentState,
     disposition: PostCommitDisposition,
   )
+  /// A settings transition is fenced until its durable outcome is resolved.
+  SessionSettingsPending(
+    store: session_store.SessionStore,
+    settings: InferenceSettings,
+    mode: SettingsPendingMode,
+  )
+}
+
+/// The recovery protocol for a durable settings transition.
+///
+/// `RetryCommit` is the only mode that retains a commit, and it must be
+/// retried byte-for-byte. A parent conflict discards that commit and reloads
+/// the authoritative snapshot before allowing a fresh request.
+pub type SettingsPendingMode {
+  RetryCommit(commit: session_store.SessionCommit)
+  ReloadPending(conflict: session_store.SessionError)
+  Reloaded(snapshot: session_store.Session)
 }
 
 /// Internal state held by the runtime actor.
@@ -101,6 +124,7 @@ pub type RuntimeState {
     agent_state: state.AgentState,
     config: RuntimeConfig,
     session: SessionState,
+    inference_settings: InferenceSettings,
   )
 }
 
@@ -114,6 +138,7 @@ pub fn start(
   let agent_config =
     state.AgentConfig(
       provider: config.provider,
+      inference_settings: config.inference_settings,
       tools: config.tools,
       system_prompt: option.None,
       max_iterations: config.max_iterations,
@@ -125,7 +150,14 @@ pub fn start(
       provider_name: option.None,
       session_path: option.None,
     )
-  let initial_state = runtime_state(agent_config, config, [], SessionDisabled)
+  let initial_state =
+    runtime_state(
+      agent_config,
+      config,
+      [],
+      SessionDisabled,
+      config.inference_settings,
+    )
   start_with_state(config, initial_state)
 }
 
@@ -165,6 +197,17 @@ pub fn run_continue(
   timeout: Int,
 ) -> Result(Message, run_error.RunError) {
   actor.call(subject, timeout, fn(reply_to) { Continue(reply_to) })
+}
+
+/// Set inference settings and wait for the durable commit, when configured.
+pub fn set_inference_settings(
+  subject: process.Subject(RuntimeMsg),
+  settings: InferenceSettings,
+  timeout: Int,
+) -> Result(Nil, run_error.RunError) {
+  actor.call(subject, timeout, fn(reply_to) {
+    SetInferenceSettings(settings:, reply_to:)
+  })
 }
 
 /// Send a stop message to the runtime actor.
@@ -226,6 +269,7 @@ pub fn supervised(
       name,
       initial_history,
       session,
+      agent_config.inference_settings,
     )
   })
 }
@@ -250,6 +294,10 @@ pub fn supervised_with_session_store(
           name,
           state.strip_system_messages(loaded.messages),
           SessionReady(store:, head: loaded.head),
+          case loaded.inference_settings {
+            option.Some(settings) -> settings
+            option.None -> agent_config.inference_settings
+          },
         )
       Error(error) -> {
         logging.log(
@@ -268,10 +316,17 @@ fn start_named_runtime(
   name: process.Name(RuntimeMsg),
   initial_history: List(Message),
   session: SessionState,
+  initial_settings: InferenceSettings,
 ) -> Result(actor.Started(Nil), StartError) {
   let runtime_config = supervised_runtime_config(agent_config, dispatcher_name)
   let initial_state =
-    runtime_state(agent_config, runtime_config, initial_history, session)
+    runtime_state(
+      agent_config,
+      runtime_config,
+      initial_history,
+      session,
+      initial_settings,
+    )
   let builder =
     actor.new(initial_state)
     |> actor.on_message(handle_message)
@@ -293,6 +348,7 @@ fn supervised_runtime_config(
     dispatcher: process.named_subject(dispatcher_name),
     model: agent_config.model,
     max_iterations: agent_config.max_iterations,
+    inference_settings: agent_config.inference_settings,
   )
 }
 
@@ -301,6 +357,7 @@ fn runtime_state(
   config: RuntimeConfig,
   initial_history: List(Message),
   session: SessionState,
+  initial_settings: InferenceSettings,
 ) -> RuntimeState {
   RuntimeState(
     agent_state: list.fold(
@@ -310,6 +367,7 @@ fn runtime_state(
     ),
     config:,
     session:,
+    inference_settings: initial_settings,
   )
 }
 
@@ -322,7 +380,7 @@ fn handle_message(
   case m {
     Run(prompt, reply_to) ->
       case st.session {
-        SessionPending(..) -> {
+        SessionPending(..) | SessionSettingsPending(..) -> {
           process.send(
             reply_to,
             Error(run_error.Runtime(
@@ -344,6 +402,7 @@ fn handle_message(
               st.config,
               agent_st,
               st.session,
+              st.inference_settings,
               msg.UserPrompt(prompt),
             )
           let #(final_state, final_session, outcome) = result
@@ -352,13 +411,26 @@ fn handle_message(
             agent_state: final_state,
             config: st.config,
             session: final_session,
+            inference_settings: st.inference_settings,
           ))
         }
       }
     Continue(reply_to) -> {
       let #(final_state, final_session, outcome) = case st.session {
+        SessionSettingsPending(..) -> #(
+          st.agent_state,
+          st.session,
+          Error(run_error.Runtime(
+            "cannot continue while inference settings commit is pending",
+          )),
+        )
         SessionPending(..) as pending ->
-          retry_pending(st.config, st.agent_state, pending)
+          retry_pending(
+            st.config,
+            st.agent_state,
+            pending,
+            st.inference_settings,
+          )
         _ -> {
           let agent_st =
             state.AgentState(
@@ -366,7 +438,12 @@ fn handle_message(
               history: st.agent_state.history,
               iterations: 0,
             )
-          resume_from_history(st.config, agent_st, st.session)
+          resume_from_history(
+            st.config,
+            agent_st,
+            st.session,
+            st.inference_settings,
+          )
         }
       }
       process.send(reply_to, outcome)
@@ -374,13 +451,253 @@ fn handle_message(
         agent_state: final_state,
         config: st.config,
         session: final_session,
+        inference_settings: st.inference_settings,
       ))
+    }
+    SetInferenceSettings(settings, reply_to) -> {
+      let #(next_state, outcome) = case st.session {
+        SessionPending(..) -> #(
+          st,
+          Error(run_error.Runtime(
+            "cannot change settings while a session commit is pending",
+          )),
+        )
+        SessionSettingsPending(..) as pending ->
+          retry_or_reject_settings(st, pending, settings)
+        _ -> set_settings(st, settings)
+      }
+      process.send(reply_to, outcome)
+      case outcome {
+        Ok(Nil) -> {
+          emit.to_dispatcher(
+            st.config.dispatcher,
+            events.InferenceSettingsChanged(settings:),
+          )
+          actor.continue(
+            RuntimeState(..next_state, inference_settings: settings),
+          )
+        }
+        Error(_) -> actor.continue(next_state)
+      }
     }
     GetHistory(reply_to) -> {
       process.send(reply_to, st.agent_state.history)
       actor.continue(st)
     }
     Stop -> actor.stop()
+  }
+}
+
+fn set_settings(
+  st: RuntimeState,
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case st.session {
+    SessionDisabled -> #(st, Ok(Nil))
+    SessionReady(store:, head:) -> commit_settings(st, store, head, settings)
+    SessionPending(..) -> #(
+      st,
+      Error(run_error.Runtime(
+        "cannot change settings while a session commit is pending",
+      )),
+    )
+    SessionSettingsPending(..) -> #(
+      st,
+      Error(run_error.Runtime("inference settings commit is pending")),
+    )
+  }
+}
+
+fn commit_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  head: option.Option(String),
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let commit = session_store.new_settings_commit(head, settings)
+  let session_store.SessionStore(commit: store_commit, ..) = store
+  case store_commit(commit) {
+    Error(error) ->
+      settings_commit_error(st, store, head, commit, settings, error)
+    Ok(committed) ->
+      case committed.head == option.Some(commit.id) {
+        True -> #(
+          RuntimeState(
+            ..st,
+            session: SessionReady(store:, head: committed.head),
+          ),
+          Ok(Nil),
+        )
+        False ->
+          reload_settings(
+            st,
+            store,
+            settings,
+            session_store.ParentConflict(
+              expected: option.Some(commit.id),
+              actual: committed.head,
+            ),
+          )
+      }
+  }
+}
+
+fn retry_or_reject_settings(
+  st: RuntimeState,
+  pending: SessionState,
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let assert SessionSettingsPending(store:, settings: pending_settings, mode:) =
+    pending
+  case pending_settings == settings {
+    False -> #(
+      st,
+      Error(run_error.Runtime(
+        "a different inference settings commit is pending",
+      )),
+    )
+    True ->
+      case mode {
+        RetryCommit(commit) -> {
+          let session_store.SessionStore(commit: store_commit, ..) = store
+          case store_commit(commit) {
+            Error(error) ->
+              settings_commit_error(
+                st,
+                store,
+                commit.parent,
+                commit,
+                settings,
+                error,
+              )
+            Ok(committed) ->
+              case committed.head == option.Some(commit.id) {
+                True -> #(
+                  RuntimeState(
+                    ..st,
+                    session: SessionReady(store:, head: committed.head),
+                  ),
+                  Ok(Nil),
+                )
+                False ->
+                  reload_settings(
+                    st,
+                    store,
+                    settings,
+                    session_store.ParentConflict(
+                      expected: option.Some(commit.id),
+                      actual: committed.head,
+                    ),
+                  )
+              }
+          }
+        }
+        ReloadPending(conflict) ->
+          reload_settings(st, store, settings, conflict)
+        Reloaded(snapshot) ->
+          retry_reloaded_settings(st, store, settings, snapshot)
+      }
+  }
+}
+
+fn settings_commit_error(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  head: option.Option(String),
+  commit: session_store.SessionCommit,
+  settings: InferenceSettings,
+  error: session_store.SessionError,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case error {
+    session_store.ParentConflict(..) ->
+      reload_settings(st, store, settings, error)
+    session_store.InvalidCommit(_) | session_store.Corrupt(_) -> #(
+      RuntimeState(..st, session: SessionReady(store:, head:)),
+      Error(run_error.Session(error)),
+    )
+    session_store.Unavailable(_) -> #(
+      RuntimeState(
+        ..st,
+        session: SessionSettingsPending(
+          store:,
+          settings:,
+          mode: RetryCommit(commit:),
+        ),
+      ),
+      Error(run_error.Session(error)),
+    )
+  }
+}
+
+fn reload_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  conflict: session_store.SessionError,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let session_store.SessionStore(load:, ..) = store
+  case load() {
+    Ok(snapshot) -> #(
+      replace_with_snapshot(st, store, settings, snapshot),
+      Error(run_error.Session(conflict)),
+    )
+    Error(error) -> #(
+      RuntimeState(
+        ..st,
+        session: SessionSettingsPending(
+          store:,
+          settings:,
+          mode: ReloadPending(conflict:),
+        ),
+      ),
+      Error(run_error.Session(error)),
+    )
+  }
+}
+
+fn replace_with_snapshot(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  snapshot: session_store.Session,
+) -> RuntimeState {
+  let active_settings = case snapshot.inference_settings {
+    option.Some(loaded_settings) -> loaded_settings
+    option.None -> st.config.inference_settings
+  }
+  let agent_state =
+    state.AgentState(
+      ..st.agent_state,
+      history: state.strip_system_messages(snapshot.messages),
+      iterations: 0,
+    )
+  RuntimeState(
+    agent_state:,
+    config: st.config,
+    session: SessionSettingsPending(
+      store:,
+      settings:,
+      mode: Reloaded(snapshot:),
+    ),
+    inference_settings: active_settings,
+  )
+}
+
+fn retry_reloaded_settings(
+  st: RuntimeState,
+  store: session_store.SessionStore,
+  settings: InferenceSettings,
+  snapshot: session_store.Session,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case snapshot.inference_settings {
+    option.Some(loaded_settings) if loaded_settings == settings -> #(
+      RuntimeState(..st, session: SessionReady(store:, head: snapshot.head)),
+      Ok(Nil),
+    )
+    // An absent persisted setting is only a configured fallback. Commit the
+    // request explicitly so it survives restart and later config changes.
+    option.Some(_) | option.None ->
+      commit_settings(st, store, snapshot.head, settings)
   }
 }
 
@@ -392,15 +709,17 @@ fn execute_loop(
   config: RuntimeConfig,
   agent_st: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
   initial_msg: msg.AgentMsg,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  do_loop(config, agent_st, session, initial_msg)
+  do_loop(config, agent_st, session, settings, initial_msg)
 }
 
 fn do_loop(
   config: RuntimeConfig,
   agent_st: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
   m: msg.AgentMsg,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   let transition = update.update(agent_st, m)
@@ -411,6 +730,7 @@ fn do_loop(
         session,
         agent_st,
         final_st,
+        settings,
         ReturnMessage(final_message),
       )
 
@@ -420,6 +740,7 @@ fn do_loop(
         session,
         agent_st,
         final_st,
+        settings,
         ReturnAiError(inference_error),
       )
 
@@ -430,7 +751,8 @@ fn do_loop(
           pending,
           Error(run_error.Session(session_error)),
         )
-        Ok(next_session) -> execute_effects(config, new_st, next_session, effs)
+        Ok(next_session) ->
+          execute_effects(config, new_st, next_session, settings, effs)
       }
   }
 }
@@ -440,11 +762,18 @@ fn commit_or_pending(
   session: SessionState,
   previous: state.AgentState,
   candidate: state.AgentState,
+  settings: InferenceSettings,
   disposition: PostCommitDisposition,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   case commit_transition(session, previous, candidate, disposition) {
     Ok(next_session) ->
-      complete_disposition(config, candidate, next_session, disposition)
+      complete_disposition(
+        config,
+        candidate,
+        next_session,
+        settings,
+        disposition,
+      )
     Error(#(pending, session_error)) -> #(
       previous,
       pending,
@@ -461,24 +790,25 @@ fn commit_transition(
 ) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
   let delta = list.drop(candidate.history, list.length(previous.history))
   case session, delta {
-    SessionPending(..), _ ->
+    SessionPending(..), _ | SessionSettingsPending(..), _ ->
       panic as "cannot commit while a session commit is pending"
     _, [] -> Ok(session)
     SessionDisabled, _ -> Ok(session)
-    SessionReady(store:, head:), messages ->
-      commit_messages(store, head, messages, candidate, disposition)
+    SessionReady(store:, head:), [first, ..rest] ->
+      commit_messages(store, head, first, rest, candidate, disposition)
   }
 }
 
 fn commit_messages(
   store: session_store.SessionStore,
   head: option.Option(String),
-  messages: List(Message),
+  first: Message,
+  rest: List(Message),
   candidate: state.AgentState,
   disposition: PostCommitDisposition,
 ) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
   let session_store.SessionStore(commit: store_commit, ..) = store
-  let commit = session_store.new_commit(head, messages)
+  let commit = session_store.new_commit(head, first, rest)
   case store_commit(commit) {
     Ok(committed) ->
       accept_committed_session(store, commit, candidate, disposition, committed)
@@ -514,6 +844,7 @@ fn retry_pending(
   config: RuntimeConfig,
   current: state.AgentState,
   pending: SessionState,
+  settings: InferenceSettings,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   let assert SessionPending(store:, commit:, candidate:, disposition:) = pending
   let session_store.SessionStore(commit: store_commit, ..) = store
@@ -533,7 +864,8 @@ fn retry_pending(
           committed,
         )
       {
-        Ok(ready) -> complete_disposition(config, candidate, ready, disposition)
+        Ok(ready) ->
+          complete_disposition(config, candidate, ready, settings, disposition)
         Error(#(still_pending, session_error)) -> #(
           current,
           still_pending,
@@ -547,6 +879,7 @@ fn complete_disposition(
   config: RuntimeConfig,
   candidate: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
   disposition: PostCommitDisposition,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   case disposition {
@@ -556,7 +889,8 @@ fn complete_disposition(
       session,
       Error(run_error.Inference(error)),
     )
-    ResumeFromHistory -> resume_from_history(config, candidate, session)
+    ResumeFromHistory ->
+      resume_from_history(config, candidate, session, settings)
   }
 }
 
@@ -564,17 +898,19 @@ fn execute_effects(
   config: RuntimeConfig,
   agent_st: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
   effs: List(effect.Effect(msg.AgentMsg)),
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   // Effects begin only after the complete transition delta is durable.
   let #(updated_st, response_msgs) =
     list.fold(effs, #(agent_st, []), fn(acc, eff) {
       let #(st_acc, msgs_acc) = acc
-      let #(new_st_acc, response_msg) = execute_effect(config, st_acc, eff)
+      let #(new_st_acc, response_msg) =
+        execute_effect(config, st_acc, settings, eff)
       #(new_st_acc, list.append(msgs_acc, [response_msg]))
     })
   case response_msgs {
-    [first_msg, ..] -> do_loop(config, updated_st, session, first_msg)
+    [first_msg, ..] -> do_loop(config, updated_st, session, settings, first_msg)
     [] -> #(
       updated_st,
       session,
@@ -592,6 +928,7 @@ fn resume_from_history(
   config: RuntimeConfig,
   st: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
   case list.last(st.history) {
     // No history — nothing to continue
@@ -609,7 +946,8 @@ fn resume_from_history(
           tool_calls: tool_calls,
           thinking: _,
           stop_reason: sr,
-        ) -> resume_from_assistant(config, st, session, tool_calls, sr)
+        ) ->
+          resume_from_assistant(config, st, session, settings, tool_calls, sr)
 
         // User or Tool message — call provider (through hooks pipeline)
         message.User(_) | message.Tool(_, _) -> {
@@ -619,11 +957,12 @@ fn resume_from_history(
               st,
               state.messages_for_provider(st),
               state.tool_definitions(st),
+              settings,
               fn(r) {
                 msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
               },
             )
-          do_loop(config, st_after, session, provider_msg)
+          do_loop(config, st_after, session, settings, provider_msg)
         }
 
         // System message at end of history — shouldn't happen
@@ -643,6 +982,7 @@ fn resume_from_assistant(
   config: RuntimeConfig,
   st: state.AgentState,
   session: SessionState,
+  settings: InferenceSettings,
   tool_calls: List(message.ToolCall),
   sr: option.Option(stop_reason.StopReason),
 ) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
@@ -650,10 +990,10 @@ fn resume_from_assistant(
     // Tool calls pending — execute them, then continue loop
     option.Some(stop_reason.ToolUse) -> {
       let #(_new_st, agent_msg) =
-        execute_tools_effect(config, st, tool_calls, fn(results) {
+        execute_tools_effect(config, st, settings, tool_calls, fn(results) {
           msg.ToolResults(results)
         })
-      do_loop(config, st, session, agent_msg)
+      do_loop(config, st, session, settings, agent_msg)
     }
 
     // Done — completed on a previous attempt
@@ -672,9 +1012,10 @@ fn resume_from_assistant(
           st,
           state.messages_for_provider(st),
           state.tool_definitions(st),
+          settings,
           fn(r) { msg.ProviderResponded(result.map(r, fn(ir) { ir.message })) },
         )
-      do_loop(config, st_after, session, provider_msg)
+      do_loop(config, st_after, session, settings, provider_msg)
     }
 
     // No stop_reason (legacy messages) — decide by tool_calls presence
@@ -688,10 +1029,10 @@ fn resume_from_assistant(
         calls -> {
           // Has tool calls but no stop_reason — execute them
           let #(_new_st, agent_msg) =
-            execute_tools_effect(config, st, calls, fn(results) {
+            execute_tools_effect(config, st, settings, calls, fn(results) {
               msg.ToolResults(results)
             })
-          do_loop(config, st, session, agent_msg)
+          do_loop(config, st, session, settings, agent_msg)
         }
       }
   }
@@ -703,13 +1044,21 @@ fn resume_from_assistant(
 fn execute_effect(
   config: RuntimeConfig,
   agent_st: state.AgentState,
+  settings: InferenceSettings,
   eff: effect.Effect(msg.AgentMsg),
 ) -> #(state.AgentState, msg.AgentMsg) {
   case eff {
     effect.CallProvider(messages:, tools:, on_response:) ->
-      execute_call_provider(config, agent_st, messages, tools, on_response)
+      execute_call_provider(
+        config,
+        agent_st,
+        messages,
+        tools,
+        settings,
+        on_response,
+      )
     effect.ExecuteTools(calls:, on_results:) ->
-      execute_tools_effect(config, agent_st, calls, on_results)
+      execute_tools_effect(config, agent_st, settings, calls, on_results)
   }
 }
 
@@ -720,13 +1069,14 @@ fn execute_call_provider(
   agent_st: state.AgentState,
   messages: List(Message),
   tools: List(tool_definition.ToolDefinition),
+  settings: InferenceSettings,
   on_response: fn(Result(provider.InferenceResult, AiError)) -> msg.AgentMsg,
 ) -> #(state.AgentState, msg.AgentMsg) {
   let disp = config.dispatcher
   let model = config.model
 
   // Apply before_inference hooks
-  let before_event = hooks.BeforeInferenceEvent(model:, messages:)
+  let before_event = hooks.BeforeInferenceEvent(model:, messages:, settings:)
   let final_msgs = case hooks.decide_messages(config.hooks, before_event) {
     hooks.MessagesUnchanged(..) -> messages
     hooks.MessagesReplaced(final_messages:, transformers:) -> {
@@ -741,14 +1091,16 @@ fn execute_call_provider(
     }
   }
 
+  let request =
+    provider.InferenceRequest(messages: final_msgs, tools:, settings:)
   let msg_count = list.length(final_msgs)
   emit.to_dispatcher(
     disp,
-    events.InferenceStarted(model:, message_count: msg_count),
+    events.InferenceStarted(model:, message_count: msg_count, settings:),
   )
   let start_time = events.system_time()
 
-  let result = case config.provider(final_msgs, tools) {
+  let result = case config.provider(request) {
     Ok(inference_result) -> {
       let msg = inference_result.message
       let meta = inference_result.metadata
@@ -768,12 +1120,18 @@ fn execute_call_provider(
           output_tokens: meta.output_tokens,
           duration_ms: duration,
           input_messages: agent_st.history,
+          settings:,
         ),
       )
       // Fire after_inference hooks
       hooks.notify_after_inference(
         config.hooks,
-        hooks.AfterInferenceEvent(model:, message: msg, duration_ms: duration),
+        hooks.AfterInferenceEvent(
+          model:,
+          message: msg,
+          duration_ms: duration,
+          settings:,
+        ),
       )
       Ok(inference_result)
     }
@@ -782,13 +1140,18 @@ fn execute_call_provider(
       emit.to_dispatcher(
         disp,
         events.InferenceFailed(
+          model:,
           error: e,
           duration_ms: duration,
           input_messages: agent_st.history,
+          settings:,
         ),
       )
       // Fire error hooks
-      hooks.notify_error(config.hooks, hooks.ErrorEvent(model:, error: e))
+      hooks.notify_error(
+        config.hooks,
+        hooks.ErrorEvent(model:, error: e, settings:),
+      )
       Error(e)
     }
   }
@@ -800,6 +1163,7 @@ fn execute_call_provider(
 fn execute_tools_effect(
   config: RuntimeConfig,
   agent_st: state.AgentState,
+  _settings: InferenceSettings,
   calls: List(ToolCall),
   on_results: fn(List(#(ToolCall, Result(json.Json, tool.ToolError)))) ->
     msg.AgentMsg,

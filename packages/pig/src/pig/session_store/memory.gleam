@@ -6,8 +6,9 @@ import gleam/list
 import gleam/option
 import gleam/otp/actor
 import pig/session_store.{
-  type Session, type SessionCommit, type SessionError, type SessionStore,
-  Corrupt, InvalidCommit, ParentConflict, Session, SessionCommit, SessionStore,
+  type Session, type SessionCommit, type SessionDelta, type SessionError,
+  type SessionStore, Corrupt, InferenceSettingsChanged, MessagesAppended,
+  ParentConflict, Session, SessionCommit, SessionStore,
 }
 
 /// A handle to an in-memory session store.
@@ -83,40 +84,46 @@ fn apply_commit(
   state: State,
   next: SessionCommit,
 ) -> #(Result(Session, SessionError), State) {
-  let SessionCommit(id:, parent:, messages:) = next
-  case messages {
-    [] -> #(
-      Error(InvalidCommit("a commit must contain at least one message")),
-      state,
-    )
-    _ ->
-      case dict.get(state.commits, id) {
-        Ok(previous) ->
-          case previous.parent == parent && previous.messages == messages {
-            True -> #(Ok(state.session), state)
-            False -> #(
-              Error(Corrupt("commit ID was reused with different contents")),
-              state,
-            )
-          }
-        Error(_) ->
-          case parent == state.session.head {
-            False -> #(
-              Error(ParentConflict(expected: parent, actual: state.session.head)),
-              state,
-            )
-            True -> {
-              let session =
-                Session(
-                  head: option.Some(id),
-                  messages: list.append(state.session.messages, messages),
-                )
-              #(
-                Ok(session),
-                State(session:, commits: dict.insert(state.commits, id, next)),
-              )
-            }
-          }
+  let SessionCommit(id:, parent:, delta:) = next
+  case dict.get(state.commits, id) {
+    Ok(previous) ->
+      case previous.parent == parent && previous.delta == delta {
+        True -> #(Ok(state.session), state)
+        False -> #(
+          Error(Corrupt("commit ID was reused with different contents")),
+          state,
+        )
       }
+    Error(_) ->
+      case parent == state.session.head {
+        False -> #(
+          Error(ParentConflict(expected: parent, actual: state.session.head)),
+          state,
+        )
+        True -> {
+          let session = apply_delta(state.session, id, delta)
+          #(
+            Ok(session),
+            State(session:, commits: dict.insert(state.commits, id, next)),
+          )
+        }
+      }
+  }
+}
+
+fn apply_delta(session: Session, id: String, delta: SessionDelta) -> Session {
+  case delta {
+    MessagesAppended(first:, rest:) ->
+      Session(
+        head: option.Some(id),
+        messages: list.append(session.messages, [first, ..rest]),
+        inference_settings: session.inference_settings,
+      )
+    InferenceSettingsChanged(settings) ->
+      Session(
+        head: option.Some(id),
+        messages: session.messages,
+        inference_settings: option.Some(settings),
+      )
   }
 }

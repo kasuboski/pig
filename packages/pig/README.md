@@ -38,6 +38,58 @@ pub fn main() {
 `provider_with_base_url`, so the same runtime can be used with compatible local
 or hosted providers.
 
+## Thinking levels
+
+### Why this previously appeared supported
+
+Pig already had a `Thinking` field on assistant messages and Responses requests
+included `reasoning.encrypted_content`. Both are response/history features:
+neither selected how much reasoning the model should perform. There was no
+request configuration for `reasoning_effort` or `reasoning.effort`, so users
+were correct that thinking levels could not be set.
+
+### Configuration
+
+Inference settings belong to the agent, not to an individual run. Configure
+them while building the agent:
+
+```gleam
+import pig_protocol/thinking
+
+let provider = openai.provider("your-api-key", "gpt-5")
+let config =
+  pig.new(provider.call)
+  |> pig.with_thinking_level(thinking.Medium)
+```
+
+Available levels are `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, and
+`Max`. The setting is included in every inference request. Use
+`pig.set_thinking_level(agent, level)` to change it durably mid-session, or
+`pig.reset_inference_settings(agent)` to restore provider-default behavior; session
+restoration reapplies the saved setting. `Off` is explicit: it asks the
+provider not to use reasoning, while the unset/default setting uses the
+provider's default. Runtime-only agents update their in-memory settings and
+history; configure a `SessionStore` to make setting and conversation changes
+durable across restarts.
+
+A provider default is still useful when demonstrating a provider outside an
+agent or when an agent has no explicit setting:
+
+```gleam
+let provider =
+  openai.provider("your-api-key", "gpt-5")
+  |> openai.with_default_thinking_level(thinking.Medium)
+```
+
+Use `responses_provider` for OpenAI's Responses API. It uses the same
+one-argument `Provider(InferenceRequest)` interface. Responses requests send
+`reasoning.effort`; enabled levels also request an automatic provider-generated
+reasoning summary. System messages are mapped to Responses `instructions`.
+Pig does not maintain a model capability catalog, clamp levels, or promise that
+a model supports a selected level; unsupported values are reported by the
+provider. Setting changes and inference start/stop events are observable through
+Pig's normal events and session persistence.
+
 ## Tools
 
 A tool combines a JSON Schema definition with a handler. The agent executes tool
@@ -110,7 +162,7 @@ message, supporting checkpoint-and-resume workflows.
 - **OTP agent isolation** — each running agent owns its state in an actor.
 - **Parallel tool execution** — independent tool calls run concurrently.
 - **Skills and hooks** — compose reusable capabilities and lifecycle policy.
-- **Durable history** — preload and continue checkpointed conversations.
+- **Durable history with `SessionStore`** — preload and continue checkpointed conversations.
 - **Observability** — structured `:telemetry`, terminal output, and JSONL sessions.
 - **Workspace tools** — optional SQLite-backed key/value and virtual-file storage.
 - **Supervision** — child specifications for OTP supervision trees.

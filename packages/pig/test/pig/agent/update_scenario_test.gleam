@@ -31,7 +31,9 @@ pub fn main() -> Nil {
 /// Build initial state for scenario tests.
 fn initial_state(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = fn(_msgs, _tools) {
+  let provider = fn(request: provider.InferenceRequest) {
+    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)
@@ -44,7 +46,9 @@ fn initial_state_with_max(
   max: Int,
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  let provider = fn(_msgs, _tools) {
+  let provider = fn(request: provider.InferenceRequest) {
+    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
   state.config(provider)

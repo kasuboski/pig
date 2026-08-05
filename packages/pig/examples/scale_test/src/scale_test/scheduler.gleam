@@ -10,8 +10,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import pig
-import pig_protocol/message
 import pig/openai
+import pig_protocol/message
+import pig_protocol/thinking
 import scale_test/grid.{
   type Grid, type Organism, type OrganismType, type Position, Herbivore, Plant,
   Predator, get, wrap_position,
@@ -324,6 +325,7 @@ fn run_llm_call(
   let cfg =
     pig.new(provider.call)
     |> pig.with_model(model_name)
+    |> pig.with_thinking_level(thinking.Off)
     |> pig.with_system_prompt(system_prompt_for(otype))
 
   case pig.start(cfg) {

@@ -3,6 +3,7 @@
 import gleam/bit_array
 import gleam/crypto
 import gleam/option.{type Option}
+import pig/provider.{type InferenceSettings}
 import pig_protocol/message.{type Message}
 
 /// Errors returned while loading or committing a durable session.
@@ -17,36 +18,59 @@ pub type SessionError {
   InvalidCommit(message: String)
 }
 
-/// The durable transcript and its current commit head.
+/// The durable transcript, its current commit head, and persisted settings.
 pub type Session {
-  Session(head: Option(String), messages: List(Message))
-}
-
-/// An atomic delta to append to a session transcript.
-pub type SessionCommit {
-  SessionCommit(id: String, parent: Option(String), messages: List(Message))
-}
-
-/// Create a commit with a fresh opaque ID, its expected parent, and its delta.
-///
-/// The ID is generated independently of the messages, so commits with identical
-/// contents still have distinct identities.
-pub fn new_commit(
-  parent: Option(String),
-  messages: List(Message),
-) -> SessionCommit {
-  SessionCommit(
-    id: "commit-"
-      <> bit_array.base64_url_encode(crypto.strong_random_bytes(16), False),
-    parent:,
-    messages:,
+  Session(
+    head: Option(String),
+    messages: List(Message),
+    inference_settings: Option(InferenceSettings),
   )
 }
 
+/// An atomic change to a durable session.
+pub type SessionDelta {
+  /// Append one or more messages to the durable transcript.
+  MessagesAppended(first: Message, rest: List(Message))
+  /// Replace the durable inference settings.
+  InferenceSettingsChanged(settings: InferenceSettings)
+}
+
+/// A durable, idempotently identifiable session transition.
+pub type SessionCommit {
+  SessionCommit(id: String, parent: Option(String), delta: SessionDelta)
+}
+
+/// Create a message commit with a fresh opaque ID and its expected parent.
+pub fn new_commit(
+  parent: Option(String),
+  first: Message,
+  rest: List(Message),
+) -> SessionCommit {
+  SessionCommit(
+    id: fresh_commit_id(),
+    parent:,
+    delta: MessagesAppended(first:, rest:),
+  )
+}
+
+/// Create an inference-settings commit with a fresh opaque ID and its expected parent.
+pub fn new_settings_commit(
+  parent: Option(String),
+  settings: InferenceSettings,
+) -> SessionCommit {
+  SessionCommit(
+    id: fresh_commit_id(),
+    parent:,
+    delta: InferenceSettingsChanged(settings),
+  )
+}
+
+fn fresh_commit_id() -> String {
+  "commit-"
+  <> bit_array.base64_url_encode(crypto.strong_random_bytes(16), False)
+}
+
 /// A synchronous durable store bound to one logical session.
-///
-/// `commit` atomically persists the complete message delta and returns the
-/// resulting session. Recommitting an identical commit ID is idempotent.
 pub type SessionStore {
   SessionStore(
     load: fn() -> Result(Session, SessionError),

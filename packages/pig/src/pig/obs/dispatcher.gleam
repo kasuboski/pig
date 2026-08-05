@@ -4,7 +4,7 @@
 //// 1. Receives `Event(SessionEvent)` messages
 //// 2. Calls `emit_telemetry(event)` — projects lightweight metrics to `:telemetry` (ALWAYS, by construction)
 //// 3. Fans out the full event to registered consumers (fire-and-forget `process.send`)
-//// 4. Accepts `RegisterConsumer(Subject(SessionEvent))` to dynamically add consumers
+//// 4. Accepts `RegisterConsumer(StartedConsumer)` to dynamically add consumers
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -12,10 +12,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
-import pig_protocol/error.{
-  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
-}
-import pig_protocol/stop_reason
+import pig/obs/consumer_spec
 import pig/obs/events.{
   type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
   InferenceStarted, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
@@ -23,15 +20,28 @@ import pig/obs/events.{
   inference_stop_name, system_time, tool_blocked_name, tool_start_name,
   tool_stop_name,
 }
+import pig/provider
+import pig_protocol/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
+import pig_protocol/stop_reason
 
 // ── Public Types ─────────────────────────────────────────────────────
+
+/// Errors returned when registering a dispatcher consumer.
+pub type RegistrationError {
+  /// The dispatcher did not acknowledge registration before the timeout.
+  RegistrationTimeout
+}
 
 /// Messages that the dispatcher actor can receive.
 pub type DispatcherMessage {
   /// A session event to dispatch to consumers and telemetry.
   Event(SessionEvent)
   /// Register a new consumer to receive session events.
-  RegisterConsumer(Subject(SessionEvent))
+  RegisterConsumer(consumer_spec.StartedConsumer)
+  /// Register a consumer and acknowledge it after it is installed.
+  RegisterConsumerSync(consumer_spec.StartedConsumer, Subject(Nil))
   /// Stop the dispatcher actor (for testing/cleanup).
   Stop
 }
@@ -40,7 +50,7 @@ pub type DispatcherMessage {
 
 /// Internal state for the dispatcher actor.
 type State {
-  State(consumers: List(Subject(SessionEvent)))
+  State(consumers: List(consumer_spec.StartedConsumer))
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -56,13 +66,60 @@ pub fn start() -> Result(Subject(DispatcherMessage), StartError) {
   }
 }
 
+/// Register a consumer and wait until the dispatcher has installed it.
+///
+/// The barrier makes it safe to emit an event immediately after registration.
+/// Returns a typed error if the dispatcher does not acknowledge registration.
+pub fn register_consumer(
+  dispatcher: Subject(DispatcherMessage),
+  consumer: consumer_spec.StartedConsumer,
+) -> Result(Nil, RegistrationError) {
+  register_consumer_with_timeout(dispatcher, consumer, 5000)
+}
+
+/// Register a consumer with an explicit acknowledgement timeout.
+///
+/// This is useful for callers that need a bounded startup failure and for
+/// deterministic tests; successful registration remains synchronous.
+pub fn register_consumer_with_timeout(
+  dispatcher: Subject(DispatcherMessage),
+  consumer: consumer_spec.StartedConsumer,
+  timeout_ms: Int,
+) -> Result(Nil, RegistrationError) {
+  let reply_subject = process.new_subject()
+  process.send(dispatcher, RegisterConsumerSync(consumer, reply_subject))
+  case process.receive(reply_subject, timeout_ms) {
+    Ok(Nil) -> Ok(Nil)
+    Error(Nil) -> Error(RegistrationTimeout)
+  }
+}
+
+/// Synchronous alias for `register_consumer`.
+pub fn register_consumer_sync(
+  dispatcher: Subject(DispatcherMessage),
+  consumer: consumer_spec.StartedConsumer,
+) -> Result(Nil, RegistrationError) {
+  register_consumer(dispatcher, consumer)
+}
+
 /// Create a supervised dispatcher actor for use in a supervision tree.
 pub fn supervised(
   name: process.Name(DispatcherMessage),
 ) -> supervision.ChildSpecification(Nil) {
+  supervised_with_consumers(name, [])
+}
+
+/// Create a supervised dispatcher with its named consumers configured at start.
+///
+/// The subjects are retained by every dispatcher reconstruction, so a
+/// OneForAll restart cannot lose the consumer registrations.
+pub fn supervised_with_consumers(
+  name: process.Name(DispatcherMessage),
+  consumers: List(consumer_spec.StartedConsumer),
+) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let builder =
-      actor.new(State(consumers: []))
+      actor.new(State(consumers: consumers))
       |> actor.on_message(handle_message)
       |> actor.named(name)
     case actor.start(builder) {
@@ -81,11 +138,17 @@ fn handle_message(state: State, msg: DispatcherMessage) {
       emit_telemetry(event)
       // Always emit telemetry
       // Fan out to all registered consumers
-      list.each(state.consumers, fn(consumer) { process.send(consumer, event) })
+      list.each(state.consumers, fn(consumer) {
+        consumer_spec.consume(consumer, event)
+      })
       actor.continue(state)
     }
-    RegisterConsumer(subject) -> {
-      actor.continue(State(consumers: [subject, ..state.consumers]))
+    RegisterConsumer(consumer) -> {
+      actor.continue(State(consumers: [consumer, ..state.consumers]))
+    }
+    RegisterConsumerSync(consumer, reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.continue(State(consumers: [consumer, ..state.consumers]))
     }
     Stop -> {
       actor.stop()
@@ -100,13 +163,17 @@ fn handle_message(state: State, msg: DispatcherMessage) {
 /// Only certain events are projected; others (like SessionStarted) are not.
 fn emit_telemetry(event: SessionEvent) {
   case event {
-    InferenceStarted(model:, message_count:) -> {
+    InferenceStarted(model:, message_count:, settings:) -> {
       let measurements =
         dict.from_list([
           #("system_time", system_time()),
           #("message_count", message_count),
         ])
-      let metadata = dict.from_list([#("model", model)])
+      let metadata =
+        dict.from_list([
+          #("model", model),
+          #("thinking", provider.settings_to_string(settings)),
+        ])
       execute_telemetry(inference_start_name(), measurements, metadata)
     }
     InferenceCompleted(
@@ -118,6 +185,7 @@ fn emit_telemetry(event: SessionEvent) {
       output_tokens:,
       duration_ms:,
       input_messages:,
+      settings:,
     ) -> {
       // Build measurements with optional token counts
       let base_measurements =
@@ -137,7 +205,11 @@ fn emit_telemetry(event: SessionEvent) {
         Some(m) -> m
         None -> "unknown"
       }
-      let base_metadata = dict.from_list([#("model", model)])
+      let base_metadata =
+        dict.from_list([
+          #("model", model),
+          #("thinking", provider.settings_to_string(settings)),
+        ])
       let metadata =
         base_metadata
         |> maybe_insert_string("response_id", response_id)
@@ -148,7 +220,7 @@ fn emit_telemetry(event: SessionEvent) {
 
       execute_telemetry(inference_stop_name(), measurements, metadata)
     }
-    InferenceFailed(error:, duration_ms:, input_messages:) -> {
+    InferenceFailed(model:, error:, duration_ms:, input_messages:, settings:) -> {
       let error_type = error_type_to_string(error)
       let measurements =
         dict.from_list([
@@ -157,7 +229,11 @@ fn emit_telemetry(event: SessionEvent) {
           #("duration", duration_ms),
         ])
       let metadata =
-        dict.from_list([#("model", "unknown"), #("error_type", error_type)])
+        dict.from_list([
+          #("model", model),
+          #("error_type", error_type),
+          #("thinking", provider.settings_to_string(settings)),
+        ])
       execute_telemetry(inference_exception_name(), measurements, metadata)
     }
     ToolStarted(tool_call:) -> {
@@ -170,7 +246,7 @@ fn emit_telemetry(event: SessionEvent) {
         ])
       execute_telemetry(tool_start_name(), measurements, metadata)
     }
-    ToolExecuted(tool_call:, result:, duration_ms:) -> {
+    ToolExecuted(tool_call:, result: _, duration_ms:) -> {
       let measurements =
         dict.from_list([
           #("system_time", system_time()),
@@ -180,7 +256,6 @@ fn emit_telemetry(event: SessionEvent) {
         dict.from_list([
           #("tool_name", tool_call.name),
           #("tool_call_id", tool_call.id),
-          #("result", result),
         ])
       execute_telemetry(tool_stop_name(), measurements, metadata)
     }
@@ -198,6 +273,7 @@ fn emit_telemetry(event: SessionEvent) {
     // These events are NOT projected to telemetry
     SessionStarted(..) -> Nil
     HookActed(..) -> Nil
+    events.InferenceSettingsChanged(..) -> Nil
     SessionEnded(..) -> Nil
   }
 }

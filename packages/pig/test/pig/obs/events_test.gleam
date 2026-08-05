@@ -3,11 +3,14 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
-import pig_protocol/stop_reason
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events.{InferenceStarted, NormalEnd, SessionEnded, SessionStarted}
 import pig/obs/listener
+import pig/provider
+import pig_protocol/stop_reason
+import pig_protocol/thinking
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -47,10 +50,15 @@ pub fn all_event_names_unique_test() {
 
 /// event_name() returns the same value as the corresponding name function.
 pub fn event_name_matches_inference_start_test() {
-  assert events.event_name(events.InferenceStart(model: "x", message_count: 0))
+  assert events.event_name(events.InferenceStart(
+      model: "x",
+      message_count: 0,
+      settings: provider.default_settings(),
+    ))
     == events.inference_start_name()
 }
 
+/// Verify event name matches inference stop.
 pub fn event_name_matches_inference_stop_test() {
   assert events.event_name(events.InferenceStop(
       model: "x",
@@ -60,10 +68,12 @@ pub fn event_name_matches_inference_stop_test() {
       stop_reason: None,
       input_tokens: None,
       output_tokens: None,
+      settings: provider.default_settings(),
     ))
     == events.inference_stop_name()
 }
 
+/// Verify event name matches tool start.
 pub fn event_name_matches_tool_start_test() {
   assert events.event_name(events.ToolStart(
       tool_name: "x",
@@ -80,32 +90,80 @@ pub fn name_to_string_joins_with_dots_test() {
   assert events.name_to_string(["a", "b", "c"]) == "a.b.c"
 }
 
+/// Verify name to string single segment.
 pub fn name_to_string_single_segment_test() {
   assert events.name_to_string(["pig"]) == "pig"
 }
 
+/// Verify name to string empty.
 pub fn name_to_string_empty_test() {
   assert events.name_to_string([]) == ""
+}
+
+/// Verify settings use provider neutral strings.
+pub fn settings_use_provider_neutral_strings_test() {
+  assert provider.settings_to_string(provider.default_settings())
+    == "provider_default"
+  assert provider.settings_to_string(provider.with_thinking_level(thinking.Off))
+    == "off"
+  assert provider.settings_to_string(provider.with_thinking_level(thinking.High))
+    == "high"
+}
+
+/// Verify settings parse rejects unknown values.
+pub fn settings_parse_rejects_unknown_values_test() {
+  assert provider.settings_from_string("provider_default")
+    == Ok(provider.default_settings())
+  assert provider.settings_from_string("none") == Error(Nil)
+  assert provider.settings_from_string("not-a-level") == Error(Nil)
 }
 
 // ── Event Equality ───────────────────────────────────────────────────
 // Structural equality is a property worth testing — it means events
 // can be used in assertions and dict keys.
 
+/// Verify same event is equal.
 pub fn same_event_is_equal_test() {
-  let e1 = events.InferenceStart(model: "a", message_count: 1)
-  let e2 = events.InferenceStart(model: "a", message_count: 1)
+  let e1 =
+    events.InferenceStart(
+      model: "a",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
+  let e2 =
+    events.InferenceStart(
+      model: "a",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
   assert e1 == e2
 }
 
+/// Verify different fields not equal.
 pub fn different_fields_not_equal_test() {
-  let e1 = events.InferenceStart(model: "a", message_count: 1)
-  let e2 = events.InferenceStart(model: "b", message_count: 1)
+  let e1 =
+    events.InferenceStart(
+      model: "a",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
+  let e2 =
+    events.InferenceStart(
+      model: "b",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
   assert e1 != e2
 }
 
+/// Verify different variants not equal.
 pub fn different_variants_not_equal_test() {
-  let e1 = events.InferenceStart(model: "a", message_count: 1)
+  let e1 =
+    events.InferenceStart(
+      model: "a",
+      message_count: 1,
+      settings: provider.default_settings(),
+    )
   let e2 =
     events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
   assert e1 != e2
@@ -114,8 +172,13 @@ pub fn different_variants_not_equal_test() {
 // ── emit Does Not Crash ──────────────────────────────────────────────
 // Each variant must be emittable without error. Tests real :telemetry integration.
 
+/// Verify emit all variants.
 pub fn emit_all_variants_test() {
-  events.emit(events.InferenceStart(model: "gpt-4", message_count: 5))
+  events.emit(events.InferenceStart(
+    model: "gpt-4",
+    message_count: 5,
+    settings: provider.default_settings(),
+  ))
   events.emit(events.InferenceStop(
     model: "gpt-4",
     message_count: 5,
@@ -124,11 +187,13 @@ pub fn emit_all_variants_test() {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    settings: provider.default_settings(),
   ))
   events.emit(events.InferenceException(
     model: "gpt-4",
     message_count: 3,
     error_type: "test_error",
+    settings: provider.default_settings(),
   ))
   events.emit(events.ToolStart(
     tool_name: "read_file",
@@ -151,18 +216,21 @@ pub fn emit_all_variants_test() {
 
 // ── Generic Emit Helpers ─────────────────────────────────────────────
 
+/// Verify generic emit start does not crash.
 pub fn generic_emit_start_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_start(["pig", "custom", "start"], meta)
   Nil
 }
 
+/// Verify generic emit stop does not crash.
 pub fn generic_emit_stop_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_stop(["pig", "custom", "stop"], 100, meta)
   Nil
 }
 
+/// Verify generic emit exception does not crash.
 pub fn generic_emit_exception_does_not_crash_test() {
   let meta = dict.from_list([#("custom_key", "custom_value")])
   events.emit_exception(["pig", "custom", "exception"], meta)
@@ -174,6 +242,19 @@ pub fn generic_emit_exception_does_not_crash_test() {
 // Test that emit → capture → decode preserves the original event data.
 // We verify field preservation, not exact struct equality.
 
+/// Verify decode preserves non default inference settings.
+pub fn decode_preserves_non_default_inference_settings_test() {
+  let raw =
+    events.RawCapturedEvent(
+      name: events.inference_start_name(),
+      measurements: dict.from_list([#("message_count", 5)]),
+      metadata: dict.from_list([#("model", "gpt-4"), #("thinking", "off")]),
+    )
+  let assert events.InferenceStart(settings:, ..) = events.decode(raw)
+  assert settings == provider.with_thinking_level(thinking.Off)
+}
+
+/// Verify decode preserves inference start.
 pub fn decode_preserves_inference_start_test() {
   let raw =
     events.RawCapturedEvent(
@@ -184,11 +265,13 @@ pub fn decode_preserves_inference_start_test() {
       ]),
       metadata: dict.from_list([#("model", "gpt-4")]),
     )
-  let assert events.InferenceStart(model:, message_count:) = events.decode(raw)
+  let assert events.InferenceStart(model:, message_count:, settings: _) =
+    events.decode(raw)
   assert model == "gpt-4"
   assert message_count == 5
 }
 
+/// Verify decode preserves inference stop.
 pub fn decode_preserves_inference_stop_test() {
   let raw =
     events.RawCapturedEvent(
@@ -208,6 +291,7 @@ pub fn decode_preserves_inference_stop_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"
   assert message_count == 2
@@ -218,6 +302,7 @@ pub fn decode_preserves_inference_stop_test() {
   assert output_tokens == None
 }
 
+/// Verify decode preserves tool start.
 pub fn decode_preserves_tool_start_test() {
   let raw =
     events.RawCapturedEvent(
@@ -236,6 +321,7 @@ pub fn decode_preserves_tool_start_test() {
   assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves tool stop.
 pub fn decode_preserves_tool_stop_test() {
   let raw =
     events.RawCapturedEvent(
@@ -255,6 +341,7 @@ pub fn decode_preserves_tool_stop_test() {
   assert result == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves tool exception.
 pub fn decode_preserves_tool_exception_test() {
   let raw =
     events.RawCapturedEvent(
@@ -273,6 +360,7 @@ pub fn decode_preserves_tool_exception_test() {
   assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
+/// Verify decode preserves inference exception.
 pub fn decode_preserves_inference_exception_test() {
   let raw =
     events.RawCapturedEvent(
@@ -283,8 +371,12 @@ pub fn decode_preserves_inference_exception_test() {
       ]),
       metadata: dict.from_list([#("model", "llama"), #("error_type", "timeout")]),
     )
-  let assert events.InferenceException(model:, message_count:, error_type:) =
-    events.decode(raw)
+  let assert events.InferenceException(
+    model:,
+    message_count:,
+    error_type:,
+    settings: _,
+  ) = events.decode(raw)
   assert model == "llama"
   assert message_count == 7
   assert error_type == "timeout"
@@ -302,6 +394,7 @@ pub fn emit_enriched_inference_stop_does_not_crash_test() {
     stop_reason: Some(stop_reason.Stop),
     input_tokens: Some(100),
     output_tokens: Some(50),
+    settings: provider.default_settings(),
   ))
   Nil
 }
@@ -332,6 +425,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"
   assert message_count == 2
@@ -362,6 +456,7 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"
   assert message_count == 2
@@ -380,6 +475,7 @@ pub fn emit_inference_exception_with_error_type_test() {
     model: "gpt-4",
     message_count: 3,
     error_type: "timeout",
+    settings: provider.default_settings(),
   ))
   Nil
 }
@@ -398,8 +494,12 @@ pub fn decode_preserves_inference_exception_error_type_test() {
         #("error_type", "api_error"),
       ]),
     )
-  let assert events.InferenceException(model:, message_count:, error_type:) =
-    events.decode(raw)
+  let assert events.InferenceException(
+    model:,
+    message_count:,
+    error_type:,
+    settings: _,
+  ) = events.decode(raw)
   assert model == "llama"
   assert message_count == 7
   assert error_type == "api_error"
@@ -412,13 +512,19 @@ pub fn decode_preserves_inference_exception_error_type_test() {
 pub fn to_dispatcher_sends_event_to_dispatcher_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
-  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  let event =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
   emit.to_dispatcher(disp, event)
 
   let assert Ok(received) = process.receive(consumer, 2000)
-  let assert InferenceStarted(model:, message_count:) = received
+  let assert InferenceStarted(model:, message_count:, settings: _) = received
   assert model == "gpt-4"
   assert message_count == 3
 
@@ -431,9 +537,15 @@ pub fn to_dispatcher_triggers_telemetry_test() {
   let handle = listener.attach()
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
-  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  let event =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
   emit.to_dispatcher(disp, event)
 
   // Confirm via consumer (guarantees telemetry already fired)
@@ -451,7 +563,8 @@ pub fn to_dispatcher_triggers_telemetry_test() {
 pub fn to_dispatcher_sends_all_variants_test() {
   let assert Ok(disp) = dispatcher.start()
   let consumer = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(consumer))
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(disp, consumer_spec.subject_endpoint(consumer))
 
   // Send multiple events and verify they're all received
   emit.to_dispatcher(
@@ -466,7 +579,14 @@ pub fn to_dispatcher_sends_all_variants_test() {
   )
   let assert Ok(_) = process.receive(consumer, 2000)
 
-  emit.to_dispatcher(disp, InferenceStarted(model: "gpt-4", message_count: 2))
+  emit.to_dispatcher(
+    disp,
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 2,
+      settings: provider.default_settings(),
+    ),
+  )
   let assert Ok(_) = process.receive(consumer, 2000)
 
   emit.to_dispatcher(disp, SessionEnded(NormalEnd))

@@ -13,13 +13,13 @@ import gleam/string
 import gleeunit
 import pig
 import pig/agent/state
-import pig_protocol/message
-import pig/provider
 import pig/obs/consumer_spec
 import pig/obs/events
 import pig/obs/listener
 import pig/obs/session
+import pig/provider
 import pig/supervisor
+import pig_protocol/message
 import simplifile
 import temporary
 
@@ -199,7 +199,7 @@ pub fn supervised_path_with_consumers_test() {
 
   // Create an AgentConfig with mock provider
   let agent_config =
-    state.config(fn(_msgs, _tools) {
+    state.config(fn(_request) {
       Ok(
         provider.from_message(message.Assistant(
           "mock response",
@@ -241,7 +241,7 @@ pub fn multiple_supervised_runs_with_consumers_test() {
 
   // Create an AgentConfig with mock provider
   let agent_config =
-    state.config(fn(_msgs, _tools) {
+    state.config(fn(_request) {
       Ok(
         provider.from_message(message.Assistant(
           "mock response",

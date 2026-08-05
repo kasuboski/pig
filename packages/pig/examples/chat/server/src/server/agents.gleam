@@ -3,6 +3,7 @@ import gleam/list
 import gleam/result
 import pig
 import pig/openai
+import pig_protocol/thinking
 import shared
 
 pub type AgentPersona {
@@ -71,4 +72,5 @@ pub fn create_agent_config(persona: AgentPersona) {
   pig.new(provider.call)
   |> pig.with_system_prompt(persona.system_prompt)
   |> pig.with_model(model())
+  |> pig.with_thinking_level(thinking.Medium)
 }

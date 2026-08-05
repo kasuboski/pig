@@ -9,6 +9,7 @@
 //// Composition functions run handlers in order with per-event semantics.
 
 import gleam/list
+import pig/provider.{type InferenceSettings}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
@@ -16,7 +17,11 @@ import pig_protocol/message.{type Message}
 
 /// Before the provider is called. Handlers can modify the messages sent.
 pub type BeforeInferenceEvent {
-  BeforeInferenceEvent(model: String, messages: List(Message))
+  BeforeInferenceEvent(
+    model: String,
+    messages: List(Message),
+    settings: InferenceSettings,
+  )
 }
 
 /// What a before_inference handler returns.
@@ -27,7 +32,12 @@ pub type BeforeInferenceAction {
 
 /// After the provider responds.
 pub type AfterInferenceEvent {
-  AfterInferenceEvent(model: String, message: Message, duration_ms: Int)
+  AfterInferenceEvent(
+    model: String,
+    message: Message,
+    duration_ms: Int,
+    settings: InferenceSettings,
+  )
 }
 
 /// Before a tool executes. Handlers can block it.
@@ -60,7 +70,7 @@ pub type ToolResultAction {
 
 /// An error occurred during inference.
 pub type ErrorEvent {
-  ErrorEvent(model: String, error: AiError)
+  ErrorEvent(model: String, error: AiError, settings: InferenceSettings)
 }
 
 /// The agent loop completed with a final message.
@@ -294,7 +304,11 @@ pub fn decide_messages(
       case action {
         KeepMessages -> #(ev, names)
         ReplaceMessages(messages) -> #(
-          BeforeInferenceEvent(model: ev.model, messages:),
+          BeforeInferenceEvent(
+            model: ev.model,
+            messages:,
+            settings: ev.settings,
+          ),
           list.append(names, [h.name]),
         )
       }

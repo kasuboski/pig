@@ -11,7 +11,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
-import pig/provider.{type Provider}
+import pig/provider.{type InferenceSettings, type Provider}
 import pig/tool.{type ToolRegistry}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
@@ -24,6 +24,7 @@ import pig_protocol/tool_definition.{type ToolDefinition}
 pub type AgentConfig {
   AgentConfig(
     provider: Provider,
+    inference_settings: InferenceSettings,
     tools: ToolRegistry,
     system_prompt: Option(String),
     max_iterations: Int,
@@ -45,9 +46,10 @@ pub type AgentState {
 }
 
 /// Create an AgentConfig with defaults.
-pub fn config(provider: Provider) -> AgentConfig {
+pub fn config(provider_fn: Provider) -> AgentConfig {
   AgentConfig(
-    provider:,
+    provider: provider_fn,
+    inference_settings: provider.default_settings(),
     tools: tool.new_registry(),
     system_prompt: option.None,
     max_iterations: 50,
@@ -59,6 +61,14 @@ pub fn config(provider: Provider) -> AgentConfig {
     provider_name: option.None,
     session_path: option.None,
   )
+}
+
+/// Set the inference settings on the config.
+pub fn with_inference_settings(
+  config: AgentConfig,
+  settings: InferenceSettings,
+) -> AgentConfig {
+  AgentConfig(..config, inference_settings: settings)
 }
 
 /// Set the tool registry on the config.

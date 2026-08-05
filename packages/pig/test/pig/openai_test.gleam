@@ -1,5 +1,13 @@
+//// Tests for OpenAI provider configuration and pure request construction.
+
+import gleam/dynamic/decode
+import gleam/json
+import gleam/option.{None, Some}
 import gleeunit
 import pig/openai
+import pig_protocol/message
+import pig_protocol/thinking
+import support/openai_harness
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -49,10 +57,82 @@ pub fn with_http_timeout_overrides_test() {
       "http://localhost:11434/v1",
     )
   let openai.OpenAIProvider(config: updated, call: _) =
-    openai.with_http_timeout(original, 5_000)
+    openai.with_http_timeout(original, 5000)
   let assert True =
     updated.api_key == "sk-test"
     && updated.model == "gpt-4o"
     && updated.base_url == "http://localhost:11434/v1"
-    && updated.http_timeout_ms == 5_000
+    && updated.http_timeout_ms == 5000
+}
+
+/// Chat requests encode an explicit request thinking level.
+pub fn configured_provider_builds_request_with_thinking_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Chat,
+      [message.User("solve this")],
+      None,
+      Some(thinking.Medium),
+    )
+
+  let assert Ok("medium") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+/// Responses requests encode an explicit request thinking level.
+pub fn responses_provider_builds_request_with_thinking_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [message.User("solve this")],
+      None,
+      Some(thinking.High),
+    )
+
+  let assert Ok("high") =
+    json.parse(body, decode.at(["reasoning", "effort"], decode.string))
+}
+
+/// Provider thinking defaults apply when a request defers configuration.
+pub fn provider_default_is_used_when_request_defers_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Chat,
+      [message.User("solve this")],
+      Some(thinking.High),
+      None,
+    )
+  let assert Ok("high") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+/// Explicit request settings override provider defaults.
+pub fn request_level_overrides_provider_default_for_responses_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [message.User("solve this")],
+      Some(thinking.High),
+      Some(thinking.Off),
+    )
+  let assert Ok("none") =
+    json.parse(body, decode.at(["reasoning", "effort"], decode.string))
+}
+
+/// Responses providers combine system messages into instructions.
+pub fn responses_provider_maps_system_messages_to_instructions_test() {
+  let body =
+    openai_harness.check_request(
+      openai_harness.Responses,
+      [
+        message.System("first instruction"),
+        message.System("second instruction"),
+        message.User("hello"),
+      ],
+      None,
+      None,
+    )
+
+  let assert Ok("first instruction\n\nsecond instruction") =
+    json.parse(body, decode.at(["instructions"], decode.string))
 }

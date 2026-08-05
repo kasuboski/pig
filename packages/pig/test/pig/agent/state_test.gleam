@@ -8,9 +8,9 @@ import gleam/list
 import gleam/option.{None}
 import gleeunit
 import pig/agent/state
-import pig_protocol/message
 import pig/provider
 import pig/tool
+import pig_protocol/message
 import support/harness
 
 pub fn main() -> Nil {
@@ -20,7 +20,7 @@ pub fn main() -> Nil {
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn dummy_provider() {
-  fn(_msgs, _tools) {
+  fn(_request) {
     Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
 }

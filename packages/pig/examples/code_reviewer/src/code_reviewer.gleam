@@ -40,6 +40,7 @@ import pig/workspace
 import pig/workspace/tools
 import pig_protocol/error
 import pig_protocol/message
+import pig_protocol/thinking
 import simplifile
 
 // ── CLI Args ────────────────────────────────────────────────────────
@@ -164,6 +165,7 @@ pub fn main() {
   let summary_cfg =
     pig.new(provider.call)
     |> pig.with_model("code_reviewer_summary")
+    |> pig.with_thinking_level(thinking.Medium)
     |> pig.with_system_prompt(summary_system_prompt)
     |> pig.with_terminal_output()
 
@@ -254,6 +256,7 @@ pub fn main() {
   let review_cfg =
     pig.new(provider.call)
     |> pig.with_model("code_reviewer")
+    |> pig.with_thinking_level(thinking.Medium)
     |> pig.with_system_prompt(review_system_prompt)
     |> pig.with_tool(read_file_t)
     |> pig.with_tool(list_dir_t)

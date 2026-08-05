@@ -7,7 +7,7 @@ rebar = "latest"
 description = "Build all packages and self-contained examples"
 run = [
   "for dir in packages/*/; do echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; done",
-  "for dir in packages/*/examples/*/ packages/*/examples/*/*/; do if [ -f \"$dir/gleam.toml\" ]; then if grep -q 'knowledge/repos/' \"$dir/gleam.toml\" && [ ! -d knowledge/repos ]; then echo \"→ Skipping $dir (missing knowledge/repos dependencies)\"; else echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; fi; fi; done",
+  "for dir in packages/*/examples/*/ packages/*/examples/*/*/; do if [ -f \"$dir/gleam.toml\" ]; then if grep -q 'knowledge/repos/omnimessage' \"$dir/gleam.toml\" && [ ! -d knowledge/repos/omnimessage ]; then echo \"→ Skipping $dir (missing knowledge/repos dependencies)\"; else echo \"→ Building $dir\" && (cd \"$dir\" && gleam build --warnings-as-errors) || exit $?; fi; fi; done",
 ]
 
 [tasks.check]

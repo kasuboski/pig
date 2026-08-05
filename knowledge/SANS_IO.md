@@ -108,7 +108,7 @@ Effects are the core's requests to the runtime. There are exactly two:
 
 **CallProvider** — "send these messages and tool definitions to the LLM, give me the response."
 
-The core emits this with the messages it *thinks* should be sent (assembled from history + system prompt). The runtime's `on_before_inference` hooks may transform these messages before the actual HTTP call — the core doesn't know about this.
+The core emits this with the messages it *thinks* should be sent (assembled from history + system prompt). The runtime's `on_before_inference` hooks may transform messages before it builds the one-argument `InferenceRequest` from those messages, the tools, and the runtime's current agent settings. The core does not own the settings or perform the call. An explicit thinking `Off` is distinct from an unset setting, which delegates to the provider default.
 
 **ExecuteTools** — "execute these tool calls, give me all the results."
 
@@ -193,10 +193,11 @@ The runtime is the interpreter. It:
 For each `CallProvider` effect:
 
 1. Run `on_before_inference` hooks — may transform messages (may do IO)
-2. Call the LLM with the (possibly transformed) messages
-3. Fire `on_after_inference` notification hooks
-4. Produce `InferenceStarted` and `InferenceCompleted` (or `InferenceFailed`) session events
-5. Feed `ProviderResponded` back to the core as a new `AgentMsg`
+2. Build `InferenceRequest` with the transformed messages, tools, and current runtime-owned settings
+3. Emit `InferenceStarted`
+4. Call the LLM with that request
+5. Produce and emit `InferenceCompleted` (or `InferenceFailed`), then fire `on_after_inference` notification hooks on success
+6. Feed `ProviderResponded` back to the core as a new `AgentMsg`
 
 For each `ExecuteTools` effect:
 

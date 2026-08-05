@@ -12,15 +12,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
+import gleam/result
 import gleam/string
-import pig_protocol/error.{
-  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
-}
-import pig_protocol/message.{
-  type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
-  ToolCall, User,
-}
-import pig_protocol/stop_reason
+import pig/obs/consumer_spec
 import pig/obs/events.{
   type HookPoint, type SessionEndReason, type SessionEvent, AfterInference,
   AfterToolCall, BeforeInference, BeforeToolCall, ErrorEnd, HookActed,
@@ -29,6 +23,15 @@ import pig/obs/events.{
   OnSessionStart, SessionEnded, SessionStarted, ToolBlocked, ToolExecuted,
   ToolStarted,
 }
+import pig/provider
+import pig_protocol/error.{
+  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+}
+import pig_protocol/message.{
+  type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
+  ToolCall, User,
+}
+import pig_protocol/stop_reason
 import simplifile
 
 // ── FFI Bindings ─────────────────────────────────────────────────────
@@ -52,7 +55,7 @@ pub opaque type SessionWriter {
 type WriterMessage {
   WriteEvent(SessionEvent)
   WriteEventSync(event: SessionEvent, reply_subject: Subject(Nil))
-  Stop
+  WriterStop
 }
 
 /// Actor state holds the file path.
@@ -76,7 +79,7 @@ pub fn start(path: String) -> Result(SessionWriter, StartError) {
 /// Stop the session writer actor.
 pub fn stop(writer: SessionWriter) -> Nil {
   let SessionWriter(subject) = writer
-  process.send(subject, Stop)
+  process.send(subject, WriterStop)
 }
 
 /// Record a session event. Fire-and-forget: does not block.
@@ -105,10 +108,21 @@ pub type ReplayError {
 
 /// Replay a JSONL session file and reconstruct the message history.
 ///
-/// Strategy: find the last InferenceCompleted event. Its input_messages +
-/// message give the complete history. For partial sessions (crash mid-loop),
-/// also include Tool messages from ToolExecuted events after the last inference.
+/// This compatibility wrapper keeps the original message-only API. New code
+/// that also needs the durable inference settings can use `replay_with_settings`.
 pub fn replay(path: String) -> Result(List(Message), ReplayError) {
+  replay_with_settings(path)
+  |> result.map(fn(replayed) { replayed.0 })
+}
+
+/// Replay a JSONL session and return its history and latest persisted settings.
+///
+/// Sessions written before settings were persisted return `None`. Only an
+/// explicit `inference_settings_changed` event changes the persisted setting;
+/// requested settings on inference events describe that request only.
+pub fn replay_with_settings(
+  path: String,
+) -> Result(#(List(Message), Option(provider.InferenceSettings)), ReplayError) {
   case simplifile.read(path) {
     Error(e) -> Error(FileError(string.inspect(e)))
     Ok(content) -> {
@@ -116,26 +130,22 @@ pub fn replay(path: String) -> Result(List(Message), ReplayError) {
         content
         |> string.split("\n")
         |> list.filter(fn(l) { l != "" })
-      case lines {
-        [] -> Ok([])
-        _ -> replay_lines(lines)
-      }
+      replay_lines(lines)
     }
   }
 }
 
 /// Replay from a list of JSONL lines.
-fn replay_lines(lines: List(String)) -> Result(List(Message), ReplayError) {
-  // Find the last InferenceCompleted event
+fn replay_lines(
+  lines: List(String),
+) -> Result(#(List(Message), Option(provider.InferenceSettings)), ReplayError) {
+  use settings <- result.try(latest_settings(lines))
   let last_inference = find_last_inference_completed(lines)
   case last_inference {
-    None -> Ok([])
+    None -> Ok(#([], settings))
     Some(input_messages_json) -> {
-      // Parse input_messages + message
       case parse_inference_messages(input_messages_json) {
         Ok(messages) -> {
-          // Also check for ToolExecuted events after this line
-          // (partial session: tools ran but no final inference)
           let remaining = lines_after(lines, input_messages_json)
           let tool_msgs =
             remaining
@@ -146,11 +156,60 @@ fn replay_lines(lines: List(String)) -> Result(List(Message), ReplayError) {
                 _ -> Error(Nil)
               }
             })
-          Ok(list.append(messages, tool_msgs))
+          Ok(#(list.append(messages, tool_msgs), settings))
         }
         Error(e) -> Error(e)
       }
     }
+  }
+}
+
+fn latest_settings(
+  lines: List(String),
+) -> Result(Option(provider.InferenceSettings), ReplayError) {
+  list.fold(lines, Ok(None), fn(acc, line) {
+    use current <- result.try(acc)
+    use next <- result.try(settings_from_line(line))
+    case next {
+      Some(settings) -> Ok(Some(settings))
+      None -> Ok(current)
+    }
+  })
+}
+
+fn settings_from_line(
+  line: String,
+) -> Result(Option(provider.InferenceSettings), ReplayError) {
+  let event_type = decode_event_type_str(line)
+  case event_type {
+    "inference_settings_changed" -> {
+      let decoder =
+        dynamic_decode.at(["settings", "thinking"], dynamic_decode.string)
+      case json.parse(from: line, using: decoder) {
+        Ok(value) ->
+          case parse_persisted_settings(line, value) {
+            Ok(settings) -> Ok(Some(settings))
+            Error(error) -> Error(error)
+          }
+        Error(_) ->
+          Error(ParseError("Failed to parse inference settings: " <> line))
+      }
+    }
+    // Lifecycle settings are informational. Old captures may omit them, and
+    // malformed or unknown values must not block message-history replay.
+    "inference_started" | "inference_completed" | "inference_failed" -> Ok(None)
+    _ -> Ok(None)
+  }
+}
+
+fn parse_persisted_settings(
+  line: String,
+  value: String,
+) -> Result(provider.InferenceSettings, ReplayError) {
+  case provider.settings_from_string(value) {
+    Ok(settings) -> Ok(settings)
+    Error(Nil) ->
+      Error(ParseError("Unknown inference settings in JSONL: " <> line))
   }
 }
 
@@ -312,20 +371,41 @@ pub fn decode_tool_call() -> dynamic_decode.Decoder(ToolCall) {
   dynamic_decode.success(ToolCall(id:, name:, arguments_json:))
 }
 
-/// Start a session consumer actor that accepts SessionEvent directly.
-/// Used by the dispatcher to fan out events. Returns the Subject for registration.
-/// This is the consumer version of the actor — it receives SessionEvent directly,
-/// not WriterMessage wrappers. Fire-and-forget: does not block.
+/// Messages owned by the unsupervised session consumer.
+type ConsumerMessage {
+  Consume(SessionEvent)
+  Stop(Subject(Nil))
+}
+
+/// Start a managed session consumer and return its owned endpoint.
 pub fn start_consumer(
   path: String,
-) -> Result(Subject(SessionEvent), StartError) {
+) -> Result(consumer_spec.StartedConsumer, StartError) {
   let builder =
     actor.new(State(path: path))
-    |> actor.on_message(handle_consumer_message)
+    |> actor.on_message(handle_managed_message)
   case actor.start(builder) {
-    Ok(started) -> Ok(started.data)
+    Ok(started) -> {
+      let subject = started.data
+      Ok(
+        consumer_spec.started(
+          fn(event) { process.send(subject, Consume(event)) },
+          fn() {
+            let reply_subject = process.new_subject()
+            process.send(subject, Stop(reply_subject))
+            let _ = process.receive(reply_subject, 5000)
+            Nil
+          },
+        ),
+      )
+    }
     Error(e) -> Error(e)
   }
+}
+
+/// Stop a managed session consumer via its typed `Stop` message.
+pub fn stop_consumer(consumer: consumer_spec.StartedConsumer) -> Nil {
+  consumer_spec.stop(consumer)
 }
 
 /// Create a supervised session consumer actor for use in a supervision tree.
@@ -381,16 +461,21 @@ pub fn format_event(event: SessionEvent) -> String {
           list.append(with_provider, [#("system_prompt", json.string(v))])
         None -> with_provider
       }
-
       json.object(with_system) |> json.to_string()
     }
 
-    InferenceStarted(model:, message_count:) -> {
+    InferenceStarted(model:, message_count:, settings:) -> {
       json.object([
         #("ts", json.string(ts)),
         #("event", json.string("inference_started")),
         #("model", json.string(model)),
         #("message_count", json.int(message_count)),
+        #(
+          "settings",
+          json.object([
+            #("thinking", json.string(provider.settings_to_string(settings))),
+          ]),
+        ),
       ])
       |> json.to_string()
     }
@@ -404,8 +489,15 @@ pub fn format_event(event: SessionEvent) -> String {
       output_tokens:,
       duration_ms:,
       input_messages:,
+      settings:,
     ) -> {
       let fields = [
+        #(
+          "settings",
+          json.object([
+            #("thinking", json.string(provider.settings_to_string(settings))),
+          ]),
+        ),
         #("ts", json.string(ts)),
         #("event", json.string("inference_completed")),
         #("duration_ms", json.int(duration_ms)),
@@ -490,13 +582,34 @@ pub fn format_event(event: SessionEvent) -> String {
       |> json.to_string()
     }
 
-    InferenceFailed(error:, duration_ms:, input_messages:) -> {
+    InferenceFailed(model:, error:, duration_ms:, input_messages:, settings:) -> {
       json.object([
         #("ts", json.string(ts)),
         #("event", json.string("inference_failed")),
+        #("model", json.string(model)),
         #("duration_ms", json.int(duration_ms)),
         #("error", error_to_json(error)),
         #("input_messages", json.array(input_messages, message_to_json)),
+        #(
+          "settings",
+          json.object([
+            #("thinking", json.string(provider.settings_to_string(settings))),
+          ]),
+        ),
+      ])
+      |> json.to_string()
+    }
+
+    events.InferenceSettingsChanged(settings:) -> {
+      json.object([
+        #("ts", json.string(ts)),
+        #("event", json.string("inference_settings_changed")),
+        #(
+          "settings",
+          json.object([
+            #("thinking", json.string(provider.settings_to_string(settings))),
+          ]),
+        ),
       ])
       |> json.to_string()
     }
@@ -530,14 +643,33 @@ fn handle_message(
       process.send(reply_subject, Nil)
       actor.continue(state)
     }
-    Stop -> {
+    WriterStop -> {
       actor.stop()
     }
   }
 }
 
-/// Handle consumer messages (SessionEvent directly, not wrapped in WriterMessage).
-/// Used by the supervised consumer actor that receives events from the dispatcher.
+/// Handle consumer messages owned by the unsupervised actor.
+fn handle_managed_message(
+  state: State,
+  message: ConsumerMessage,
+) -> actor.Next(State, ConsumerMessage) {
+  case message {
+    Consume(event) -> {
+      let json_str = format_event(event)
+      case simplifile.append(state.path, json_str <> "\n") {
+        Ok(_) -> actor.continue(state)
+        Error(_) -> actor.stop()
+      }
+    }
+    Stop(reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.stop()
+    }
+  }
+}
+
+/// Handle events for the supervised actor. Its supervisor owns shutdown.
 fn handle_consumer_message(
   state: State,
   event: SessionEvent,
@@ -545,11 +677,7 @@ fn handle_consumer_message(
   let json_str = format_event(event)
   case simplifile.append(state.path, json_str <> "\n") {
     Ok(_) -> actor.continue(state)
-    Error(_) -> {
-      // Stop on write failure so the supervisor can restart the consumer.
-      // Silently continuing would lose events without any signal.
-      actor.stop()
-    }
+    Error(_) -> actor.stop()
   }
 }
 

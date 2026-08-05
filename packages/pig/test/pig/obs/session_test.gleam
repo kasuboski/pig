@@ -4,6 +4,8 @@
 //// Actor tests use `record_sync` for deterministic writes — no sleep hacks.
 //// Per TESTING_STRATEGY §pig/obs: "Do not use sleep() or timeout hacks."
 
+import pig/provider
+
 import gleam/dynamic/decode as dynamic_decode
 import gleam/erlang/process
 import gleam/json
@@ -12,9 +14,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
-import pig_protocol/error.{ApiError}
-import pig_protocol/message.{Assistant, ToolCall, User}
-import pig_protocol/stop_reason
+import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/obs/events.{
   BeforeToolCall, HookActed, HookActionDetail, InferenceCompleted,
@@ -22,6 +22,9 @@ import pig/obs/events.{
   SessionEnded, SessionStarted, ToolBlocked, ToolExecuted, ToolStarted,
 }
 import pig/obs/session
+import pig_protocol/error.{ApiError}
+import pig_protocol/message.{Assistant, ToolCall, User}
+import pig_protocol/stop_reason
 import simplifile
 import temporary
 
@@ -127,6 +130,7 @@ pub fn format_inference_completed_includes_fields_test() {
       output_tokens: Some(5),
       duration_ms: 150,
       input_messages: [User("hello")],
+      settings: provider.default_settings(),
     )
 
   let json_str = session.format_event(event)
@@ -194,14 +198,21 @@ pub fn format_tool_executed_includes_fields_test() {
 pub fn format_inference_failed_includes_error_test() {
   let event =
     InferenceFailed(
+      model: "requested-model",
       error: ApiError("rate limited"),
       duration_ms: 42,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let json_str = session.format_event(event)
 
   assert decode_event_type(json_str) == "inference_failed"
+
+  let decoder = dynamic_decode.at(["model"], dynamic_decode.string)
+  let assert Ok("requested-model") =
+    json.parse(from: json_str, using: decoder)
+    |> result.map_error(fn(_) { Nil })
 
   let decoder = dynamic_decode.at(["error", "type"], dynamic_decode.string)
   let assert Ok("api_error") =
@@ -313,6 +324,7 @@ pub fn write_multiple_events_in_order_test() {
       output_tokens: None,
       duration_ms: 150,
       input_messages: [],
+      settings: provider.default_settings(),
     )
 
   let event3 = SessionEnded(NormalEnd)
@@ -361,7 +373,12 @@ pub fn record_sync_after_stop_does_not_crash_test() {
 // ── Pure serialization tests for new variants ─────────────────────
 
 pub fn format_inference_started_produces_valid_json_test() {
-  let event = InferenceStarted(model: "gpt-4", message_count: 3)
+  let event =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
 
   let json_str = session.format_event(event)
 
@@ -519,18 +536,27 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 
   // Start a test consumer as sync mechanism
   let sync_consumer = process.new_subject()
-  process.send(disp, dispatcher.RegisterConsumer(sync_consumer))
+  let assert Ok(Nil) =
+    dispatcher.register_consumer(
+      disp,
+      consumer_spec.subject_endpoint(sync_consumer),
+    )
 
   // Start session consumer actor with the consumer handler
   let assert Ok(session_consumer) = session.start_consumer(path)
-  process.send(disp, dispatcher.RegisterConsumer(session_consumer))
+  let assert Ok(Nil) = dispatcher.register_consumer(disp, session_consumer)
 
   // Send events through dispatcher and verify sync consumer receives them
   // This confirms the dispatcher is processing messages and sending to consumers
-  let event1 = InferenceStarted(model: "gpt-4", message_count: 3)
+  let event1 =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 3,
+      settings: provider.default_settings(),
+    )
   process.send(disp, dispatcher.Event(event1))
   let assert Ok(received1) = process.receive(sync_consumer, 2000)
-  let assert InferenceStarted(model:, message_count:) = received1
+  let assert InferenceStarted(model:, message_count:, settings: _) = received1
   assert model == "gpt-4"
   assert message_count == 3
 
@@ -549,23 +575,30 @@ pub fn session_consumer_receives_events_via_dispatcher_test() {
 
   // Cleanup
   process.send(disp, dispatcher.Stop)
+  session.stop_consumer(session_consumer)
 }
 
-/// start_consumer() creates a Subject that can receive SessionEvent directly.
-pub fn start_consumer_creates_valid_subject_test() {
+/// start_consumer() creates an owned endpoint that consumes SessionEvents.
+pub fn start_consumer_creates_valid_endpoint_test() {
   use path <- with_temp_file("consumer_subject")
   let assert Ok(consumer) = session.start_consumer(path)
 
   // Can send an event directly to the subject
-  let event = InferenceStarted(model: "gpt-4", message_count: 5)
-  process.send(consumer, event)
+  let event =
+    InferenceStarted(
+      model: "gpt-4",
+      message_count: 5,
+      settings: provider.default_settings(),
+    )
+  consumer_spec.consume(consumer, event)
 
   // Send a second event to ensure first is processed
   let event2 = SessionEnded(NormalEnd)
-  process.send(consumer, event2)
+  consumer_spec.consume(consumer, event2)
 
   // Fire-and-forget doesn't crash
-  let _ = process.send(consumer, event)
+  let _ = consumer_spec.consume(consumer, event)
+  session.stop_consumer(consumer)
 
   Nil
 }
@@ -592,6 +625,7 @@ pub fn message_to_json_includes_stop_reason_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: [User("hi")],
+      settings: provider.default_settings(),
     )
   let json_str = session.format_event(event)
 
@@ -618,6 +652,7 @@ pub fn message_to_json_omits_none_stop_reason_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: [],
+      settings: provider.default_settings(),
     )
   let json_str = session.format_event(event)
 
@@ -649,6 +684,7 @@ pub fn round_trip_stop_reason_in_message_test() {
       output_tokens: None,
       duration_ms: 100,
       input_messages: [User("hello")],
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [line])
@@ -682,6 +718,7 @@ pub fn round_trip_tool_use_stop_reason_in_message_test() {
       output_tokens: None,
       duration_ms: 50,
       input_messages: [User("use echo")],
+      settings: provider.default_settings(),
     )
     |> session.format_event
   write_jsonl(path, [line])

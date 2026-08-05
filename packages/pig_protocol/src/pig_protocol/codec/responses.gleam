@@ -12,9 +12,12 @@ import gleam/result
 import gleam/string
 import jscheam/schema
 import pig_protocol/error.{type AiError}
-import pig_protocol/inference.{type InferenceResult, InferenceResult, InferenceMetadata}
+import pig_protocol/inference.{
+  type InferenceResult, InferenceMetadata, InferenceResult,
+}
 import pig_protocol/message.{type Message, type ToolCall}
 import pig_protocol/stop_reason
+import pig_protocol/thinking.{type ThinkingLevel}
 import pig_protocol/tool_definition.{type ToolDefinition}
 
 /// Build the JSON request body for the OpenAI Responses API.
@@ -31,9 +34,22 @@ pub fn build_request_body(
   model: String,
   instructions: Option(String),
 ) -> String {
-  let input_items =
-    messages
-    |> list.flat_map(input_item_to_json)
+  build_request_body_with_thinking(messages, tools, model, instructions, None)
+}
+
+/// Build a Responses API request with an optional thinking level.
+///
+/// OpenAI receives this as `reasoning.effort`. When thinking is enabled the
+/// request also asks for an automatic provider-generated reasoning summary.
+/// Unsupported levels are reported by the provider API.
+pub fn build_request_body_with_thinking(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  instructions: Option(String),
+  thinking_level: Option(ThinkingLevel),
+) -> String {
+  let input_items = list.flat_map(messages, input_item_to_json)
   let required = [
     #("model", json.string(model)),
     #("store", json.bool(False)),
@@ -43,9 +59,31 @@ pub fn build_request_body(
     #("parallel_tool_calls", json.bool(True)),
     #("include", json.array(["reasoning.encrypted_content"], json.string)),
   ]
-  let with_instructions = case instructions {
-    Some(text) -> [#("instructions", json.string(text)), ..required]
+  let with_thinking = case thinking_level {
+    Some(thinking.Off) -> [
+      #(
+        "reasoning",
+        json.object([
+          #("effort", json.string(thinking.to_openai_effort(thinking.Off))),
+        ]),
+      ),
+      ..required
+    ]
+    Some(level) -> [
+      #(
+        "reasoning",
+        json.object([
+          #("effort", json.string(thinking.to_openai_effort(level))),
+          #("summary", json.string("auto")),
+        ]),
+      ),
+      ..required
+    ]
     None -> required
+  }
+  let with_instructions = case instructions {
+    Some(text) -> [#("instructions", json.string(text)), ..with_thinking]
+    None -> with_thinking
   }
   let with_tools = case tools {
     [] -> with_instructions

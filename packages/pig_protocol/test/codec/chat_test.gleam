@@ -6,12 +6,14 @@ import gleam/result
 import gleam/string
 import gleeunit
 import jscheam/schema
+import pig_protocol/codec/chat
 import pig_protocol/error
 import pig_protocol/message
-import pig_protocol/codec/chat as chat
 import pig_protocol/stop_reason
+import pig_protocol/thinking
 import pig_protocol/tool_definition
 import simplifile
+import support/json_assertions
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -25,15 +27,6 @@ fn read_golden(path: String) -> String {
 }
 
 // === Helpers: decode build_request_body JSON ===
-
-/// Check if a top-level key exists in the JSON body.
-fn body_has_key(body: String, key: String) -> Bool {
-  let decoder = decode.at([key], decode.optional(decode.dynamic))
-  case json.parse(from: body, using: decoder) {
-    Ok(Some(_)) -> True
-    _ -> False
-  }
-}
 
 /// A decoded message entry from build_request_body JSON.
 type MsgEntry {
@@ -228,6 +221,38 @@ pub fn build_request_body_simple_messages_test() {
     parsed == [#("system", "you are helpful"), #("user", "hello")]
 }
 
+pub fn build_request_body_with_thinking_level_test() {
+  let body =
+    chat.build_request_body_with_thinking(
+      [message.User("solve this")],
+      [],
+      "gpt-5",
+      Some(thinking.Medium),
+    )
+
+  let assert Ok("medium") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+pub fn build_request_body_with_thinking_off_test() {
+  let body =
+    chat.build_request_body_with_thinking(
+      [message.User("answer directly")],
+      [],
+      "gpt-5",
+      Some(thinking.Off),
+    )
+
+  let assert Ok("none") =
+    json.parse(body, decode.at(["reasoning_effort"], decode.string))
+}
+
+pub fn build_request_body_omits_thinking_when_unspecified_test() {
+  let body = chat.build_request_body([message.User("hello")], [], "gpt-5")
+
+  assert json_assertions.omits_path(body, ["reasoning_effort"])
+}
+
 pub fn build_request_body_with_tools_test() {
   let messages = [message.User("what is 2+2?")]
   let tools = [
@@ -262,8 +287,8 @@ pub fn build_request_body_with_assistant_tool_calls_test() {
 
   // No top-level "tools" — tool calls are in the messages array
   let assert True =
-    body_has_key(body, "tools") == False
-    && body_has_key(body, "messages")
+    json_assertions.omits_path(body, ["tools"])
+    && json_assertions.has_path(body, ["messages"])
     && string.contains(body, "tool_calls")
     && string.contains(body, "tool_call_id")
 }
@@ -272,7 +297,7 @@ pub fn build_request_body_no_tools_field_when_empty_test() {
   let messages = [message.User("hello")]
   let body = chat.build_request_body(messages, [], "gpt-4o")
 
-  assert body_has_key(body, "tools") == False
+  assert json_assertions.omits_path(body, ["tools"])
 }
 
 pub fn build_request_body_tool_parameters_injected_as_json_test() {

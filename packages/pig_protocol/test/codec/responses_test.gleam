@@ -7,7 +7,9 @@ import jscheam/schema
 import pig_protocol/codec/responses
 import pig_protocol/message
 import pig_protocol/stop_reason
+import pig_protocol/thinking
 import pig_protocol/tool_definition
+import support/json_assertions
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -22,11 +24,15 @@ pub fn build_request_body_simple_messages_test() {
   ]
   let body = responses.build_request_body(messages, [], "gpt-4o", None)
 
-  let assert Ok("gpt-4o") = json.parse(body, decode.at(["model"], decode.string))
+  let assert Ok("gpt-4o") =
+    json.parse(body, decode.at(["model"], decode.string))
   let assert Ok(False) = json.parse(body, decode.at(["store"], decode.bool))
   let assert Ok(False) = json.parse(body, decode.at(["stream"], decode.bool))
-  let assert Ok("auto") = json.parse(body, decode.at(["tool_choice"], decode.string))
-  let assert Ok(True) = json.parse(body, decode.at(["parallel_tool_calls"], decode.bool))
+  let assert Ok("auto") =
+    json.parse(body, decode.at(["tool_choice"], decode.string))
+  let assert Ok(True) =
+    json.parse(body, decode.at(["parallel_tool_calls"], decode.bool))
+  assert json_assertions.omits_path(body, ["reasoning"])
 }
 
 pub fn build_request_body_system_ignored_when_instructions_missing_test() {
@@ -37,13 +43,48 @@ pub fn build_request_body_system_ignored_when_instructions_missing_test() {
   let body = responses.build_request_body(messages, [], "gpt-4o", None)
 
   // System messages are omitted from input; instructions is also absent here
-  let assert Ok(input) = json.parse(body, decode.at(["input"], decode.list(decode.dynamic)))
+  let assert Ok(input) =
+    json.parse(body, decode.at(["input"], decode.list(decode.dynamic)))
   assert list.length(input) == 1
 }
 
 pub fn build_request_body_instructions_added_test() {
   let body = responses.build_request_body([], [], "gpt-4o", Some("be helpful"))
-  let assert Ok("be helpful") = json.parse(body, decode.at(["instructions"], decode.string))
+  let assert Ok("be helpful") =
+    json.parse(body, decode.at(["instructions"], decode.string))
+}
+
+pub fn build_request_body_with_thinking_level_test() {
+  let body =
+    responses.build_request_body_with_thinking(
+      [message.User("solve this")],
+      [],
+      "gpt-5",
+      None,
+      Some(thinking.Medium),
+    )
+
+  let assert Ok(#("medium", "auto")) =
+    json.parse(body, {
+      use effort <- decode.subfield(["reasoning", "effort"], decode.string)
+      use summary <- decode.subfield(["reasoning", "summary"], decode.string)
+      decode.success(#(effort, summary))
+    })
+}
+
+pub fn build_request_body_with_thinking_off_test() {
+  let body =
+    responses.build_request_body_with_thinking(
+      [message.User("answer directly")],
+      [],
+      "gpt-5",
+      None,
+      Some(thinking.Off),
+    )
+
+  let assert Ok("none") =
+    json.parse(body, decode.at(["reasoning", "effort"], decode.string))
+  assert json_assertions.omits_path(body, ["reasoning", "summary"])
 }
 
 pub fn build_request_body_with_tools_test() {
@@ -57,7 +98,13 @@ pub fn build_request_body_with_tools_test() {
       ]),
     ),
   ]
-  let body = responses.build_request_body([message.User("what is 2+2?")], tools, "gpt-4o", None)
+  let body =
+    responses.build_request_body(
+      [message.User("what is 2+2?")],
+      tools,
+      "gpt-4o",
+      None,
+    )
 
   let decoder = {
     use name <- decode.subfield(["name"], decode.string)
@@ -74,9 +121,18 @@ pub fn build_request_body_with_tools_test() {
 pub fn build_request_body_tool_message_as_function_call_output_test() {
   let messages = [
     message.User("what is 2+2?"),
-    message.Assistant("", [
-      message.ToolCall(id: "call_123", name: "calculator", arguments_json: "{}"),
-    ], None, None),
+    message.Assistant(
+      "",
+      [
+        message.ToolCall(
+          id: "call_123",
+          name: "calculator",
+          arguments_json: "{}",
+        ),
+      ],
+      None,
+      None,
+    ),
     message.Tool(tool_call_id: "call_123", content: "4"),
   ]
   let body = responses.build_request_body(messages, [], "gpt-4o", None)
@@ -85,30 +141,41 @@ pub fn build_request_body_tool_message_as_function_call_output_test() {
   // `function_call` item (no `message`), and each `function_call_output`
   // must be preceded by a `function_call` sharing the same `call_id`.
   let items = input_items(body)
-  assert items == [
-    #("message", None),
-    #("function_call", Some("call_123")),
-    #("function_call_output", Some("call_123")),
-  ]
+  assert items
+    == [
+      #("message", None),
+      #("function_call", Some("call_123")),
+      #("function_call_output", Some("call_123")),
+    ]
 }
 
 pub fn build_request_body_assistant_with_text_and_tool_calls_test() {
   let messages = [
     message.User("weather?"),
-    message.Assistant("let me check", [
-      message.ToolCall(id: "call_9", name: "get_weather", arguments_json: "{}"),
-    ], None, None),
+    message.Assistant(
+      "let me check",
+      [
+        message.ToolCall(
+          id: "call_9",
+          name: "get_weather",
+          arguments_json: "{}",
+        ),
+      ],
+      None,
+      None,
+    ),
   ]
   let body = responses.build_request_body(messages, [], "gpt-4o", None)
 
   // Protocol quirk: assistant text and tool calls are emitted as separate
   // input items — an `output_text` message followed by a `function_call`.
   let items = input_items(body)
-  assert items == [
-    #("message", None),
-    #("message", None),
-    #("function_call", Some("call_9")),
-  ]
+  assert items
+    == [
+      #("message", None),
+      #("message", None),
+      #("function_call", Some("call_9")),
+    ]
 }
 
 // ── Parse response ────────────────────────────────────────────────
@@ -149,7 +216,12 @@ pub fn parse_tool_call_response_test() {
 pub fn parse_incomplete_response_test() {
   let raw = sample_incomplete_response()
   let assert Ok(result) = responses.parse_response(raw)
-  let assert message.Assistant(content: "", tool_calls: [], thinking: None, stop_reason: Some(stop_reason.Length)) = result.message
+  let assert message.Assistant(
+    content: "",
+    tool_calls: [],
+    thinking: None,
+    stop_reason: Some(stop_reason.Length),
+  ) = result.message
   let assert Some(stop_reason.Length) = result.metadata.stop_reason
 }
 
