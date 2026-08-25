@@ -10,7 +10,10 @@
 in
   buildGleamApplication {
     src = ../packages/pig_proxy;
-    localPackages = [../packages/pig_protocol];
+    localPackages = [
+      ../packages/pig_protocol
+      ../packages/pig_transport
+    ];
     inherit erlangPackage;
 
     postInstall = ''

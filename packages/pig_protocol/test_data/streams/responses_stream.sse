@@ -28,3 +28,5 @@ data: {"type":"response.function_call_arguments.done","output_index":2,"argument
 data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{\"x\":1}"}}
 
 data: {"type":"response.completed","response":{"id":"resp-stream-1","model":"gpt-5.3-codex","status":"completed","output":[],"usage":{"input_tokens":15,"output_tokens":8,"total_tokens":23}}}
+
+data: [DONE]

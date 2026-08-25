@@ -96,13 +96,21 @@ pub fn push(
   accumulator: Accumulator,
   data: String,
 ) -> Result(#(Accumulator, List(InferenceDelta)), AiError) {
-  let Accumulator(state) = accumulator
-  case state.terminal {
-    Some(_) -> Error(error.InvalidResponse("Event arrived after stream end"))
-    None -> {
-      use event <- result.try(parse_event(data))
-      use #(next, deltas) <- result.try(apply_event(state, event))
-      Ok(#(Accumulator(next), deltas))
+  case string.trim(data) {
+    // OpenAI-compatible gateways commonly append this Chat-style marker after
+    // the canonical Responses terminal event.
+    "[DONE]" -> Ok(#(accumulator, []))
+    _ -> {
+      let Accumulator(state) = accumulator
+      case state.terminal {
+        Some(_) ->
+          Error(error.InvalidResponse("Event arrived after stream end"))
+        None -> {
+          use event <- result.try(parse_event(data))
+          use #(next, deltas) <- result.try(apply_event(state, event))
+          Ok(#(Accumulator(next), deltas))
+        }
+      }
     }
   }
 }
