@@ -21,6 +21,7 @@ pub type HttpRequest {
 pub type Transport =
   fn(HttpRequest) -> Result(String, AiError)
 
-/// A streaming transport delivers SSE lines to a callback as they arrive.
+/// A streaming transport delivers raw byte chunks to a callback as they
+/// arrive. SSE framing belongs at the protocol boundary, after this callback.
 pub type StreamTransport =
-  fn(HttpRequest, fn(String) -> Nil) -> Result(Nil, AiError)
+  fn(HttpRequest, fn(BitArray) -> Nil) -> Result(Nil, AiError)

@@ -1,9 +1,9 @@
 //// Pure agent state machine — the sans-IO update function.
 ////
-//// `update(state, msg) -> StepResult(msg)` is a pure function:
+//// `update(state, msg) -> StepResult` is a pure function:
 //// no provider calls, no tool execution, no telemetry, no hooks.
 ////
-//// The runtime calls this function, interprets the returned effects,
+//// The runtime calls this function, interprets the returned effect,
 //// and feeds results back as new messages.
 
 import gleam/json
@@ -17,10 +17,10 @@ import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
 /// Pure state transition: given current state and a message, return
-/// the next state and any effects the runtime should execute.
+/// the next state and the effect the runtime should execute, if any.
 ///
 /// This is the entire agent loop logic, sans IO.
-pub fn update(st: AgentState, m: AgentMsg) -> StepResult(AgentMsg) {
+pub fn update(st: AgentState, m: AgentMsg) -> StepResult {
   case m {
     msg.UserPrompt(prompt) -> handle_user_prompt(st, prompt)
     msg.ProviderResponded(result) -> handle_provider_responded(st, result)
@@ -30,18 +30,14 @@ pub fn update(st: AgentState, m: AgentMsg) -> StepResult(AgentMsg) {
 
 // ── UserPrompt ──────────────────────────────────────────────────
 
-fn handle_user_prompt(st: AgentState, prompt: String) -> StepResult(AgentMsg) {
+fn handle_user_prompt(st: AgentState, prompt: String) -> StepResult {
   let new_st = state.add_message(st, message.User(prompt))
   let msgs = state.messages_for_provider(new_st)
   let tools = state.tool_definitions(new_st)
-  step_result.Continue(state: new_st, effects: [
-    effect.CallProvider(messages: msgs, tools:, on_response: fn(r) {
-      case r {
-        Ok(ir) -> msg.ProviderResponded(Ok(ir.message))
-        Error(e) -> msg.ProviderResponded(Error(e))
-      }
-    }),
-  ])
+  step_result.Continue(
+    state: new_st,
+    effect: effect.CallProvider(messages: msgs, tools:),
+  )
 }
 
 // ── ProviderResponded ───────────────────────────────────────────
@@ -49,7 +45,7 @@ fn handle_user_prompt(st: AgentState, prompt: String) -> StepResult(AgentMsg) {
 fn handle_provider_responded(
   st: AgentState,
   result: Result(Message, AiError),
-) -> StepResult(AgentMsg) {
+) -> StepResult {
   case result {
     Ok(
       message.Assistant(
@@ -68,11 +64,10 @@ fn handle_provider_responded(
         _ -> {
           // Tool calls — need execution
           let new_st = state.add_message(st, assistant_msg)
-          step_result.Continue(state: new_st, effects: [
-            effect.ExecuteTools(calls:, on_results: fn(results) {
-              msg.ToolResults(results)
-            }),
-          ])
+          step_result.Continue(
+            state: new_st,
+            effect: effect.ExecuteTools(calls:),
+          )
         }
       }
     Ok(other) -> {
@@ -89,7 +84,7 @@ fn handle_provider_responded(
 fn handle_tool_results(
   st: AgentState,
   results: List(#(message.ToolCall, Result(json.Json, ToolError))),
-) -> StepResult(AgentMsg) {
+) -> StepResult {
   // Convert results to Tool messages and add to history
   // Increment iterations first — mirrors the original loop which
   // increments after tool execution and checks at the top of the next iteration.
@@ -117,14 +112,10 @@ fn handle_tool_results(
       // Continue with a CallProvider effect
       let msgs = state.messages_for_provider(new_st)
       let tools = state.tool_definitions(new_st)
-      step_result.Continue(state: new_st, effects: [
-        effect.CallProvider(messages: msgs, tools:, on_response: fn(r) {
-          case r {
-            Ok(ir) -> msg.ProviderResponded(Ok(ir.message))
-            Error(e) -> msg.ProviderResponded(Error(e))
-          }
-        }),
-      ])
+      step_result.Continue(
+        state: new_st,
+        effect: effect.CallProvider(messages: msgs, tools:),
+      )
     }
   }
 }

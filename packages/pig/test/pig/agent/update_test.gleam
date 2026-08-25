@@ -1,6 +1,6 @@
 //// Pure `update` function tests.
 ////
-//// Verifies the sans-IO state machine: `update(state, msg) -> StepResult(msg)`.
+//// Verifies the sans-IO state machine: `update(state, msg) -> StepResult`.
 //// Pure value-in/value-out. No OTP processes, no dispatcher, no mocks.
 ////
 //// Tests cover:
@@ -42,7 +42,7 @@ fn state_for_update(tools: List(tool.Tool)) -> state.AgentState {
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
-  state.config(provider)
+  state.config(provider.from_buffered(provider))
   |> state.with_tools(registry)
   |> state.new()
 }
@@ -57,7 +57,7 @@ fn state_for_update_with_max(
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
-  state.config(provider)
+  state.config(provider.from_buffered(provider))
   |> state.with_tools(registry)
   |> state.with_max_iterations(max)
   |> state.new()
@@ -69,7 +69,7 @@ fn state_for_update_with_max(
 pub fn user_prompt_adds_user_message_to_history_test() {
   let st = state_for_update([])
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: new_st, effects: _) = result
+  let assert step_result.Continue(state: new_st, effect: _) = result
   // History should contain the User message
   let history = state.history(new_st)
   assert list.last(history) == Ok(message.User("hello"))
@@ -79,24 +79,18 @@ pub fn user_prompt_adds_user_message_to_history_test() {
 pub fn user_prompt_returns_continue_with_call_provider_test() {
   let st = state_for_update([])
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  // Should have exactly one CallProvider effect
-  let call_provider_effs =
-    list.filter(effs, fn(e) {
-      case e {
-        effect.CallProvider(..) -> True
-        _ -> False
-      }
-    })
-  assert list.length(call_provider_effs) == 1
+  let assert step_result.Continue(state: _, effect: effect.CallProvider(..)) =
+    result
 }
 
 /// CallProvider effect's messages include the prompt.
 pub fn user_prompt_call_provider_includes_prompt_test() {
   let st = state_for_update([])
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  let assert [effect.CallProvider(messages: msgs, ..)] = effs
+  let assert step_result.Continue(
+    state: _,
+    effect: effect.CallProvider(messages: msgs, ..),
+  ) = result
   // Messages should contain the user prompt
   assert list.any(msgs, fn(m) {
     case m {
@@ -120,8 +114,10 @@ pub fn user_prompt_call_provider_includes_tools_test() {
     })
   let st = state_for_update([t])
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  let assert [effect.CallProvider(tools: tool_defs, ..)] = effs
+  let assert step_result.Continue(
+    state: _,
+    effect: effect.CallProvider(tools: tool_defs, ..),
+  ) = result
   assert list.length(tool_defs) == 1
   let assert [td2] = tool_defs
   assert td2.name == "echo"
@@ -135,12 +131,14 @@ pub fn user_prompt_system_prompt_prepended_test() {
     Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
   let st =
-    state.config(provider)
+    state.config(provider.from_buffered(provider))
     |> state.with_system_prompt("you are a helper")
     |> state.new()
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  let assert [effect.CallProvider(messages: msgs, ..)] = effs
+  let assert step_result.Continue(
+    state: _,
+    effect: effect.CallProvider(messages: msgs, ..),
+  ) = result
   // First message should be the system prompt
   assert list.first(msgs) == Ok(message.System("you are a helper"))
 }
@@ -165,16 +163,8 @@ pub fn provider_responded_tool_calls_returns_continue_test() {
   let resp = message.Assistant("", [tc], None, None)
   let st = state_for_update([])
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  // Should have exactly one ExecuteTools effect
-  let exec_effs =
-    list.filter(effs, fn(e) {
-      case e {
-        effect.ExecuteTools(..) -> True
-        _ -> False
-      }
-    })
-  assert list.length(exec_effs) == 1
+  let assert step_result.Continue(state: _, effect: effect.ExecuteTools(..)) =
+    result
 }
 
 /// ProviderResponded(Ok(tool_call_message)) with empty tool_calls → Done.
@@ -200,7 +190,7 @@ pub fn provider_responded_tool_calls_records_assistant_test() {
   let resp = message.Assistant("", [tc], None, None)
   let st = state_for_update([])
   let result = update.update(st, msg.ProviderResponded(Ok(resp)))
-  let assert step_result.Continue(state: new_st, effects: _) = result
+  let assert step_result.Continue(state: new_st, effect: _) = result
   let history = state.history(new_st)
   assert list.last(history) == Ok(resp)
 }
@@ -215,7 +205,7 @@ pub fn tool_results_adds_tool_messages_test() {
   ]
   let st = state_for_update([])
   let result = update.update(st, msg.ToolResults(results))
-  let assert step_result.Continue(state: new_st, effects: _) = result
+  let assert step_result.Continue(state: new_st, effect: _) = result
   let history = state.history(new_st)
   assert list.last(history)
     == Ok(message.Tool(tool_call_id: "c1", content: "{\"echo\":\"hi\"}"))
@@ -229,7 +219,7 @@ pub fn tool_results_increments_iterations_test() {
   ]
   let st = state_for_update([])
   let result = update.update(st, msg.ToolResults(results))
-  let assert step_result.Continue(state: new_st, effects: _) = result
+  let assert step_result.Continue(state: new_st, effect: _) = result
   assert new_st.iterations == 1
 }
 
@@ -241,15 +231,8 @@ pub fn tool_results_returns_continue_with_call_provider_test() {
   ]
   let st = state_for_update([])
   let result = update.update(st, msg.ToolResults(results))
-  let assert step_result.Continue(state: _, effects: effs) = result
-  let call_provider_effs =
-    list.filter(effs, fn(e) {
-      case e {
-        effect.CallProvider(..) -> True
-        _ -> False
-      }
-    })
-  assert list.length(call_provider_effs) == 1
+  let assert step_result.Continue(state: _, effect: effect.CallProvider(..)) =
+    result
 }
 
 /// When exceeded_max_iterations, ToolResults returns Failed.
@@ -274,7 +257,7 @@ pub fn tool_results_error_recorded_in_history_test() {
   ]
   let st = state_for_update([])
   let result = update.update(st, msg.ToolResults(results))
-  let assert step_result.Continue(state: new_st, effects: _) = result
+  let assert step_result.Continue(state: new_st, effect: _) = result
   let history = state.history(new_st)
   let assert Ok(message.Tool(content:, ..)) = list.last(history)
   assert content == "Tool error: tool exploded"

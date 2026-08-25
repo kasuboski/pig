@@ -16,7 +16,7 @@ import pig/obs/events.{
 }
 import pig/provider
 import pig_protocol/error.{
-  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+  type AiError, ApiError, Cancelled, InvalidResponse, RateLimited, Timeout,
 }
 import pig_protocol/stop_reason
 
@@ -135,6 +135,7 @@ fn format_error(error: AiError) -> String {
     ApiError(msg) -> "ApiError: " <> msg
     RateLimited -> "RateLimited"
     Timeout -> "Timeout"
+    Cancelled -> "Cancelled"
     InvalidResponse(detail) -> "InvalidResponse: " <> detail
   }
 }
@@ -182,13 +183,15 @@ pub fn start() -> Result(consumer_spec.StartedConsumer, actor.StartError) {
     Ok(started) -> {
       let subject = started.data
       Ok(
-        consumer_spec.started(
+        consumer_spec.started_with_result(
           fn(event) { process.send(subject, Consume(event)) },
           fn() {
             let reply_subject = process.new_subject()
             process.send(subject, Stop(reply_subject))
-            let _ = process.receive(reply_subject, 5000)
-            Nil
+            case process.receive(reply_subject, 5000) {
+              Ok(Nil) -> Ok(Nil)
+              Error(Nil) -> Error(consumer_spec.StopTimeout)
+            }
           },
         ),
       )
@@ -210,15 +213,14 @@ pub fn start_consumer() -> Result(
   start()
 }
 
-/// Create a supervised terminal consumer actor for use in a supervision tree.
-/// The supervised actor's message type is SessionEvent.
+/// Create a supervised terminal consumer with a graceful drain control.
 pub fn supervised(
-  name: Name(SessionEvent),
+  name: Name(consumer_spec.SupervisedMessage),
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let builder =
       actor.new(State)
-      |> actor.on_message(handle_message)
+      |> actor.on_message(handle_control_message)
       |> actor.named(name)
     case actor.start(builder) {
       Ok(started) -> Ok(actor.Started(data: Nil, pid: started.pid))
@@ -227,14 +229,20 @@ pub fn supervised(
   })
 }
 
-/// Handle incoming messages to the printer actor.
-fn handle_message(
+fn handle_control_message(
   state: State,
-  event: SessionEvent,
-) -> actor.Next(State, SessionEvent) {
-  let formatted = format_event(event)
-  io.println(formatted)
-  actor.continue(state)
+  message: consumer_spec.SupervisedMessage,
+) -> actor.Next(State, consumer_spec.SupervisedMessage) {
+  case message {
+    consumer_spec.Event(event) -> {
+      io.println(format_event(event))
+      actor.continue(state)
+    }
+    consumer_spec.Stop(reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.continue(state)
+    }
+  }
 }
 
 fn handle_managed_message(

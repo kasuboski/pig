@@ -51,7 +51,7 @@ pub fn main() {
   let provider = openai.provider_with_base_url(api_key(), model(), base_url())
 
   let cfg =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_model("url_summarizer")
     |> pig.with_thinking_level(thinking.Off)
     |> pig.with_system_prompt(
@@ -92,6 +92,9 @@ pub fn main() {
       io.println("\n⚠ Timed out waiting for the model to respond.")
       io.println("Try a faster model or increase the timeout.")
     }
+    Error(run_error.Inference(error.Cancelled)) -> {
+      io.println("\nCancelled before the summary was created.")
+    }
     Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("\n⚠ API error: " <> msg)
     }
@@ -106,6 +109,12 @@ pub fn main() {
     }
     Error(run_error.Runtime(message)) -> {
       io.println("\n⚠ Runtime error: " <> message)
+    }
+    Error(run_error.RuntimeUnavailable) -> {
+      io.println("\n⚠ Runtime unavailable.")
+    }
+    Error(run_error.Cancelled(_)) -> {
+      io.println("\nCancelled before the summary was created.")
     }
   }
 

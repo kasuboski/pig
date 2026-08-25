@@ -37,6 +37,40 @@ pub fn build_request_body(
   build_request_body_with_thinking(messages, tools, model, instructions, None)
 }
 
+/// Build a Responses request body for an SSE response.
+pub fn build_stream_request_body(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  instructions: Option(String),
+) -> String {
+  build_stream_request_body_with_thinking(
+    messages,
+    tools,
+    model,
+    instructions,
+    None,
+  )
+}
+
+/// Build a streaming Responses request with an optional thinking level.
+pub fn build_stream_request_body_with_thinking(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  instructions: Option(String),
+  thinking_level: Option(ThinkingLevel),
+) -> String {
+  build_request_body_with_thinking_and_stream(
+    messages,
+    tools,
+    model,
+    instructions,
+    thinking_level,
+    True,
+  )
+}
+
 /// Build a Responses API request with an optional thinking level.
 ///
 /// OpenAI receives this as `reasoning.effort`. When thinking is enabled the
@@ -49,11 +83,29 @@ pub fn build_request_body_with_thinking(
   instructions: Option(String),
   thinking_level: Option(ThinkingLevel),
 ) -> String {
+  build_request_body_with_thinking_and_stream(
+    messages,
+    tools,
+    model,
+    instructions,
+    thinking_level,
+    False,
+  )
+}
+
+fn build_request_body_with_thinking_and_stream(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  instructions: Option(String),
+  thinking_level: Option(ThinkingLevel),
+  streaming: Bool,
+) -> String {
   let input_items = list.flat_map(messages, input_item_to_json)
   let required = [
     #("model", json.string(model)),
     #("store", json.bool(False)),
-    #("stream", json.bool(False)),
+    #("stream", json.bool(streaming)),
     #("input", json.preprocessed_array(input_items)),
     #("tool_choice", json.string("auto")),
     #("parallel_tool_calls", json.bool(True)),
@@ -201,11 +253,12 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
     decode.optional(usage_decoder()),
   )
 
-  let #(text, tool_calls) =
-    list.fold(output, #("", []), fn(acc, item) {
+  let #(text, reasoning, tool_calls) =
+    list.fold(output, #("", "", []), fn(acc, item) {
       case item {
-        TextOutput(t) -> #(acc.0 <> t, acc.1)
-        FunctionCallOutput(tc) -> #(acc.0, [tc, ..acc.1])
+        TextOutput(t) -> #(acc.0 <> t, acc.1, acc.2)
+        ThinkingOutput(t) -> #(acc.0, acc.1 <> t, acc.2)
+        FunctionCallOutput(tc) -> #(acc.0, acc.1, [tc, ..acc.2])
         IgnoredOutput -> acc
       }
     })
@@ -225,11 +278,16 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
       output_tokens: option.map(usage, fn(u) { u.output_tokens }),
     )
 
+  let thinking = case reasoning {
+    "" -> None
+    text -> Some(message.Thinking(text))
+  }
+
   let message =
     message.Assistant(
       content: text,
       tool_calls: tool_calls,
-      thinking: None,
+      thinking: thinking,
       stop_reason: Some(stop_reason),
     )
 
@@ -238,6 +296,7 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
 
 type OutputItem {
   TextOutput(text: String)
+  ThinkingOutput(text: String)
   FunctionCallOutput(tool_call: ToolCall)
   IgnoredOutput
 }
@@ -246,6 +305,7 @@ fn output_item_decoder() -> decode.Decoder(OutputItem) {
   use item_type <- decode.field("type", decode.string)
   case item_type {
     "message" -> message_output_decoder()
+    "reasoning" -> reasoning_output_decoder()
     "function_call" -> function_call_output_decoder()
     _ -> decode.success(IgnoredOutput)
   }
@@ -263,6 +323,31 @@ fn message_output_decoder() -> decode.Decoder(OutputItem) {
     })
     |> string.join("")
   decode.success(TextOutput(text))
+}
+
+fn reasoning_output_decoder() -> decode.Decoder(OutputItem) {
+  use summary <- decode.optional_field(
+    "summary",
+    None,
+    decode.optional(decode.list(reasoning_block_decoder())),
+  )
+  use content <- decode.optional_field(
+    "content",
+    None,
+    decode.optional(decode.list(reasoning_block_decoder())),
+  )
+  let summary_text = option.unwrap(summary, []) |> string.join("\n\n")
+  let content_text = option.unwrap(content, []) |> string.join("\n\n")
+  let text = case summary_text {
+    "" -> content_text
+    _ -> summary_text
+  }
+  decode.success(ThinkingOutput(text))
+}
+
+fn reasoning_block_decoder() -> decode.Decoder(String) {
+  use text <- decode.optional_field("text", "", decode.string)
+  decode.success(text)
 }
 
 type ContentBlock {

@@ -1,0 +1,16 @@
+{
+  "id": "chat-stream-no-finish",
+  "object": "chat.completion",
+  "model": "gpt-4o",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Use ",
+      "tool_calls": [
+        {"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"Berlin\"}"}}
+      ]
+    }
+  }],
+  "usage": {"prompt_tokens": 4,"completion_tokens": 3,"total_tokens": 7}
+}

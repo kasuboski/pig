@@ -27,7 +27,9 @@ fn dummy_provider() {
 
 fn new_state(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  state.config(dummy_provider()) |> state.with_tools(registry) |> state.new()
+  state.config(provider.from_buffered(dummy_provider()))
+  |> state.with_tools(registry)
+  |> state.new()
 }
 
 fn new_state_with_prompt(
@@ -35,7 +37,7 @@ fn new_state_with_prompt(
   prompt: String,
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  state.config(dummy_provider())
+  state.config(provider.from_buffered(dummy_provider()))
   |> state.with_tools(registry)
   |> state.with_system_prompt(prompt)
   |> state.new()
@@ -43,7 +45,7 @@ fn new_state_with_prompt(
 
 fn new_state_with_max(tools: List(tool.Tool), max: Int) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
-  state.config(dummy_provider())
+  state.config(provider.from_buffered(dummy_provider()))
   |> state.with_tools(registry)
   |> state.with_max_iterations(max)
   |> state.new()
@@ -130,20 +132,20 @@ pub fn exceeded_max_iterations_boundary_test() {
 
 /// Default config has no session path.
 pub fn default_config_has_no_session_path_test() {
-  let cfg = state.config(dummy_provider())
+  let cfg = state.config(provider.from_buffered(dummy_provider()))
   assert cfg.session_path == None
 }
 
 /// with_session_path sets the field.
 pub fn with_session_path_sets_path_test() {
-  let cfg = state.config(dummy_provider())
+  let cfg = state.config(provider.from_buffered(dummy_provider()))
   let cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
   assert cfg2.session_path == option.Some("/tmp/test.jsonl")
 }
 
 /// with_session_path does not mutate original.
 pub fn with_session_path_does_not_mutate_original_test() {
-  let cfg = state.config(dummy_provider())
+  let cfg = state.config(provider.from_buffered(dummy_provider()))
   let _cfg2 = state.with_session_path(cfg, "/tmp/test.jsonl")
   assert cfg.session_path == None
 }

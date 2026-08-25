@@ -8,10 +8,10 @@
 //// Both shapes are scripted: a sync queue (served in call order) and a
 //// stream queue of `StreamScript`s. A committed stream script drives the
 //// same two-phase relay protocol as the hackney adapter (report the head,
-//// wait for `StartRelay`, forward chunks), so streaming retry/fallback and
+//// wait for `start`, forward chunks), so streaming retry/fallback and
 //// relay forwarding are both testable in-process.
 ////
-//// The adapter also records the most recent outgoing `TransportRequest`
+//// The adapter also records the most recent outgoing `Request`
 //// (sync or stream), so tests can assert on the auth/URL that execution
 //// actually put on the wire — closing the auth-wiring gap without a socket.
 
@@ -19,19 +19,19 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
-import pig_proxy/transport
+import pig_transport as transport
 
 /// Messages served by the in-memory transport actor.
 pub type InMemoryMsg {
   TakeSync(
-    request: transport.TransportRequest,
-    reply_to: process.Subject(transport.TransportResponse),
+    request: transport.Request,
+    reply_to: process.Subject(transport.Response),
   )
   TakeStream(
-    request: transport.TransportRequest,
+    request: transport.Request,
     reply_to: process.Subject(StreamScript),
   )
-  GetLastRequest(reply_to: process.Subject(Option(transport.TransportRequest)))
+  GetLastRequest(reply_to: process.Subject(Option(transport.Request)))
 }
 
 /// A scripted streaming outcome. `CommitStream` reports a committed head
@@ -44,11 +44,7 @@ pub type StreamScript {
     chunks: List(BitArray),
     terminal: StreamTerminal,
   )
-  RejectStream(
-    status: Int,
-    headers: List(#(String, String)),
-    body: BitArray,
-  )
+  RejectStream(status: Int, headers: List(#(String, String)), body: BitArray)
   FailStream(reason: String)
 }
 
@@ -59,15 +55,17 @@ pub type StreamTerminal {
 }
 
 /// A script returned once the stream queue is exhausted.
-pub const stream_exhausted_default = FailStream("in-memory stream queue exhausted")
+pub const stream_exhausted_default = FailStream(
+  "in-memory stream queue exhausted",
+)
 
 type State {
   State(
-    sync_queue: List(transport.TransportResponse),
-    sync_exhausted: transport.TransportResponse,
+    sync_queue: List(transport.Response),
+    sync_exhausted: transport.Response,
     stream_queue: List(StreamScript),
     stream_exhausted: StreamScript,
-    last_request: Option(transport.TransportRequest),
+    last_request: Option(transport.Request),
   )
 }
 
@@ -77,7 +75,9 @@ fn handle_message(state: State, msg: InMemoryMsg) {
       case state.sync_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(State(..state, sync_queue: rest, last_request: Some(request)))
+          actor.continue(
+            State(..state, sync_queue: rest, last_request: Some(request)),
+          )
         }
         [] -> {
           process.send(reply_to, state.sync_exhausted)
@@ -89,7 +89,9 @@ fn handle_message(state: State, msg: InMemoryMsg) {
       case state.stream_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(State(..state, stream_queue: rest, last_request: Some(request)))
+          actor.continue(
+            State(..state, stream_queue: rest, last_request: Some(request)),
+          )
         }
         [] -> {
           process.send(reply_to, state.stream_exhausted)
@@ -108,15 +110,10 @@ fn handle_message(state: State, msg: InMemoryMsg) {
 /// the queue is exhausted it keeps returning `sync_exhausted`. No stream
 /// scripts are configured (streaming would report a failure).
 pub fn start(
-  sync_queue: List(transport.TransportResponse),
-  sync_exhausted: transport.TransportResponse,
+  sync_queue: List(transport.Response),
+  sync_exhausted: transport.Response,
 ) -> Result(process.Subject(InMemoryMsg), actor.StartError) {
-  start_with(
-    sync_queue,
-    sync_exhausted,
-    [],
-    stream_exhausted_default,
-  )
+  start_with(sync_queue, sync_exhausted, [], stream_exhausted_default)
 }
 
 /// Start an in-memory transport serving `stream_queue` for streaming
@@ -157,16 +154,14 @@ fn start_with(
 }
 
 /// Build a `transport.Transport` backed by an in-memory actor.
-pub fn transport(
-  subject: process.Subject(InMemoryMsg),
-) -> transport.Transport {
+pub fn transport(subject: process.Subject(InMemoryMsg)) -> transport.Transport {
   transport.Transport(
     sync: fn(req) {
       actor.call(subject, waiting: 5000, sending: fn(reply_to) {
         TakeSync(request: req, reply_to:)
       })
     },
-    stream: fn(req) { stream_call(subject, req) },
+    stream: fn(req, events) { stream_call(subject, req, events) },
   )
 }
 
@@ -175,7 +170,7 @@ pub fn transport(
 /// execution placed on the wire.
 pub fn last_request(
   subject: process.Subject(InMemoryMsg),
-) -> Option(transport.TransportRequest) {
+) -> Option(transport.Request) {
   actor.call(subject, waiting: 5000, sending: fn(reply_to) {
     GetLastRequest(reply_to:)
   })
@@ -183,49 +178,32 @@ pub fn last_request(
 
 fn stream_call(
   subject: process.Subject(InMemoryMsg),
-  request: transport.TransportRequest,
-) -> transport.StreamHead {
-  // The relay (a spawned process) owns the run subject and reports the
-  // head synchronously, mirroring the hackney adapter. This keeps the
-  // commit decision out of the caller and the relay's receive valid.
-  let head = process.new_subject()
-  let _ = process.spawn(fn() { relay_loop(subject, head, request) })
-  case process.receive(head, 5000) {
-    Ok(h) -> h
-    Error(Nil) -> transport.StreamFailure("in-memory stream head timeout")
-  }
-}
-
-fn relay_loop(
-  subject: process.Subject(InMemoryMsg),
-  head: process.Subject(transport.StreamHead),
-  request: transport.TransportRequest,
+  request: transport.Request,
+  events: process.Subject(transport.SourceEvent),
 ) -> Nil {
   let reply = process.new_subject()
   process.send(subject, TakeStream(request:, reply_to: reply))
   case process.receive(reply, 5000) {
-    Error(Nil) ->
-      process.send(head, transport.StreamFailure("in-memory script timeout"))
-    Ok(RejectStream(status:, headers:, body:)) ->
-      process.send(head, transport.StreamRejected(status:, headers:, body:))
+    Error(_) ->
+      process.send(events, transport.SourceError("in-memory script timeout"))
+    Ok(RejectStream(status:, headers:, body:)) -> {
+      process.send(events, transport.SourceHead(status:, headers:))
+      process.send(events, transport.SourceChunk(body))
+      process.send(events, transport.SourceDone)
+    }
     Ok(FailStream(reason:)) ->
-      process.send(head, transport.StreamFailure(reason:))
+      process.send(events, transport.SourceError(reason:))
     Ok(CommitStream(status:, headers:, chunks:, terminal:)) -> {
-      let run = process.new_subject()
-      process.send(head, transport.StreamCommitted(status:, headers:, run:))
-      case process.receive(run, 2000) {
-        Ok(transport.StartRelay(forward:)) -> {
-          list.each(chunks, fn(c) {
-            process.send(forward, transport.RelayChunk(c))
-          })
-          case terminal {
-            StreamDone -> process.send(forward, transport.RelayDone)
-            StreamError(reason:) ->
-              process.send(forward, transport.RelayError(reason:))
-          }
-        }
-        Error(Nil) -> Nil
+      process.send(events, transport.SourceHead(status:, headers:))
+      list.each(chunks, fn(chunk) {
+        process.send(events, transport.SourceChunk(chunk))
+      })
+      case terminal {
+        StreamDone -> process.send(events, transport.SourceDone)
+        StreamError(reason:) ->
+          process.send(events, transport.SourceError(reason:))
       }
     }
   }
+  Nil
 }

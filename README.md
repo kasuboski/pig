@@ -29,7 +29,7 @@ import pig_protocol/thinking
 pub fn main() {
   let provider = openai.provider("your-api-key", "gpt-5")
   let config =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_system_prompt("You are a helpful assistant.")
     |> pig.with_thinking_level(thinking.Medium)
 

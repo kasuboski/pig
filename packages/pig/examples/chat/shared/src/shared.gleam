@@ -24,6 +24,7 @@ pub type MessageStatus {
   ServerError
   Sent
   Received
+  Streaming
   Sending
 }
 
@@ -37,7 +38,7 @@ pub type ChatMessage {
   )
 }
 
-// ─── Client → Server Messages ─────────────────────────────────
+// ─── Client -> Server Messages ─────────────────────────────────
 
 pub type ClientMessage {
   SelectAgent(AgentId)
@@ -45,11 +46,13 @@ pub type ClientMessage {
   FetchChatMessages(AgentId)
 }
 
-// ─── Server → Client Messages ─────────────────────────────────
+// ─── Server -> Client Messages ─────────────────────────────────
 
 pub type ServerMessage {
   AgentSelected(AgentId, List(ChatMessage))
   ServerUpsertChatMessages(AgentId, List(ChatMessage))
+  ServerAssistantDelta(AgentId, ChatMessageId, String)
+  ServerRemoveChatMessage(AgentId, ChatMessageId)
   AgentList(List(AgentInfo))
 }
 
@@ -75,6 +78,26 @@ pub fn new_ai_chat_msg(content content: String) {
   )
 }
 
+pub fn new_streaming_ai_chat_msg() {
+  ChatMessage(
+    id: gluid.guidv4() |> string.lowercase(),
+    content: "",
+    status: Streaming,
+    sent_at: birl.utc_now(),
+    is_ai: True,
+  )
+}
+
+/// Append one transient model delta while retaining the placeholder identity.
+pub fn append_assistant_delta(message: ChatMessage, delta: String) {
+  ChatMessage(..message, content: message.content <> delta, status: Streaming)
+}
+
+/// Turn the transient placeholder into the canonical durable assistant message.
+pub fn finalize_assistant_message(message: ChatMessage, content: String) {
+  ChatMessage(..message, content:, status: Received, is_ai: True)
+}
+
 // ─── Status Helpers ───────────────────────────────────────────
 
 pub fn status_string(status: MessageStatus) -> String {
@@ -83,6 +106,7 @@ pub fn status_string(status: MessageStatus) -> String {
     ServerError -> "Server Error"
     Sent -> "Sent"
     Received -> "Received"
+    Streaming -> "Streaming"
     Sending -> "Sending"
   }
 }
@@ -93,7 +117,8 @@ fn encode_status(status: MessageStatus) -> Int {
     ServerError -> 1
     Sent -> 2
     Received -> 3
-    Sending -> 4
+    Streaming -> 4
+    Sending -> 5
   }
 }
 
@@ -104,7 +129,8 @@ fn status_decoder() -> dyn_decode.Decoder(MessageStatus) {
       1 -> dyn_decode.success(ServerError)
       2 -> dyn_decode.success(Sent)
       3 -> dyn_decode.success(Received)
-      4 -> dyn_decode.success(Sending)
+      4 -> dyn_decode.success(Streaming)
+      5 -> dyn_decode.success(Sending)
       _ -> dyn_decode.failure(ClientError, "MessageStatus")
     }
   })
@@ -205,8 +231,19 @@ pub fn encode_server_message(msg: ServerMessage) -> String {
       json.string(agent_id),
       json.array(messages, chat_message_to_json),
     ]
-    AgentList(agents) -> [
+    ServerAssistantDelta(agent_id, message_id, delta) -> [
       json.int(2),
+      json.string(agent_id),
+      json.string(message_id),
+      json.string(delta),
+    ]
+    ServerRemoveChatMessage(agent_id, message_id) -> [
+      json.int(3),
+      json.string(agent_id),
+      json.string(message_id),
+    ]
+    AgentList(agents) -> [
+      json.int(4),
       json.array(agents, fn(a) {
         json.object([
           #("id", json.string(a.id)),
@@ -244,6 +281,18 @@ fn server_message_decoder() -> dyn_decode.Decoder(ServerMessage) {
       dyn_decode.success(ServerUpsertChatMessages(agent_id, messages))
     }
     2 -> {
+      use agent_id <- dyn_decode.field(1, dyn_decode.string)
+      use message_id <- dyn_decode.field(2, dyn_decode.string)
+      use delta <- dyn_decode.field(3, dyn_decode.string)
+      dyn_decode.success(ServerAssistantDelta(agent_id, message_id, delta))
+    }
+
+    3 -> {
+      use agent_id <- dyn_decode.field(1, dyn_decode.string)
+      use message_id <- dyn_decode.field(2, dyn_decode.string)
+      dyn_decode.success(ServerRemoveChatMessage(agent_id, message_id))
+    }
+    4 -> {
       use agents <- dyn_decode.field(1, dyn_decode.list(agent_info_decoder()))
       dyn_decode.success(AgentList(agents))
     }

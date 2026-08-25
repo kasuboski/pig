@@ -3,7 +3,7 @@
 import gleam/bit_array
 import gleeunit
 import pig_proxy/hackney
-import pig_proxy/transport
+import pig_transport as transport
 import support/in_memory_transport
 
 /// Run the transport test suite.
@@ -34,14 +34,10 @@ pub fn in_memory_serves_queue_in_call_order_test() {
       transport.TransportError("exhausted"),
     )
   let t = in_memory_transport.transport(subject)
-  let assert transport.Response(500, ..) = transport.sync(
-    t,
-    transport.TransportRequest("POST", "http://x", [], "", 1000),
-  )
-  let assert transport.Response(200, ..) = transport.sync(
-    t,
-    transport.TransportRequest("POST", "http://x", [], "", 1000),
-  )
+  let assert transport.Response(500, ..) =
+    transport.sync(t, transport.Request("POST", "http://x", [], "", 1000))
+  let assert transport.Response(200, ..) =
+    transport.sync(t, transport.Request("POST", "http://x", [], "", 1000))
 }
 
 /// The in-memory adapter returns its exhaustion response after its queue.
@@ -52,14 +48,9 @@ pub fn in_memory_returns_exhausted_when_queue_runs_out_test() {
       transport.TransportError("exhausted"),
     )
   let t = in_memory_transport.transport(subject)
-  let _ = transport.sync(
-    t,
-    transport.TransportRequest("POST", "http://x", [], "", 1000),
-  )
-  let assert transport.TransportError("exhausted") = transport.sync(
-    t,
-    transport.TransportRequest("POST", "http://x", [], "", 1000),
-  )
+  let _ = transport.sync(t, transport.Request("POST", "http://x", [], "", 1000))
+  let assert transport.TransportError("exhausted") =
+    transport.sync(t, transport.Request("POST", "http://x", [], "", 1000))
 }
 
 /// The in-memory adapter preserves response headers and bodies.
@@ -76,10 +67,8 @@ pub fn in_memory_carries_body_and_headers_test() {
       transport.TransportError("exhausted"),
     )
   let t = in_memory_transport.transport(subject)
-  let assert transport.Response(status:, headers:, body:) = transport.sync(
-    t,
-    transport.TransportRequest("POST", "http://x", [], "", 1000),
-  )
+  let assert transport.Response(status:, headers:, body:) =
+    transport.sync(t, transport.Request("POST", "http://x", [], "", 1000))
   assert status == 200
   assert headers == [#("content-type", "application/json")]
   assert body == bit_array.from_string("{\"hi\":true}")

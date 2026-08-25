@@ -66,9 +66,7 @@ pub fn failing_tool() -> tool.Tool {
 
 /// Provider that returns a fixed response every call.
 pub fn fixed_provider(response: message.Message) -> provider.Provider {
-  fn(_request: provider.InferenceRequest) {
-    Ok(provider.from_message(response))
-  }
+  provider.from_buffered(fn(_request) { Ok(provider.from_message(response)) })
 }
 
 /// Provider that always fails.
@@ -85,7 +83,7 @@ pub fn failing_provider(
 pub fn sequenced_provider_for_actor(
   responses: List(message.Message),
 ) -> provider.Provider {
-  fn(request: provider.InferenceRequest) {
+  provider.from_buffered(fn(request: provider.InferenceRequest) {
     let msgs = request.messages
     let idx = count_assistant_messages(msgs)
     case nth(responses, idx) {
@@ -95,7 +93,7 @@ pub fn sequenced_provider_for_actor(
           "mock: no response at index " <> int.to_string(idx),
         ))
     }
-  }
+  })
 }
 
 fn nth(lst: List(a), idx: Int) -> Result(a, Nil) {

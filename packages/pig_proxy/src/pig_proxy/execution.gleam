@@ -11,7 +11,7 @@
 //// `orchestrate_stream` (streaming) differ only in the per-attempt
 //// primitive they hand to the walk. The commit point is where they
 //// diverge — a sync attempt commits on any non-retryable status; a
-//// stream attempt commits on the first byte (`StreamCommitted`).
+//// stream attempt commits on the first byte (`Committed`).
 ////
 //// Telemetry is owned by the caller: the walk returns everything a
 //// single attributed terminal event needs, and the caller emits exactly
@@ -32,8 +32,8 @@ import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/proxy
 import pig_proxy/retry
 import pig_proxy/telemetry
-import pig_proxy/transport
 import pig_proxy/vault
+import pig_transport as transport
 
 /// Base delay for retry backoff (1 second).
 const retry_base_ms = 1000
@@ -80,14 +80,14 @@ pub type Outcome {
     duration_ms: Int,
   )
   /// A target committed to a live streaming response (2xx head + first
-  /// byte). The relay `run` subject forwards the remaining bytes once the
-  /// caller starts it; the caller owns the chunked loop and the terminal
+  /// byte). The relay handle forwards the remaining bytes once the caller
+  /// starts it; the caller owns the chunked loop and the terminal
   /// telemetry for this target.
   CommittedStream(
     target_id: String,
     provider: String,
     status: Int,
-    run: process.Subject(transport.RelayControl),
+    run: transport.StreamHandle,
   )
   /// Every target was attempted and exhausted its retry budget.
   Exhausted(
@@ -205,12 +205,20 @@ fn walk_with(
           walk_with(executor, request, rest, start, attempt_fn, last_exhausted)
         }
         True -> {
-          let outcome = attempt_target(executor, request, target, start, attempt_fn)
+          let outcome =
+            attempt_target(executor, request, target, start, attempt_fn)
           case outcome {
             Committed(..) -> outcome
             CommittedStream(..) -> outcome
             exhausted ->
-              walk_with(executor, request, rest, start, attempt_fn, Some(exhausted))
+              walk_with(
+                executor,
+                request,
+                rest,
+                start,
+                attempt_fn,
+                Some(exhausted),
+              )
           }
         }
       }
@@ -274,7 +282,8 @@ fn attempt_loop(
   attempt_fn: AttemptFn,
 ) -> CommitResult {
   case attempt_fn(executor, request, target, auth) {
-    Forward(status:, headers:, body:) -> CommittedForward(status:, headers:, body:)
+    Forward(status:, headers:, body:) ->
+      CommittedForward(status:, headers:, body:)
     Stream(status:, run:) -> Streaming(status:, run:)
     Transient(reason:, retry_after:) ->
       case attempt >= executor.retries_per_target {
@@ -322,7 +331,7 @@ fn sync_attempt(
 }
 
 /// One streaming upstream attempt, classified into the walk's terms. The
-/// commit point is `StreamCommitted`; a non-retryable non-2xx head is
+/// commit point is `Committed`; a non-retryable non-2xx head is
 /// forwarded verbatim (like a sync 4xx); a retryable head or a
 /// connect-level failure consumes budget.
 fn stream_attempt(
@@ -332,9 +341,10 @@ fn stream_attempt(
   auth: proxy.ResolvedAuth,
 ) -> AttemptResult {
   let req = build_transport_request(executor, request, target, auth, True)
-  case transport.stream(executor.transport, req) {
-    transport.StreamCommitted(status:, run:, ..) -> Stream(status:, run:)
-    transport.StreamRejected(status:, headers:, body:) ->
+  let handle = transport.open(executor.transport, req)
+  case transport.receive(handle, executor.upstream_timeout_ms) {
+    Ok(transport.Committed(status:, ..)) -> Stream(status:, run: handle)
+    Ok(transport.Rejected(status:, headers:, body:)) ->
       case retry.is_retryable_status(status) {
         True ->
           Transient(
@@ -343,7 +353,28 @@ fn stream_attempt(
           )
         False -> Forward(status:, headers:, body:)
       }
-    transport.StreamFailure(reason) -> Transient(reason:, retry_after: None)
+    Ok(transport.Failed(reason)) -> {
+      transport.cancel(handle)
+      Transient(reason:, retry_after: None)
+    }
+    Ok(transport.Cancelled) ->
+      Transient(reason: "stream cancelled", retry_after: None)
+    Ok(transport.Chunk(_)) -> {
+      transport.cancel(handle)
+      Transient(reason: "invalid stream head", retry_after: None)
+    }
+    Ok(transport.Done) -> {
+      transport.cancel(handle)
+      Transient(reason: "invalid stream head", retry_after: None)
+    }
+    Ok(transport.StreamError(_)) -> {
+      transport.cancel(handle)
+      Transient(reason: "invalid stream head", retry_after: None)
+    }
+    Error(_) -> {
+      transport.cancel(handle)
+      Transient(reason: "timeout waiting for upstream head", retry_after: None)
+    }
   }
 }
 
@@ -353,12 +384,16 @@ fn build_transport_request(
   target: UpstreamTarget,
   auth: proxy.ResolvedAuth,
   streaming: Bool,
-) -> transport.TransportRequest {
-  transport.TransportRequest(
+) -> transport.Request {
+  transport.Request(
     method: request.method,
     url: proxy.resolve_upstream_url(target, request.path),
-    headers:
-      proxy.build_upstream_headers(request.headers, target.base_url, auth, streaming),
+    headers: proxy.build_upstream_headers(
+      request.headers,
+      target.base_url,
+      auth,
+      streaming,
+    ),
     body: request.body,
     timeout_ms: executor.upstream_timeout_ms,
   )
@@ -441,19 +476,24 @@ fn static_auth(target: UpstreamTarget) -> proxy.ResolvedAuth {
 
 /// A per-attempt primitive, shared by both shapes.
 type AttemptFn =
-  fn(Executor, ProxyRequest, UpstreamTarget, proxy.ResolvedAuth) -> AttemptResult
+  fn(Executor, ProxyRequest, UpstreamTarget, proxy.ResolvedAuth) ->
+    AttemptResult
 
 /// One attempt classified into the walk's terms: commit (forward or
 /// stream) or transient (consume budget).
 type AttemptResult {
   Forward(status: Int, headers: List(#(String, String)), body: BitArray)
-  Stream(status: Int, run: process.Subject(transport.RelayControl))
+  Stream(status: Int, run: transport.StreamHandle)
   Transient(reason: String, retry_after: Option(String))
 }
 
 /// What `attempt_loop` resolves to.
 type CommitResult {
-  CommittedForward(status: Int, headers: List(#(String, String)), body: BitArray)
-  Streaming(status: Int, run: process.Subject(transport.RelayControl))
+  CommittedForward(
+    status: Int,
+    headers: List(#(String, String)),
+    body: BitArray,
+  )
+  Streaming(status: Int, run: transport.StreamHandle)
   BudgetExhausted(reason: String)
 }

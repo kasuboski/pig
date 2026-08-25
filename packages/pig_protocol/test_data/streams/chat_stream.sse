@@ -1,0 +1,17 @@
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"lo ","reasoning_content":"think"}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"reasoning":"ing"}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_","function":{"name":"wea","arguments":"{\"city\":\""}}]}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"001","function":{"name":"ther","arguments":"Berlin\"}"}},{"index":1,"id":"call_2","function":{"name":"calc","arguments":"{\"x\":"}}]}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"name":"ulator","arguments":"2}"}}]}}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chat-stream-1","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":9,"total_tokens":21}}
+
+data: [DONE]

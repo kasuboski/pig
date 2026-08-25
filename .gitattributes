@@ -1,0 +1,3 @@
+# Preserve raw SSE framing fixtures byte-for-byte.
+packages/pig_protocol/test_data/sse/crlf_stream.sse -text -diff
+packages/pig_protocol/test_data/sse/mixed_stream.sse -text -diff

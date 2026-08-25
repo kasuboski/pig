@@ -6,7 +6,7 @@
 //// Thin public surface. All logic in agent/update (pure core) +
 //// agent/runtime (impure interpreter).
 
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option
 import gleam/otp/actor.{type StartError as ActorStartError}
@@ -23,6 +23,7 @@ import pig/obs/terminal
 import pig/provider.{
   type InferenceSettings, type Provider, default_settings, from_message,
 }
+import pig/run as agent_run
 import pig/run_error.{type RunError}
 import pig/session_store.{type Session, type SessionError, type SessionStore}
 import pig/skill
@@ -56,6 +57,22 @@ pub opaque type Agent {
     consumers: List(consumer_spec.StartedConsumer),
   )
 }
+
+/// Opaque handle for one accepted agent run.
+pub type Run =
+  agent_run.Run
+
+/// Transient events emitted to a caller-owned run stream.
+pub type RunEvent =
+  agent_run.RunEvent
+
+/// Typed reason for cancelling active work.
+pub type CancelReason =
+  run_error.CancelReason
+
+/// Errors that prevent a run from being accepted.
+pub type RunStartError =
+  run_error.RunStartError
 
 /// Errors that can prevent an agent from starting.
 pub type StartError {
@@ -203,7 +220,7 @@ pub fn with_session_writer(config: PigConfig, path: String) -> PigConfig {
     ..config,
     agent_config: state.with_session_path(config.agent_config, path),
     consumer_specs: [
-      consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
+      consumer_spec.supervised_spec(spec, name, start_fn),
       ..config.consumer_specs
     ],
   )
@@ -223,7 +240,7 @@ pub fn with_terminal_output(config: PigConfig) -> PigConfig {
   let spec = terminal.supervised(name)
   let start_fn = fn() { terminal.start_consumer() }
   PigConfig(..config, consumer_specs: [
-    consumer_spec.ConsumerSpec(spec:, name:, start_fn:),
+    consumer_spec.supervised_spec(spec, name, start_fn),
     ..config.consumer_specs
   ])
 }
@@ -436,11 +453,11 @@ fn start_with_session(
                 option.None -> runtime.SessionDisabled
               }
               let rt_state =
-                runtime.RuntimeState(
-                  agent_state: agent_st,
-                  config: runtime_config,
-                  session: runtime_session,
-                  inference_settings: initial_settings,
+                runtime.initial_state(
+                  agent_st,
+                  runtime_config,
+                  runtime_session,
+                  initial_settings,
                 )
               case runtime.start_with_state(runtime_config, rt_state) {
                 Ok(subject) ->
@@ -462,6 +479,61 @@ fn start_with_session(
     }
     Error(e) -> Error(ActorStart(e))
   }
+}
+
+/// Start one run and return as soon as it is accepted.
+pub fn stream(
+  agent: Agent,
+  prompt: String,
+  sink: Subject(RunEvent),
+) -> Result(Run, RunStartError) {
+  runtime.stream(agent.subject, prompt, sink)
+}
+
+/// Start one run and explicitly watch the client owner for disconnection.
+pub fn stream_owned(
+  agent: Agent,
+  prompt: String,
+  sink: Subject(RunEvent),
+  owner: Pid,
+) -> Result(Run, RunStartError) {
+  runtime.stream_owned(agent.subject, prompt, sink, owner)
+}
+
+/// Resume the current history as one streamed run.
+pub fn stream_continue(
+  agent: Agent,
+  sink: Subject(RunEvent),
+) -> Result(Run, RunStartError) {
+  runtime.stream_continue(agent.subject, sink)
+}
+
+/// Resume history while explicitly watching the client owner.
+pub fn stream_continue_owned(
+  agent: Agent,
+  sink: Subject(RunEvent),
+  owner: Pid,
+) -> Result(Run, RunStartError) {
+  runtime.stream_continue_owned(agent.subject, sink, owner)
+}
+
+/// Cancel an accepted run. Repeated calls are harmless.
+pub fn cancel(run: Run, reason: CancelReason) -> Nil {
+  agent_run.cancel(run, reason)
+}
+
+/// Replace the client process watched for disconnect cancellation.
+pub fn watch_client(run: Run, owner: Pid) -> Nil {
+  agent_run.watch_client(run, owner)
+}
+
+/// Collect a run stream into its final assistant message.
+pub fn collect(
+  run: Run,
+  sink: Subject(RunEvent),
+  timeout_ms: Int,
+) -> Result(Message, RunError) {
+  runtime.collect(run, sink, timeout_ms)
 }
 
 /// Run a prompt against the agent with a 120-second default timeout.
@@ -510,8 +582,7 @@ pub fn run_continue_with_timeout(
 /// Returns `Error(Nil)` if the call times out or the agent crashes, instead of
 /// panicking. The inner result preserves the agent's response or `RunError`.
 ///
-/// A timeout does not cancel in-flight provider or tool work, which may continue
-/// in the background.
+/// A timeout actively cancels in-flight provider or tool work before returning.
 pub fn try_run_continue_with_timeout(
   agent: Agent,
   timeout_ms: Int,
@@ -561,7 +632,14 @@ pub fn reset_inference_settings(agent: Agent) -> Result(Nil, RunError) {
 /// Stop the agent actor and all unsupervised children owned by it.
 pub fn stop(agent: Agent) -> Nil {
   runtime.stop(agent.subject)
-  stop_consumers(agent.consumers)
+  case dispatcher.shutdown(agent.dispatcher) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      logging.log(
+        logging.Warning,
+        "Agent shutdown did not drain consumers: " <> string.inspect(error),
+      )
+  }
   process.send(agent.dispatcher, dispatcher.Stop)
 }
 
@@ -578,7 +656,7 @@ pub fn history(agent: Agent) -> List(message.Message) {
 pub fn test_harness() -> PigConfig {
   let response =
     message.Assistant("mock response", [], option.None, option.None)
-  new(fn(_request: provider.InferenceRequest) { Ok(from_message(response)) })
+  new(provider.from_buffered(fn(_request) { Ok(from_message(response)) }))
 }
 
 /// Build the final AgentConfig from a PigConfig.

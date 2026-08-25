@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor.{type StartError}
 import gleam/otp/supervision
+import logging
 import pig/obs/consumer_spec
 import pig/obs/events.{
   type SessionEvent, HookActed, InferenceCompleted, InferenceFailed,
@@ -34,6 +35,20 @@ pub type RegistrationError {
   RegistrationTimeout
 }
 
+/// Errors returned when flushing the dispatcher.
+pub type FlushError {
+  /// The dispatcher did not acknowledge the barrier before the timeout.
+  FlushTimeout
+}
+
+/// Errors returned when draining consumers through the dispatcher.
+pub type ShutdownError {
+  /// The dispatcher did not acknowledge the shutdown request before the timeout.
+  ShutdownTimeout
+  /// A consumer did not acknowledge its graceful stop.
+  ConsumerStop(error: consumer_spec.StopError)
+}
+
 /// Messages that the dispatcher actor can receive.
 pub type DispatcherMessage {
   /// A session event to dispatch to consumers and telemetry.
@@ -42,6 +57,10 @@ pub type DispatcherMessage {
   RegisterConsumer(consumer_spec.StartedConsumer)
   /// Register a consumer and acknowledge it after it is installed.
   RegisterConsumerSync(consumer_spec.StartedConsumer, Subject(Nil))
+  /// Acknowledge after all earlier events have been dispatched.
+  Flush(reply_to: Subject(Nil))
+  /// Drain events and ask every registered consumer to acknowledge shutdown.
+  Shutdown(reply_to: Subject(Result(Nil, ShutdownError)))
   /// Stop the dispatcher actor (for testing/cleanup).
   Stop
 }
@@ -50,7 +69,10 @@ pub type DispatcherMessage {
 
 /// Internal state for the dispatcher actor.
 type State {
-  State(consumers: List(consumer_spec.StartedConsumer))
+  State(
+    consumers: List(consumer_spec.StartedConsumer),
+    shutdown_requested: Bool,
+  )
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -58,7 +80,7 @@ type State {
 /// Start a new dispatcher actor.
 pub fn start() -> Result(Subject(DispatcherMessage), StartError) {
   let builder =
-    actor.new(State(consumers: []))
+    actor.new(State(consumers: [], shutdown_requested: False))
     |> actor.on_message(handle_message)
   case actor.start(builder) {
     Ok(started) -> Ok(started.data)
@@ -102,6 +124,52 @@ pub fn register_consumer_sync(
   register_consumer(dispatcher, consumer)
 }
 
+/// Wait until every event sent before this call has been dispatched.
+pub fn flush(dispatcher: Subject(DispatcherMessage)) -> Nil {
+  case flush_with_timeout(dispatcher, 5000) {
+    Ok(Nil) -> Nil
+    Error(FlushTimeout) ->
+      logging.log(logging.Warning, "Event dispatcher flush timed out")
+  }
+}
+
+/// Wait for every event sent before this call to be dispatched.
+pub fn flush_with_timeout(
+  dispatcher: Subject(DispatcherMessage),
+  timeout_ms: Int,
+) -> Result(Nil, FlushError) {
+  let reply_to = process.new_subject()
+  process.send(dispatcher, Flush(reply_to:))
+  case process.receive(reply_to, timeout_ms) {
+    Ok(Nil) -> Ok(Nil)
+    Error(Nil) -> Error(FlushTimeout)
+  }
+}
+
+/// Drain the dispatcher and request a graceful stop from every consumer.
+///
+/// The dispatcher handles this message after all earlier events in its own
+/// mailbox. Consumer stop messages are sent by that same process, preserving
+/// event-before-stop ordering for each consumer.
+pub fn shutdown(
+  dispatcher: Subject(DispatcherMessage),
+) -> Result(Nil, ShutdownError) {
+  shutdown_with_timeout(dispatcher, 5000)
+}
+
+/// Drain the dispatcher with an explicit shutdown acknowledgement timeout.
+pub fn shutdown_with_timeout(
+  dispatcher: Subject(DispatcherMessage),
+  timeout_ms: Int,
+) -> Result(Nil, ShutdownError) {
+  let reply_to = process.new_subject()
+  process.send(dispatcher, Shutdown(reply_to:))
+  case process.receive(reply_to, timeout_ms) {
+    Ok(result) -> result
+    Error(Nil) -> Error(ShutdownTimeout)
+  }
+}
+
 /// Create a supervised dispatcher actor for use in a supervision tree.
 pub fn supervised(
   name: process.Name(DispatcherMessage),
@@ -119,7 +187,7 @@ pub fn supervised_with_consumers(
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let builder =
-      actor.new(State(consumers: consumers))
+      actor.new(State(consumers: consumers, shutdown_requested: False))
       |> actor.on_message(handle_message)
       |> actor.named(name)
     case actor.start(builder) {
@@ -144,16 +212,47 @@ fn handle_message(state: State, msg: DispatcherMessage) {
       actor.continue(state)
     }
     RegisterConsumer(consumer) -> {
-      actor.continue(State(consumers: [consumer, ..state.consumers]))
+      actor.continue(State(..state, consumers: [consumer, ..state.consumers]))
     }
     RegisterConsumerSync(consumer, reply_subject) -> {
       process.send(reply_subject, Nil)
-      actor.continue(State(consumers: [consumer, ..state.consumers]))
+      actor.continue(State(..state, consumers: [consumer, ..state.consumers]))
+    }
+    Flush(reply_to) -> {
+      process.send(reply_to, Nil)
+      actor.continue(state)
+    }
+    Shutdown(reply_to) -> {
+      case state.shutdown_requested {
+        True -> {
+          process.send(reply_to, Ok(Nil))
+          actor.continue(state)
+        }
+        False -> {
+          let result = stop_consumers(state.consumers)
+          process.send(reply_to, result)
+          actor.continue(State(..state, shutdown_requested: True))
+        }
+      }
     }
     Stop -> {
       actor.stop()
     }
   }
+}
+
+fn stop_consumers(
+  consumers: List(consumer_spec.StartedConsumer),
+) -> Result(Nil, ShutdownError) {
+  list.fold(list.reverse(consumers), Ok(Nil), fn(result, consumer) {
+    let stop_result = consumer_spec.stop_with_result(consumer)
+    case result, stop_result {
+      Ok(Nil), Ok(Nil) -> Ok(Nil)
+      Ok(Nil), Error(error) -> Error(ConsumerStop(error))
+      Error(previous), Ok(Nil) -> Error(previous)
+      Error(previous), Error(_) -> Error(previous)
+    }
+  })
 }
 
 // ── Telemetry Emission ───────────────────────────────────────────────
@@ -286,6 +385,7 @@ fn error_type_to_string(error: AiError) -> String {
     ApiError(..) -> "api_error"
     RateLimited -> "rate_limited"
     Timeout -> "timeout"
+    error.Cancelled -> "cancelled"
     InvalidResponse(..) -> "invalid_response"
   }
 }

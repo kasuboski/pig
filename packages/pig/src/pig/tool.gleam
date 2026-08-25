@@ -41,6 +41,8 @@ pub type ToolCallBatchError {
 /// Structured error from tool execution.
 pub type ToolError {
   ToolError(message: String)
+  /// The runtime stopped this tool because its run was cancelled.
+  Cancelled
   InvalidToolCallBatch(error: ToolCallBatchError)
 }
 
@@ -48,6 +50,7 @@ pub type ToolError {
 pub fn error_message(error: ToolError) -> String {
   case error {
     ToolError(message) -> message
+    Cancelled -> "Tool cancelled"
     InvalidToolCallBatch(EmptyToolCallId(index)) ->
       "invalid tool call batch: empty call ID at index " <> int.to_string(index)
     InvalidToolCallBatch(DuplicateToolCallId(call_id)) ->

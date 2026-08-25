@@ -1,8 +1,10 @@
+import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
+import pig_protocol/sse
 import pig_proxy/config
 import pig_proxy/hackney
 import pig_proxy/proxy
@@ -216,11 +218,12 @@ pub fn build_upstream_headers_api_key_injects_bearer_test() {
 // ── Hackney response to mist conversion ─────────────────────────
 
 pub fn sync_response_to_mist_ok_test() {
-  let resp = hackney.OkResponse(
-    status: 200,
-    headers: [#("content-type", "application/json")],
-    body: <<123, 125>>,
-  )
+  let resp =
+    hackney.OkResponse(
+      status: 200,
+      headers: [#("content-type", "application/json")],
+      body: <<123, 125>>,
+    )
   let mist_resp = proxy.sync_response_to_mist(resp)
   assert mist_resp.status == 200
 }
@@ -260,29 +263,72 @@ pub fn parse_usage_partial_tokens_test() {
   assert usage.completion == Some(9)
 }
 
-pub fn parse_usage_from_sse_extracts_final_usage_test() {
-  let chunk =
+pub fn parse_usage_from_sse_reads_one_completed_frame_test() {
+  let frame =
     "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n"
-    <> "data: [DONE]\n\n"
-  let usage = proxy.parse_usage_from_sse(chunk)
+  let usage = proxy.parse_usage_from_sse(frame)
   assert usage.prompt == Some(10)
   assert usage.completion == Some(20)
 }
 
+pub fn parse_usage_from_sse_does_not_scan_multiple_frames_test() {
+  let frames =
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n"
+    <> "data: [DONE]\n\n"
+  let usage = proxy.parse_usage_from_sse(frames)
+  assert usage.prompt == None
+  assert usage.completion == None
+}
+
 pub fn parse_usage_from_sse_ignores_non_data_lines_test() {
-  let chunk =
+  let frame =
     "event: ping\n\n"
     <> "data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n"
-  let usage = proxy.parse_usage_from_sse(chunk)
+  let usage = proxy.parse_usage_from_sse(frame)
   assert usage.prompt == Some(1)
   assert usage.completion == Some(2)
 }
 
 pub fn parse_usage_from_sse_no_usage_returns_none_test() {
-  let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
-  let usage = proxy.parse_usage_from_sse(chunk)
+  let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
+  let usage = proxy.parse_usage_from_sse(frame)
   assert usage.prompt == None
   assert usage.completion == None
+}
+
+pub fn usage_framing_handles_multibyte_split_before_terminal_frame_test() {
+  let content_frame =
+    "data: {\"choices\":[{\"delta\":{\"content\":\"café\"}}]}\n\n"
+  let terminal_frame =
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n"
+  let stream = bit_array.from_string(content_frame <> terminal_frame)
+  let split_at =
+    bit_array.byte_size(bit_array.from_string(
+      "data: {\"choices\":[{\"delta\":{\"content\":\"caf",
+    ))
+    + 1
+  let assert Ok(first) = bit_array.slice(stream, 0, split_at)
+  let assert Ok(second) =
+    bit_array.slice(stream, split_at, bit_array.byte_size(stream) - split_at)
+
+  let assert Ok(#(decoder, [])) = sse.push(sse.new(), first)
+  let assert Ok(#(decoder_2, [content, terminal])) = sse.push(decoder, second)
+  assert content == string.drop_end(content_frame, 2)
+  let usage = proxy.parse_usage_from_sse(terminal)
+  assert usage.prompt == Some(10)
+  assert usage.completion == Some(20)
+  let assert Ok([]) = sse.finish(decoder_2)
+}
+
+pub fn usage_framing_handles_crlf_frame_test() {
+  let frame =
+    "event: message\r\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\r\n\r\n"
+  let assert Ok(#(decoder, [completed])) =
+    sse.push(sse.new(), bit_array.from_string(frame))
+  let usage = proxy.parse_usage_from_sse(completed)
+  assert usage.prompt == Some(3)
+  assert usage.completion == Some(4)
+  let assert Ok([]) = sse.finish(decoder)
 }
 
 pub fn ensure_stream_usage_injects_include_usage_test() {
@@ -293,7 +339,8 @@ pub fn ensure_stream_usage_injects_include_usage_test() {
 }
 
 pub fn ensure_stream_usage_preserves_existing_stream_options_test() {
-  let body = "{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":{\"include_usage\":false}}"
+  let body =
+    "{\"model\":\"gpt-4o\",\"stream\":true,\"stream_options\":{\"include_usage\":false}}"
   let result = proxy.ensure_stream_usage(body)
   assert string.contains(result, "\"include_usage\":true")
 }
@@ -342,14 +389,16 @@ pub fn parse_usage_from_sse_extracts_responses_usage_test() {
 // ── Response header filtering ────────────────────────────────
 
 pub fn sync_response_to_mist_strips_connection_nominated_headers_test() {
-  let resp = hackney.OkResponse(
-    status: 200,
-    headers: [
-      #("content-type", "application/json"),
-      #("connection", "x-custom, transfer-encoding"),
-      #("x-custom", "should-not-forward"),
-    ],
-    body: <<123, 125>>,)
+  let resp =
+    hackney.OkResponse(
+      status: 200,
+      headers: [
+        #("content-type", "application/json"),
+        #("connection", "x-custom, transfer-encoding"),
+        #("x-custom", "should-not-forward"),
+      ],
+      body: <<123, 125>>,
+    )
   let mist_resp = proxy.sync_response_to_mist(resp)
   let found =
     list.find(mist_resp.headers, fn(h) { string.lowercase(h.0) == "x-custom" })

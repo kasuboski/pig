@@ -1,0 +1,30 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp-stream-1","model":"gpt-5.3-codex"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[],"content":[]}}
+
+data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"Plan"}
+
+data: {"type":"response.reasoning_summary_part.done","output_index":0}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"delta":"details"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Plan"}],"content":[{"type":"reasoning_text","text":"details"}]}}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","output_index":1,"delta":"Hello"}
+
+data: {"type":"response.refusal.delta","output_index":1,"delta":"?"}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello?"}]}}
+
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"x\""}
+
+data: {"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"x\":1}"}
+
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{\"x\":1}"}}
+
+data: {"type":"response.completed","response":{"id":"resp-stream-1","model":"gpt-5.3-codex","status":"completed","output":[],"usage":{"input_tokens":15,"output_tokens":8,"total_tokens":23}}}

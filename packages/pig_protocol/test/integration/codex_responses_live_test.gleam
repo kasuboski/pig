@@ -154,6 +154,7 @@ fn ai_error_to_string(err: AiError) -> String {
     error.ApiError(message:) -> "ApiError(" <> message <> ")"
     error.RateLimited -> "RateLimited"
     error.Timeout -> "Timeout"
+    error.Cancelled -> "Cancelled"
     error.InvalidResponse(detail:) -> "InvalidResponse(" <> detail <> ")"
   }
 }
