@@ -77,12 +77,20 @@ gleam test
 ### Monorepo package dependencies
 
 The source checkout uses local path dependencies between Pig packages so an
-atomic cross-package change can build before any package is published. Release
-`pig_protocol` and `pig_transport` first; before publishing `pig` or
-`pig_proxy`, replace their local dependencies with the released version ranges
-and regenerate `manifest.toml` with Gleam. The checked-out dependent packages
-are therefore intended for monorepo development, not direct Hex publication
-without that release step.
+atomic cross-package change can build before any package is published. After a
+release is merged, run the interactive publication wizard from an up-to-date
+`main` branch:
+
+```sh
+scripts/publish.sh
+```
+
+The wizard validates the release, publishes `pig_protocol` and `pig_transport`
+first, and prepares released dependency ranges for `pig` in a temporary Git
+worktree. It can optionally publish `pig_proxy`. Gleam authentication and final
+publication prompts remain interactive, while the checked-out `main` branch is
+left unchanged. A C compiler (`cc`, supplied by GCC or Clang) is required for
+Pig's `esqlite` dependency.
 
 Live provider tests are disabled by default. Run them only with the required
 provider credentials configured:
