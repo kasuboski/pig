@@ -228,6 +228,22 @@ validate_version() {
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$package has an unsupported version: $version"
 }
 
+validate_publishable_package() {
+  local package="$1"
+  local package_dir="$WORKTREE_DIR/packages/$package"
+  local readme="$package_dir/README.md" config="$package_dir/gleam.toml"
+
+  [[ -s "$readme" ]] || fail "$package requires a non-empty README.md before it can be published"
+  if grep -Fq '// TODO: An example of the project in use' "$readme"; then
+    fail "$package still has the default Gleam README.md"
+  fi
+  grep -Eq '^description = "[^"]+"' "$config" || fail "$package requires a description in gleam.toml"
+  grep -Eq '^licences = \[[^]]+\]' "$config" || fail "$package requires at least one licence in gleam.toml"
+
+  step "Build $package documentation to validate its HexDocs input."
+  (cd "$package_dir" && gleam docs build)
+}
+
 release_exists() {
   local package="$1" version="$2" status
   status=$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -383,6 +399,12 @@ else
 fi
 confirm "Run the full test and build gates?" || fail "release validation cancelled"
 (cd "$WORKTREE_DIR" && mise run test && mise run build)
+validate_publishable_package pig_protocol
+validate_publishable_package pig_transport
+validate_publishable_package pig
+if (( PROXY_REQUESTED )); then
+  validate_publishable_package pig_proxy
+fi
 
 stage "Publish pig_protocol"
 say "pig_protocol must exist on Hex before the dependent packages can resolve it."
