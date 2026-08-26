@@ -339,7 +339,8 @@ prepare_dependent_package() {
   local package_dir="$WORKTREE_DIR/packages/$package"
   replace_path_dependency "$package_dir/gleam.toml" pig_protocol "$(version_range "$PROTOCOL_VERSION")"
   replace_path_dependency "$package_dir/gleam.toml" pig_transport "$(version_range "$TRANSPORT_VERSION")"
-  (cd "$package_dir" && gleam deps download)
+  # Preflight cached the local packages, so reset before resolving their Hex replacements.
+  (cd "$package_dir" && gleam clean && gleam deps download)
 
   if grep -Eq 'name = "(pig_protocol|pig_transport)".*source = "local"' "$package_dir/manifest.toml"; then
     fail "$package still has local Pig dependencies after manifest regeneration"
