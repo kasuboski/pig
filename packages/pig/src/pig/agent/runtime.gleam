@@ -1,48 +1,43 @@
-//// Sans-IO runtime interpreter for the pig agent.
+//// Message-driven runtime interpreter for the pure pig agent core.
 ////
-//// The runtime is an OTP actor that:
-//// 1. Receives prompts (Run) or control messages (Stop)
-//// 2. Calls `update.update(state, msg)` — pure state machine
-//// 3. For each effect, applies hooks then executes
-//// 4. Produces SessionEvent values and sends to dispatcher
-//// 5. Feeds effect results back as new AgentMsg values
-////
-//// The core logic (update.gleam) is pure. This module is all IO.
+//// The runtime owns one run lifecycle at a time. Provider coordination and
+//// tool execution live in cancellable workers, so the actor remains available
+//// for cancellation, history, and settings messages while effects are active.
 
 import gleam/erlang/process
-import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
 import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
-import gleam/result
 import gleam/string
 import logging
+import pig/agent/client_watcher
+import pig/agent/durable_session
 import pig/agent/effect
+import pig/agent/inference_worker
 import pig/agent/msg
+import pig/agent/run_recovery
 import pig/agent/state
 import pig/agent/step_result
+import pig/agent/tool_batch
+import pig/agent/tool_worker
 import pig/agent/update
 import pig/hooks
 import pig/obs/dispatcher
 import pig/obs/emit
 import pig/obs/events
 import pig/provider.{type InferenceSettings}
+import pig/run as agent_run
 import pig/run_error
 import pig/session_store
 import pig/tool
 import pig/tool/execution
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
-import pig_protocol/stop_reason
 import pig_protocol/tool_definition
 
-// ── Configuration ────────────────────────────────────────────────
-
-/// Configuration for the runtime. Holds everything the runtime needs
-/// that the pure core doesn't — provider function, tool registry,
-/// hooks, dispatcher, and model name.
+/// Configuration owned by one runtime actor.
 pub type RuntimeConfig {
   RuntimeConfig(
     provider: provider.Provider,
@@ -55,51 +50,57 @@ pub type RuntimeConfig {
   )
 }
 
-// ── Actor Messages ───────────────────────────────────────────────
-
-/// Messages the runtime actor can receive.
+/// Messages accepted by the runtime actor.
 pub type RuntimeMsg {
-  /// Run a prompt and reply with the result.
-  Run(
+  StartPrompt(
     prompt: String,
-    reply_to: process.Subject(Result(Message, run_error.RunError)),
+    sink: process.Subject(agent_run.RunEvent),
+    terminal: process.Subject(agent_run.RunEvent),
+    owner: option.Option(process.Pid),
+    reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
   )
-  /// Resume the agent loop from its current history.
-  Continue(reply_to: process.Subject(Result(Message, run_error.RunError)))
-  /// Replace the runtime's inference settings and reply synchronously.
+  StartContinue(
+    sink: process.Subject(agent_run.RunEvent),
+    terminal: process.Subject(agent_run.RunEvent),
+    owner: option.Option(process.Pid),
+    reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+  )
+  CancelRun(run_id: String, reason: run_error.CancelReason)
+  WatchClient(run_id: String, owner: process.Pid)
+  InferenceWorkerEvent(
+    run_id: String,
+    round: Int,
+    event: provider.InferenceEvent,
+  )
+  ToolWorkerFinished(
+    run_id: String,
+    round: Int,
+    call: ToolCall,
+    result: Result(json.Json, tool.ToolError),
+    duration_ms: Int,
+  )
   SetInferenceSettings(
     settings: InferenceSettings,
     reply_to: process.Subject(Result(Nil, run_error.RunError)),
   )
-  /// Get the agent's current message history.
   GetHistory(reply_to: process.Subject(List(Message)))
-  /// Stop the actor.
-  Stop
+  Stop(reply_to: process.Subject(Nil))
 }
 
-// ── Actor State ──────────────────────────────────────────────────
-
-/// The action to take only after a pending commit succeeds.
-pub type PostCommitDisposition {
-  ResumeFromHistory
-  ReturnMessage(Message)
-  ReturnAiError(AiError)
-}
+/// Action retained with an ambiguous durable commit.
+pub type PostCommitDisposition =
+  durable_session.PostCommitDisposition
 
 /// Durable session state held by the runtime.
 pub type SessionState {
-  /// No synchronous durable transcript is configured.
   SessionDisabled
-  /// Commits are written to `store` against the current `head`.
   SessionReady(store: session_store.SessionStore, head: option.Option(String))
-  /// A message commit failed ambiguously and must be retried unchanged.
   SessionPending(
     store: session_store.SessionStore,
     commit: session_store.SessionCommit,
     candidate: state.AgentState,
     disposition: PostCommitDisposition,
   )
-  /// A settings transition is fenced until its durable outcome is resolved.
   SessionSettingsPending(
     store: session_store.SessionStore,
     settings: InferenceSettings,
@@ -107,34 +108,76 @@ pub type SessionState {
   )
 }
 
-/// The recovery protocol for a durable settings transition.
-///
-/// `RetryCommit` is the only mode that retains a commit, and it must be
-/// retried byte-for-byte. A parent conflict discards that commit and reloads
-/// the authoritative snapshot before allowing a fresh request.
-pub type SettingsPendingMode {
-  RetryCommit(commit: session_store.SessionCommit)
-  ReloadPending(conflict: session_store.SessionError)
-  Reloaded(snapshot: session_store.Session)
+/// Recovery mode for a durable settings transition.
+pub type SettingsPendingMode =
+  durable_session.SettingsPendingMode
+
+type Activity {
+  Idle
+  Running(ActiveRun)
 }
 
-/// Internal state held by the runtime actor.
-pub type RuntimeState {
-  RuntimeState(
-    agent_state: state.AgentState,
-    config: RuntimeConfig,
-    session: SessionState,
-    inference_settings: InferenceSettings,
+type ActiveRun {
+  ActiveRun(
+    id: String,
+    sink: process.Subject(agent_run.RunEvent),
+    run: agent_run.Run,
+    round: Int,
+    phase: RunPhase,
+    watcher: option.Option(client_watcher.Watch),
+    last_inference: option.Option(provider.InferenceResult),
   )
 }
 
-// ── Start ────────────────────────────────────────────────────────
+type RunPhase {
+  Preparing
+  AwaitingInference(InferenceOperation)
+  AwaitingTools(tool_batch.ToolBatch)
+}
 
-/// Start the runtime actor with the given configuration.
+type InferenceOperation {
+  InferenceOperation(
+    round: Int,
+    worker: inference_worker.Worker,
+    started_at: Int,
+    input_messages: List(Message),
+    settings: InferenceSettings,
+  )
+}
+
+/// Internal state held by the runtime actor.
+pub opaque type RuntimeState {
+  RuntimeState(
+    agent_state: state.AgentState,
+    config: RuntimeConfig,
+    session: durable_session.SessionState,
+    inference_settings: InferenceSettings,
+    activity: Activity,
+    mailbox: option.Option(process.Subject(RuntimeMsg)),
+  )
+}
+
+/// Construct runtime state around a pre-built pure agent state.
+pub fn initial_state(
+  agent_state: state.AgentState,
+  config: RuntimeConfig,
+  session: SessionState,
+  inference_settings: InferenceSettings,
+) -> RuntimeState {
+  RuntimeState(
+    agent_state:,
+    config:,
+    session: to_durable_session(session),
+    inference_settings:,
+    activity: Idle,
+    mailbox: option.None,
+  )
+}
+
+/// Start a runtime from low-level configuration.
 pub fn start(
   config: RuntimeConfig,
 ) -> Result(process.Subject(RuntimeMsg), StartError) {
-  // Build initial AgentState from runtime config
   let agent_config =
     state.AgentConfig(
       provider: config.provider,
@@ -150,56 +193,220 @@ pub fn start(
       provider_name: option.None,
       session_path: option.None,
     )
-  let initial_state =
-    runtime_state(
-      agent_config,
+  start_with_state(
+    config,
+    initial_state(
+      state.new(agent_config),
       config,
-      [],
       SessionDisabled,
       config.inference_settings,
-    )
-  start_with_state(config, initial_state)
+    ),
+  )
 }
 
-/// Start the runtime actor with a pre-built state.
-/// Used by `pig.gleam` when session replay needs to happen before start.
+/// Start a runtime with replayed history and durable session state.
 pub fn start_with_state(
   _config: RuntimeConfig,
-  initial_state: RuntimeState,
+  initial: RuntimeState,
 ) -> Result(process.Subject(RuntimeMsg), StartError) {
   let builder =
-    actor.new(initial_state)
+    actor.new_with_initialiser(1000, fn(subject) {
+      initial
+      |> attach_mailbox(subject)
+      |> actor.initialised
+      |> actor.returning(subject)
+      |> Ok
+    })
     |> actor.on_message(handle_message)
   case actor.start(builder) {
     Ok(started) -> Ok(started.data)
-    Error(e) -> Error(e)
+    Error(error) -> Error(error)
   }
 }
 
-/// Send a prompt to the runtime and wait for a response.
+/// Start a run and infer the watched client from the caller-owned sink.
+pub fn stream(
+  subject: process.Subject(RuntimeMsg),
+  prompt: String,
+  sink: process.Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_prompt(subject, prompt, sink, terminal, sink_owner(sink))
+}
+
+/// Start a run with an explicit process to watch for client disconnection.
+pub fn stream_owned(
+  subject: process.Subject(RuntimeMsg),
+  prompt: String,
+  sink: process.Subject(agent_run.RunEvent),
+  owner: process.Pid,
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_prompt(subject, prompt, sink, terminal, option.Some(owner))
+}
+
+/// Continue history and infer the watched client from the caller-owned sink.
+pub fn stream_continue(
+  subject: process.Subject(RuntimeMsg),
+  sink: process.Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_continuation(subject, sink, terminal, sink_owner(sink))
+}
+
+/// Continue history with an explicit process to watch for disconnection.
+pub fn stream_continue_owned(
+  subject: process.Subject(RuntimeMsg),
+  sink: process.Subject(agent_run.RunEvent),
+  owner: process.Pid,
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_continuation(subject, sink, terminal, option.Some(owner))
+}
+
+fn start_prompt(
+  subject: process.Subject(RuntimeMsg),
+  prompt: String,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  case process.subject_owner(subject) {
+    Error(Nil) -> Error(run_error.RuntimeStartUnavailable)
+    Ok(runtime_pid) -> {
+      let reply_to = process.new_subject()
+      let monitor = process.monitor(runtime_pid)
+      process.send(
+        subject,
+        StartPrompt(prompt:, sink:, terminal:, owner:, reply_to:),
+      )
+      await_start_reply(reply_to, monitor)
+    }
+  }
+}
+
+fn start_continuation(
+  subject: process.Subject(RuntimeMsg),
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  case process.subject_owner(subject) {
+    Error(Nil) -> Error(run_error.RuntimeStartUnavailable)
+    Ok(runtime_pid) -> {
+      let reply_to = process.new_subject()
+      let monitor = process.monitor(runtime_pid)
+      process.send(subject, StartContinue(sink:, terminal:, owner:, reply_to:))
+      await_start_reply(reply_to, monitor)
+    }
+  }
+}
+
+type StartWaitMessage {
+  StartReply(Result(agent_run.Run, run_error.RunStartError))
+  RuntimeDown
+}
+
+fn await_start_reply(
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+  runtime_monitor: process.Monitor,
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let selector =
+    process.new_selector()
+    |> process.select_map(reply_to, StartReply)
+    |> process.select_specific_monitor(runtime_monitor, fn(_) { RuntimeDown })
+  case process.selector_receive_forever(selector) {
+    StartReply(result) -> {
+      process.demonitor_process(runtime_monitor)
+      result
+    }
+    RuntimeDown ->
+      case process.receive(reply_to, 0) {
+        Ok(result) -> result
+        Error(Nil) -> Error(run_error.RuntimeStartUnavailable)
+      }
+  }
+}
+
+fn sink_owner(
+  sink: process.Subject(agent_run.RunEvent),
+) -> option.Option(process.Pid) {
+  case process.subject_owner(sink) {
+    Ok(owner) -> option.Some(owner)
+    Error(Nil) -> option.None
+  }
+}
+
+/// Collect a run stream into the final message. The timeout actively cancels.
+pub fn collect(
+  run: agent_run.Run,
+  sink: process.Subject(agent_run.RunEvent),
+  timeout_ms: Int,
+) -> Result(Message, run_error.RunError) {
+  agent_run.collect(run, sink, timeout_ms, agent_run.runtime_owner(run))
+}
+
+/// Collect a prompt run using the caller's timeout.
 pub fn run(
   subject: process.Subject(RuntimeMsg),
   prompt: String,
   timeout: Int,
 ) -> Result(Message, run_error.RunError) {
-  actor.call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
+  let sink = process.new_subject()
+  case stream(subject, prompt, sink) {
+    Ok(run) -> collect(run, sink, timeout)
+    Error(error) -> Error(start_error_to_run_error(error))
+  }
 }
 
-/// Resume the agent loop from its current history.
-///
-/// Looks at the last message in history to determine the entry point:
-/// - User/Tool message → call the provider
-/// - Assistant with stop_reason=ToolUse → execute pending tool calls
-/// - Assistant with stop_reason=Stop → return immediately
-/// - Assistant with stop_reason=Length/Error → re-call provider
+/// Collect a continuation using the caller's timeout.
 pub fn run_continue(
   subject: process.Subject(RuntimeMsg),
   timeout: Int,
 ) -> Result(Message, run_error.RunError) {
-  actor.call(subject, timeout, fn(reply_to) { Continue(reply_to) })
+  let sink = process.new_subject()
+  case stream_continue(subject, sink) {
+    Ok(run) -> collect(run, sink, timeout)
+    Error(error) -> Error(start_error_to_run_error(error))
+  }
 }
 
-/// Set inference settings and wait for the durable commit, when configured.
+/// Transitional non-panicking collector. Deadline remains the outer error.
+pub fn try_run(
+  subject: process.Subject(RuntimeMsg),
+  prompt: String,
+  timeout: Int,
+) -> Result(Result(Message, run_error.RunError), Nil) {
+  case run(subject, prompt, timeout) {
+    Error(run_error.Cancelled(run_error.DeadlineExceeded)) -> Error(Nil)
+    Error(run_error.RuntimeUnavailable) -> Error(Nil)
+    outcome -> Ok(outcome)
+  }
+}
+
+/// Transitional non-panicking continuation collector.
+pub fn try_run_continue(
+  subject: process.Subject(RuntimeMsg),
+  timeout: Int,
+) -> Result(Result(Message, run_error.RunError), Nil) {
+  case run_continue(subject, timeout) {
+    Error(run_error.Cancelled(run_error.DeadlineExceeded)) -> Error(Nil)
+    Error(run_error.RuntimeUnavailable) -> Error(Nil)
+    outcome -> Ok(outcome)
+  }
+}
+
+fn start_error_to_run_error(
+  error: run_error.RunStartError,
+) -> run_error.RunError {
+  case error {
+    run_error.Busy -> run_error.Runtime("agent is busy")
+    run_error.Rejected(error) -> error
+    run_error.RuntimeStartUnavailable -> run_error.RuntimeUnavailable
+  }
+}
+
+/// Set inference settings and wait for a durable commit when configured.
 pub fn set_inference_settings(
   subject: process.Subject(RuntimeMsg),
   settings: InferenceSettings,
@@ -210,12 +417,7 @@ pub fn set_inference_settings(
   })
 }
 
-/// Send a stop message to the runtime actor.
-pub fn stop(subject: process.Subject(RuntimeMsg)) -> Nil {
-  actor.send(subject, Stop)
-}
-
-/// Get the agent's current message history.
+/// Get committed conversation history.
 pub fn history(
   subject: process.Subject(RuntimeMsg),
   timeout: Int,
@@ -223,38 +425,20 @@ pub fn history(
   actor.call(subject, timeout, fn(reply_to) { GetHistory(reply_to) })
 }
 
-/// Send a prompt to the runtime and wait for a response.
-/// Returns `Error(Nil)` if the call times out or the runtime crashes.
-pub fn try_run(
-  subject: process.Subject(RuntimeMsg),
-  prompt: String,
-  timeout: Int,
-) -> Result(Result(Message, run_error.RunError), Nil) {
-  try_call(subject, timeout, fn(reply_to) { Run(prompt, reply_to) })
+/// Stop the actor after cancelling any active work with `AgentStopped`.
+pub fn stop(subject: process.Subject(RuntimeMsg)) -> Nil {
+  case process.subject_owner(subject) {
+    Error(Nil) -> Nil
+    Ok(_) -> {
+      let reply_to = process.new_subject()
+      process.send(subject, Stop(reply_to:))
+      let _ = process.receive(reply_to, 5000)
+      Nil
+    }
+  }
 }
 
-/// Resume the agent loop from its current history and wait for a response.
-/// Returns `Error(Nil)` if the call times out or the runtime crashes.
-pub fn try_run_continue(
-  subject: process.Subject(RuntimeMsg),
-  timeout: Int,
-) -> Result(Result(Message, run_error.RunError), Nil) {
-  try_call(subject, timeout, fn(reply_to) { Continue(reply_to) })
-}
-
-@external(erlang, "pig_agent_try_call_ffi", "try_call")
-fn try_call(
-  subject: process.Subject(RuntimeMsg),
-  timeout: Int,
-  make_msg: fn(process.Subject(Result(Message, run_error.RunError))) ->
-    RuntimeMsg,
-) -> Result(Result(Message, run_error.RunError), Nil)
-
-/// Create a ChildSpecification for a named runtime actor.
-///
-/// `initial_history` becomes current before the actor starts, and `session`
-/// carries the durable commit head associated with it. The Subject can be
-/// recovered after supervisor start with `process.named_subject(name)`.
+/// Create a child specification for a named runtime actor.
 pub fn supervised(
   agent_config: state.AgentConfig,
   dispatcher_name: process.Name(dispatcher.DispatcherMessage),
@@ -274,10 +458,7 @@ pub fn supervised(
   })
 }
 
-/// Create a durable ChildSpecification which reloads the session on every start.
-///
-/// A load failure during a later OTP restart is reported as actor initialisation
-/// failure, allowing the supervisor to apply its usual restart policy.
+/// Create a durable child specification which reloads on every restart.
 pub fn supervised_with_session_store(
   agent_config: state.AgentConfig,
   dispatcher_name: process.Name(dispatcher.DispatcherMessage),
@@ -318,17 +499,22 @@ fn start_named_runtime(
   session: SessionState,
   initial_settings: InferenceSettings,
 ) -> Result(actor.Started(Nil), StartError) {
-  let runtime_config = supervised_runtime_config(agent_config, dispatcher_name)
-  let initial_state =
-    runtime_state(
-      agent_config,
-      runtime_config,
-      initial_history,
+  let config = supervised_runtime_config(agent_config, dispatcher_name)
+  let initial =
+    initial_state(
+      list.fold(initial_history, state.new(agent_config), state.add_message),
+      config,
       session,
       initial_settings,
     )
   let builder =
-    actor.new(initial_state)
+    actor.new_with_initialiser(1000, fn(subject) {
+      initial
+      |> attach_mailbox(subject)
+      |> actor.initialised
+      |> actor.returning(Nil)
+      |> Ok
+    })
     |> actor.on_message(handle_message)
     |> actor.named(name)
   case actor.start(builder) {
@@ -352,125 +538,62 @@ fn supervised_runtime_config(
   )
 }
 
-fn runtime_state(
-  agent_config: state.AgentConfig,
-  config: RuntimeConfig,
-  initial_history: List(Message),
-  session: SessionState,
-  initial_settings: InferenceSettings,
+fn attach_mailbox(
+  runtime_state: RuntimeState,
+  mailbox: process.Subject(RuntimeMsg),
 ) -> RuntimeState {
-  RuntimeState(
-    agent_state: list.fold(
-      initial_history,
-      state.new(agent_config),
-      state.add_message,
-    ),
-    config:,
-    session:,
-    inference_settings: initial_settings,
-  )
+  RuntimeState(..runtime_state, mailbox: option.Some(mailbox))
 }
 
-// ── Message Handler ──────────────────────────────────────────────
+fn runtime_mailbox(runtime_state: RuntimeState) -> process.Subject(RuntimeMsg) {
+  let assert option.Some(mailbox) = runtime_state.mailbox
+  mailbox
+}
 
 fn handle_message(
-  st: RuntimeState,
-  m: RuntimeMsg,
+  runtime_state: RuntimeState,
+  message: RuntimeMsg,
 ) -> actor.Next(RuntimeState, RuntimeMsg) {
-  case m {
-    Run(prompt, reply_to) ->
-      case st.session {
-        SessionPending(..) | SessionSettingsPending(..) -> {
-          process.send(
-            reply_to,
-            Error(run_error.Runtime(
-              "cannot run a new prompt while a session commit is pending",
-            )),
-          )
-          actor.continue(st)
-        }
-        _ -> {
-          // Reset iterations for this run, add user message
-          let agent_st =
-            state.AgentState(
-              config: st.agent_state.config,
-              history: st.agent_state.history,
-              iterations: 0,
-            )
-          let result =
-            execute_loop(
-              st.config,
-              agent_st,
-              st.session,
-              st.inference_settings,
-              msg.UserPrompt(prompt),
-            )
-          let #(final_state, final_session, outcome) = result
-          process.send(reply_to, outcome)
-          actor.continue(RuntimeState(
-            agent_state: final_state,
-            config: st.config,
-            session: final_session,
-            inference_settings: st.inference_settings,
-          ))
-        }
-      }
-    Continue(reply_to) -> {
-      let #(final_state, final_session, outcome) = case st.session {
-        SessionSettingsPending(..) -> #(
-          st.agent_state,
-          st.session,
-          Error(run_error.Runtime(
-            "cannot continue while inference settings commit is pending",
-          )),
-        )
-        SessionPending(..) as pending ->
-          retry_pending(
-            st.config,
-            st.agent_state,
-            pending,
-            st.inference_settings,
-          )
-        _ -> {
-          let agent_st =
-            state.AgentState(
-              config: st.agent_state.config,
-              history: st.agent_state.history,
-              iterations: 0,
-            )
-          resume_from_history(
-            st.config,
-            agent_st,
-            st.session,
-            st.inference_settings,
-          )
-        }
-      }
-      process.send(reply_to, outcome)
-      actor.continue(RuntimeState(
-        agent_state: final_state,
-        config: st.config,
-        session: final_session,
-        inference_settings: st.inference_settings,
+  case message {
+    StartPrompt(prompt, sink, terminal, owner, reply_to) ->
+      actor.continue(handle_start_prompt(
+        runtime_state,
+        prompt,
+        sink,
+        terminal,
+        owner,
+        reply_to,
       ))
-    }
+    StartContinue(sink, terminal, owner, reply_to) ->
+      actor.continue(handle_start_continue(
+        runtime_state,
+        sink,
+        terminal,
+        owner,
+        reply_to,
+      ))
+    CancelRun(run_id, reason) ->
+      actor.continue(cancel_matching_run(runtime_state, run_id, reason))
+    WatchClient(run_id, owner) ->
+      actor.continue(replace_client_watch(runtime_state, run_id, owner))
+    InferenceWorkerEvent(run_id, round, event) ->
+      actor.continue(handle_inference_event(runtime_state, run_id, round, event))
+    ToolWorkerFinished(run_id, round, call, result, duration_ms) ->
+      actor.continue(handle_tool_finished(
+        runtime_state,
+        run_id,
+        round,
+        call,
+        result,
+        duration_ms,
+      ))
     SetInferenceSettings(settings, reply_to) -> {
-      let #(next_state, outcome) = case st.session {
-        SessionPending(..) -> #(
-          st,
-          Error(run_error.Runtime(
-            "cannot change settings while a session commit is pending",
-          )),
-        )
-        SessionSettingsPending(..) as pending ->
-          retry_or_reject_settings(st, pending, settings)
-        _ -> set_settings(st, settings)
-      }
+      let #(next_state, outcome) = set_runtime_settings(runtime_state, settings)
       process.send(reply_to, outcome)
       case outcome {
         Ok(Nil) -> {
           emit.to_dispatcher(
-            st.config.dispatcher,
+            runtime_state.config.dispatcher,
             events.InferenceSettingsChanged(settings:),
           )
           actor.continue(
@@ -481,607 +604,315 @@ fn handle_message(
       }
     }
     GetHistory(reply_to) -> {
-      process.send(reply_to, st.agent_state.history)
-      actor.continue(st)
+      process.send(reply_to, runtime_state.agent_state.history)
+      actor.continue(runtime_state)
     }
-    Stop -> actor.stop()
+    Stop(reply_to) -> {
+      let _ = cancel_current_run(runtime_state, run_error.AgentStopped)
+      process.send(reply_to, Nil)
+      actor.stop()
+    }
   }
 }
 
-fn set_settings(
-  st: RuntimeState,
-  settings: InferenceSettings,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  case st.session {
-    SessionDisabled -> #(st, Ok(Nil))
-    SessionReady(store:, head:) -> commit_settings(st, store, head, settings)
-    SessionPending(..) -> #(
-      st,
-      Error(run_error.Runtime(
-        "cannot change settings while a session commit is pending",
-      )),
-    )
-    SessionSettingsPending(..) -> #(
-      st,
-      Error(run_error.Runtime("inference settings commit is pending")),
-    )
-  }
-}
-
-fn commit_settings(
-  st: RuntimeState,
-  store: session_store.SessionStore,
-  head: option.Option(String),
-  settings: InferenceSettings,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  let commit = session_store.new_settings_commit(head, settings)
-  let session_store.SessionStore(commit: store_commit, ..) = store
-  case store_commit(commit) {
-    Error(error) ->
-      settings_commit_error(st, store, head, commit, settings, error)
-    Ok(committed) ->
-      case committed.head == option.Some(commit.id) {
-        True -> #(
-          RuntimeState(
-            ..st,
-            session: SessionReady(store:, head: committed.head),
-          ),
-          Ok(Nil),
-        )
-        False ->
-          reload_settings(
-            st,
-            store,
-            settings,
-            session_store.ParentConflict(
-              expected: option.Some(commit.id),
-              actual: committed.head,
+fn handle_start_prompt(
+  runtime_state: RuntimeState,
+  prompt: String,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(_) -> {
+      process.send(reply_to, Error(run_error.Busy))
+      runtime_state
+    }
+    Idle ->
+      case runtime_state.session {
+        durable_session.SessionPending(..)
+        | durable_session.SessionSettingsPending(..) -> {
+          process.send(
+            reply_to,
+            Error(
+              run_error.Rejected(run_error.Runtime(
+                "cannot run a new prompt while a session commit is pending",
+              )),
             ),
+          )
+          runtime_state
+        }
+        _ -> {
+          let accepted =
+            accept_run(runtime_state, sink, terminal, owner, reply_to)
+          let reset = state.AgentState(..accepted.agent_state, iterations: 0)
+          advance(
+            RuntimeState(..accepted, agent_state: reset),
+            msg.UserPrompt(prompt),
+          )
+        }
+      }
+  }
+}
+
+fn handle_start_continue(
+  runtime_state: RuntimeState,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(_) -> {
+      process.send(reply_to, Error(run_error.Busy))
+      runtime_state
+    }
+    Idle -> handle_idle_continue(runtime_state, sink, terminal, owner, reply_to)
+  }
+}
+
+fn handle_idle_continue(
+  runtime_state: RuntimeState,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  case runtime_state.session {
+    durable_session.SessionSettingsPending(..) ->
+      reject_settings_continue(runtime_state, reply_to)
+    durable_session.SessionPending(..) as pending ->
+      continue_pending_session(
+        runtime_state,
+        sink,
+        terminal,
+        owner,
+        reply_to,
+        pending,
+      )
+    _ -> continue_from_history(runtime_state, sink, terminal, owner, reply_to)
+  }
+}
+
+fn reject_settings_continue(
+  runtime_state: RuntimeState,
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  process.send(
+    reply_to,
+    Error(
+      run_error.Rejected(run_error.Runtime(
+        "cannot continue while inference settings commit is pending",
+      )),
+    ),
+  )
+  runtime_state
+}
+
+fn continue_pending_session(
+  runtime_state: RuntimeState,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+  pending: durable_session.SessionState,
+) -> RuntimeState {
+  let accepted = accept_run(runtime_state, sink, terminal, owner, reply_to)
+  case retry_pending_commit(pending) {
+    Error(#(still_pending, error)) ->
+      fail_run(
+        RuntimeState(..accepted, session: still_pending),
+        run_error.Session(error),
+      )
+    Ok(#(candidate, ready, disposition)) -> {
+      let recovered =
+        RuntimeState(..accepted, agent_state: candidate, session: ready)
+      resume_disposition(recovered, disposition)
+    }
+  }
+}
+
+fn continue_from_history(
+  runtime_state: RuntimeState,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  let accepted = accept_run(runtime_state, sink, terminal, owner, reply_to)
+  let reset = state.AgentState(..accepted.agent_state, iterations: 0)
+  resume_from_history(RuntimeState(..accepted, agent_state: reset))
+}
+
+fn accept_run(
+  runtime_state: RuntimeState,
+  sink: process.Subject(agent_run.RunEvent),
+  terminal: process.Subject(agent_run.RunEvent),
+  owner: option.Option(process.Pid),
+  reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
+) -> RuntimeState {
+  let run_id = agent_run.fresh_id()
+  let mailbox = runtime_mailbox(runtime_state)
+  let handle =
+    agent_run.new(
+      run_id,
+      process.self(),
+      terminal,
+      fn(reason) { process.send(mailbox, CancelRun(run_id, reason)) },
+      fn(client) { process.send(mailbox, WatchClient(run_id, client)) },
+    )
+  let watcher =
+    option.map(owner, fn(client) {
+      client_watcher.start(client, fn() {
+        process.send(mailbox, CancelRun(run_id, run_error.ClientDisconnected))
+      })
+    })
+  let active =
+    ActiveRun(
+      id: run_id,
+      sink:,
+      run: handle,
+      round: 0,
+      phase: Preparing,
+      watcher:,
+      last_inference: option.None,
+    )
+  process.send(sink, agent_run.RunStarted)
+  process.send(reply_to, Ok(handle))
+  RuntimeState(..runtime_state, activity: Running(active))
+}
+
+fn replace_client_watch(
+  runtime_state: RuntimeState,
+  run_id: String,
+  owner: process.Pid,
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(active) if active.id == run_id -> {
+      client_watcher.stop_option(active.watcher)
+      let mailbox = runtime_mailbox(runtime_state)
+      let watcher =
+        client_watcher.start(owner, fn() {
+          process.send(mailbox, CancelRun(run_id, run_error.ClientDisconnected))
+        })
+      RuntimeState(
+        ..runtime_state,
+        activity: Running(ActiveRun(..active, watcher: option.Some(watcher))),
+      )
+    }
+    _ -> runtime_state
+  }
+}
+
+fn advance(runtime_state: RuntimeState, message: msg.AgentMsg) -> RuntimeState {
+  let transition = update.update(runtime_state.agent_state, message)
+  case transition {
+    step_result.Continue(state: candidate, effect:) ->
+      case
+        commit_transition(
+          runtime_state.session,
+          runtime_state.agent_state,
+          candidate,
+          durable_session.ResumeFromHistory,
+        )
+      {
+        Ok(next_session) ->
+          start_effect(
+            RuntimeState(
+              ..runtime_state,
+              agent_state: candidate,
+              session: next_session,
+            ),
+            effect,
+          )
+        Error(#(pending, error)) ->
+          fail_run(
+            RuntimeState(..runtime_state, session: pending),
+            run_error.Session(error),
+          )
+      }
+    step_result.Done(state: candidate, message: final_message) ->
+      case
+        commit_transition(
+          runtime_state.session,
+          runtime_state.agent_state,
+          candidate,
+          durable_session.ReturnMessage(final_message),
+        )
+      {
+        Ok(next_session) ->
+          complete_run(
+            RuntimeState(
+              ..runtime_state,
+              agent_state: candidate,
+              session: next_session,
+            ),
+            final_message,
+          )
+        Error(#(pending, error)) ->
+          fail_run(
+            RuntimeState(..runtime_state, session: pending),
+            run_error.Session(error),
+          )
+      }
+    step_result.Failed(state: candidate, error:) ->
+      case
+        commit_transition(
+          runtime_state.session,
+          runtime_state.agent_state,
+          candidate,
+          durable_session.ReturnAiError(error),
+        )
+      {
+        Ok(next_session) ->
+          fail_run(
+            RuntimeState(
+              ..runtime_state,
+              agent_state: candidate,
+              session: next_session,
+            ),
+            run_error.Inference(error),
+          )
+        Error(#(pending, session_error)) ->
+          fail_run(
+            RuntimeState(..runtime_state, session: pending),
+            run_error.Session(session_error),
           )
       }
   }
 }
 
-fn retry_or_reject_settings(
-  st: RuntimeState,
-  pending: SessionState,
-  settings: InferenceSettings,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  let assert SessionSettingsPending(store:, settings: pending_settings, mode:) =
-    pending
-  case pending_settings == settings {
-    False -> #(
-      st,
-      Error(run_error.Runtime(
-        "a different inference settings commit is pending",
-      )),
-    )
-    True ->
-      case mode {
-        RetryCommit(commit) -> {
-          let session_store.SessionStore(commit: store_commit, ..) = store
-          case store_commit(commit) {
-            Error(error) ->
-              settings_commit_error(
-                st,
-                store,
-                commit.parent,
-                commit,
-                settings,
-                error,
-              )
-            Ok(committed) ->
-              case committed.head == option.Some(commit.id) {
-                True -> #(
-                  RuntimeState(
-                    ..st,
-                    session: SessionReady(store:, head: committed.head),
-                  ),
-                  Ok(Nil),
-                )
-                False ->
-                  reload_settings(
-                    st,
-                    store,
-                    settings,
-                    session_store.ParentConflict(
-                      expected: option.Some(commit.id),
-                      actual: committed.head,
-                    ),
-                  )
-              }
-          }
-        }
-        ReloadPending(conflict) ->
-          reload_settings(st, store, settings, conflict)
-        Reloaded(snapshot) ->
-          retry_reloaded_settings(st, store, settings, snapshot)
-      }
-  }
-}
-
-fn settings_commit_error(
-  st: RuntimeState,
-  store: session_store.SessionStore,
-  head: option.Option(String),
-  commit: session_store.SessionCommit,
-  settings: InferenceSettings,
-  error: session_store.SessionError,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  case error {
-    session_store.ParentConflict(..) ->
-      reload_settings(st, store, settings, error)
-    session_store.InvalidCommit(_) | session_store.Corrupt(_) -> #(
-      RuntimeState(..st, session: SessionReady(store:, head:)),
-      Error(run_error.Session(error)),
-    )
-    session_store.Unavailable(_) -> #(
-      RuntimeState(
-        ..st,
-        session: SessionSettingsPending(
-          store:,
-          settings:,
-          mode: RetryCommit(commit:),
-        ),
-      ),
-      Error(run_error.Session(error)),
-    )
-  }
-}
-
-fn reload_settings(
-  st: RuntimeState,
-  store: session_store.SessionStore,
-  settings: InferenceSettings,
-  conflict: session_store.SessionError,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  let session_store.SessionStore(load:, ..) = store
-  case load() {
-    Ok(snapshot) -> #(
-      replace_with_snapshot(st, store, settings, snapshot),
-      Error(run_error.Session(conflict)),
-    )
-    Error(error) -> #(
-      RuntimeState(
-        ..st,
-        session: SessionSettingsPending(
-          store:,
-          settings:,
-          mode: ReloadPending(conflict:),
-        ),
-      ),
-      Error(run_error.Session(error)),
-    )
-  }
-}
-
-fn replace_with_snapshot(
-  st: RuntimeState,
-  store: session_store.SessionStore,
-  settings: InferenceSettings,
-  snapshot: session_store.Session,
+fn start_effect(
+  runtime_state: RuntimeState,
+  requested_effect: effect.Effect,
 ) -> RuntimeState {
-  let active_settings = case snapshot.inference_settings {
-    option.Some(loaded_settings) -> loaded_settings
-    option.None -> st.config.inference_settings
-  }
-  let agent_state =
-    state.AgentState(
-      ..st.agent_state,
-      history: state.strip_system_messages(snapshot.messages),
-      iterations: 0,
-    )
-  RuntimeState(
-    agent_state:,
-    config: st.config,
-    session: SessionSettingsPending(
-      store:,
-      settings:,
-      mode: Reloaded(snapshot:),
-    ),
-    inference_settings: active_settings,
-  )
-}
-
-fn retry_reloaded_settings(
-  st: RuntimeState,
-  store: session_store.SessionStore,
-  settings: InferenceSettings,
-  snapshot: session_store.Session,
-) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
-  case snapshot.inference_settings {
-    option.Some(loaded_settings) if loaded_settings == settings -> #(
-      RuntimeState(..st, session: SessionReady(store:, head: snapshot.head)),
-      Ok(Nil),
-    )
-    // An absent persisted setting is only a configured fallback. Commit the
-    // request explicitly so it survives restart and later config changes.
-    option.Some(_) | option.None ->
-      commit_settings(st, store, snapshot.head, settings)
+  case requested_effect {
+    effect.CallProvider(messages:, tools:) ->
+      start_inference(runtime_state, messages, tools)
+    effect.ExecuteTools(calls:) -> start_tools(runtime_state, calls)
   }
 }
 
-// ── The Loop ─────────────────────────────────────────────────────
-
-/// Execute the sans-IO loop: call update, interpret effects, feed back.
-/// Returns the final agent state and the result.
-fn execute_loop(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-  initial_msg: msg.AgentMsg,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  do_loop(config, agent_st, session, settings, initial_msg)
-}
-
-fn do_loop(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-  m: msg.AgentMsg,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  let transition = update.update(agent_st, m)
-  case transition {
-    step_result.Done(state: final_st, message: final_message) ->
-      commit_or_pending(
-        config,
-        session,
-        agent_st,
-        final_st,
-        settings,
-        ReturnMessage(final_message),
-      )
-
-    step_result.Failed(state: final_st, error: inference_error) ->
-      commit_or_pending(
-        config,
-        session,
-        agent_st,
-        final_st,
-        settings,
-        ReturnAiError(inference_error),
-      )
-
-    step_result.Continue(state: new_st, effects: effs) ->
-      case commit_transition(session, agent_st, new_st, ResumeFromHistory) {
-        Error(#(pending, session_error)) -> #(
-          agent_st,
-          pending,
-          Error(run_error.Session(session_error)),
-        )
-        Ok(next_session) ->
-          execute_effects(config, new_st, next_session, settings, effs)
-      }
-  }
-}
-
-fn commit_or_pending(
-  config: RuntimeConfig,
-  session: SessionState,
-  previous: state.AgentState,
-  candidate: state.AgentState,
-  settings: InferenceSettings,
-  disposition: PostCommitDisposition,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  case commit_transition(session, previous, candidate, disposition) {
-    Ok(next_session) ->
-      complete_disposition(
-        config,
-        candidate,
-        next_session,
-        settings,
-        disposition,
-      )
-    Error(#(pending, session_error)) -> #(
-      previous,
-      pending,
-      Error(run_error.Session(session_error)),
-    )
-  }
-}
-
-fn commit_transition(
-  session: SessionState,
-  previous: state.AgentState,
-  candidate: state.AgentState,
-  disposition: PostCommitDisposition,
-) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
-  let delta = list.drop(candidate.history, list.length(previous.history))
-  case session, delta {
-    SessionPending(..), _ | SessionSettingsPending(..), _ ->
-      panic as "cannot commit while a session commit is pending"
-    _, [] -> Ok(session)
-    SessionDisabled, _ -> Ok(session)
-    SessionReady(store:, head:), [first, ..rest] ->
-      commit_messages(store, head, first, rest, candidate, disposition)
-  }
-}
-
-fn commit_messages(
-  store: session_store.SessionStore,
-  head: option.Option(String),
-  first: Message,
-  rest: List(Message),
-  candidate: state.AgentState,
-  disposition: PostCommitDisposition,
-) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
-  let session_store.SessionStore(commit: store_commit, ..) = store
-  let commit = session_store.new_commit(head, first, rest)
-  case store_commit(commit) {
-    Ok(committed) ->
-      accept_committed_session(store, commit, candidate, disposition, committed)
-    Error(session_error) ->
-      Error(#(
-        SessionPending(store:, commit:, candidate:, disposition:),
-        session_error,
-      ))
-  }
-}
-
-fn accept_committed_session(
-  store: session_store.SessionStore,
-  commit: session_store.SessionCommit,
-  candidate: state.AgentState,
-  disposition: PostCommitDisposition,
-  committed: session_store.Session,
-) -> Result(SessionState, #(SessionState, session_store.SessionError)) {
-  case committed.head == option.Some(commit.id) {
-    True -> Ok(SessionReady(store:, head: committed.head))
-    False ->
-      Error(#(
-        SessionPending(store:, commit:, candidate:, disposition:),
-        session_store.ParentConflict(
-          expected: option.Some(commit.id),
-          actual: committed.head,
-        ),
-      ))
-  }
-}
-
-fn retry_pending(
-  config: RuntimeConfig,
-  current: state.AgentState,
-  pending: SessionState,
-  settings: InferenceSettings,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  let assert SessionPending(store:, commit:, candidate:, disposition:) = pending
-  let session_store.SessionStore(commit: store_commit, ..) = store
-  case store_commit(commit) {
-    Error(session_error) -> #(
-      current,
-      SessionPending(store:, commit:, candidate:, disposition:),
-      Error(run_error.Session(session_error)),
-    )
-    Ok(committed) ->
-      case
-        accept_committed_session(
-          store,
-          commit,
-          candidate,
-          disposition,
-          committed,
-        )
-      {
-        Ok(ready) ->
-          complete_disposition(config, candidate, ready, settings, disposition)
-        Error(#(still_pending, session_error)) -> #(
-          current,
-          still_pending,
-          Error(run_error.Session(session_error)),
-        )
-      }
-  }
-}
-
-fn complete_disposition(
-  config: RuntimeConfig,
-  candidate: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-  disposition: PostCommitDisposition,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  case disposition {
-    ReturnMessage(message) -> #(candidate, session, Ok(message))
-    ReturnAiError(error) -> #(
-      candidate,
-      session,
-      Error(run_error.Inference(error)),
-    )
-    ResumeFromHistory ->
-      resume_from_history(config, candidate, session, settings)
-  }
-}
-
-fn execute_effects(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-  effs: List(effect.Effect(msg.AgentMsg)),
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  // Effects begin only after the complete transition delta is durable.
-  let #(updated_st, response_msgs) =
-    list.fold(effs, #(agent_st, []), fn(acc, eff) {
-      let #(st_acc, msgs_acc) = acc
-      let #(new_st_acc, response_msg) =
-        execute_effect(config, st_acc, settings, eff)
-      #(new_st_acc, list.append(msgs_acc, [response_msg]))
-    })
-  case response_msgs {
-    [first_msg, ..] -> do_loop(config, updated_st, session, settings, first_msg)
-    [] -> #(
-      updated_st,
-      session,
-      Error(run_error.Runtime("no response from effects")),
-    )
-  }
-}
-
-/// Resume the agent loop from its current history.
-///
-/// Determines the entry point by inspecting the last message in history.
-/// This enables the durability pattern: an external system checkpoints
-/// messages, and on retry, rebuilds history from those checkpoints.
-fn resume_from_history(
-  config: RuntimeConfig,
-  st: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  case list.last(st.history) {
-    // No history — nothing to continue
-    Error(_) -> #(
-      st,
-      session,
-      Error(run_error.Runtime("no history to continue")),
-    )
-
-    Ok(last_msg) -> {
-      case last_msg {
-        // Assistant message — decide based on stop_reason and tool_calls
-        message.Assistant(
-          content: _,
-          tool_calls: tool_calls,
-          thinking: _,
-          stop_reason: sr,
-        ) ->
-          resume_from_assistant(config, st, session, settings, tool_calls, sr)
-
-        // User or Tool message — call provider (through hooks pipeline)
-        message.User(_) | message.Tool(_, _) -> {
-          let #(st_after, provider_msg) =
-            execute_call_provider(
-              config,
-              st,
-              state.messages_for_provider(st),
-              state.tool_definitions(st),
-              settings,
-              fn(r) {
-                msg.ProviderResponded(result.map(r, fn(ir) { ir.message }))
-              },
-            )
-          do_loop(config, st_after, session, settings, provider_msg)
-        }
-
-        // System message at end of history — shouldn't happen
-        message.System(_) -> #(
-          st,
-          session,
-          Error(run_error.Runtime("unexpected system message at end of history")),
-        )
-      }
-    }
-  }
-}
-
-/// Decide how to resume based on the last assistant message's stop_reason
-/// and tool_calls.
-fn resume_from_assistant(
-  config: RuntimeConfig,
-  st: state.AgentState,
-  session: SessionState,
-  settings: InferenceSettings,
-  tool_calls: List(message.ToolCall),
-  sr: option.Option(stop_reason.StopReason),
-) -> #(state.AgentState, SessionState, Result(Message, run_error.RunError)) {
-  case sr {
-    // Tool calls pending — execute them, then continue loop
-    option.Some(stop_reason.ToolUse) -> {
-      let #(_new_st, agent_msg) =
-        execute_tools_effect(config, st, settings, tool_calls, fn(results) {
-          msg.ToolResults(results)
-        })
-      do_loop(config, st, session, settings, agent_msg)
-    }
-
-    // Done — completed on a previous attempt
-    option.Some(stop_reason.Stop) -> {
-      let assert Ok(msg) = list.last(st.history)
-      #(st, session, Ok(msg))
-    }
-
-    // Hit token limit or error — re-call provider (through hooks pipeline)
-    option.Some(stop_reason.Length)
-    | option.Some(stop_reason.Error)
-    | option.Some(stop_reason.Unknown(_)) -> {
-      let #(st_after, provider_msg) =
-        execute_call_provider(
-          config,
-          st,
-          state.messages_for_provider(st),
-          state.tool_definitions(st),
-          settings,
-          fn(r) { msg.ProviderResponded(result.map(r, fn(ir) { ir.message })) },
-        )
-      do_loop(config, st_after, session, settings, provider_msg)
-    }
-
-    // No stop_reason (legacy messages) — decide by tool_calls presence
-    option.None ->
-      case tool_calls {
-        [] -> {
-          // No tool calls, no stop_reason — treat as done
-          let assert Ok(msg) = list.last(st.history)
-          #(st, session, Ok(msg))
-        }
-        calls -> {
-          // Has tool calls but no stop_reason — execute them
-          let #(_new_st, agent_msg) =
-            execute_tools_effect(config, st, settings, calls, fn(results) {
-              msg.ToolResults(results)
-            })
-          do_loop(config, st, session, settings, agent_msg)
-        }
-      }
-  }
-}
-
-// ── Effect Execution ─────────────────────────────────────────────
-
-/// Execute a single effect: apply hooks, execute, emit events.
-fn execute_effect(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
-  settings: InferenceSettings,
-  eff: effect.Effect(msg.AgentMsg),
-) -> #(state.AgentState, msg.AgentMsg) {
-  case eff {
-    effect.CallProvider(messages:, tools:, on_response:) ->
-      execute_call_provider(
-        config,
-        agent_st,
-        messages,
-        tools,
-        settings,
-        on_response,
-      )
-    effect.ExecuteTools(calls:, on_results:) ->
-      execute_tools_effect(config, agent_st, settings, calls, on_results)
-  }
-}
-
-/// Execute CallProvider: apply before_inference hooks, call provider,
-/// emit events, fire notification hooks.
-fn execute_call_provider(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
+fn start_inference(
+  runtime_state: RuntimeState,
   messages: List(Message),
   tools: List(tool_definition.ToolDefinition),
-  settings: InferenceSettings,
-  on_response: fn(Result(provider.InferenceResult, AiError)) -> msg.AgentMsg,
-) -> #(state.AgentState, msg.AgentMsg) {
-  let disp = config.dispatcher
-  let model = config.model
-
-  // Apply before_inference hooks
-  let before_event = hooks.BeforeInferenceEvent(model:, messages:, settings:)
-  let final_msgs = case hooks.decide_messages(config.hooks, before_event) {
+) -> RuntimeState {
+  let assert Running(active) = runtime_state.activity
+  let settings = runtime_state.inference_settings
+  let before_event =
+    hooks.BeforeInferenceEvent(
+      model: runtime_state.config.model,
+      messages:,
+      settings:,
+    )
+  let final_messages = case
+    hooks.decide_messages(runtime_state.config.hooks, before_event)
+  {
     hooks.MessagesUnchanged(..) -> messages
     hooks.MessagesReplaced(final_messages:, transformers:) -> {
       emit_hook_acted_list(
-        disp,
+        runtime_state.config.dispatcher,
         transformers,
         events.BeforeInference,
         "transform",
@@ -1090,315 +921,651 @@ fn execute_call_provider(
       final_messages
     }
   }
-
+  let round = active.round + 1
   let request =
-    provider.InferenceRequest(messages: final_msgs, tools:, settings:)
-  let msg_count = list.length(final_msgs)
+    provider.InferenceRequest(messages: final_messages, tools:, settings:)
   emit.to_dispatcher(
-    disp,
-    events.InferenceStarted(model:, message_count: msg_count, settings:),
+    runtime_state.config.dispatcher,
+    events.InferenceStarted(
+      model: runtime_state.config.model,
+      message_count: list.length(final_messages),
+      settings:,
+    ),
   )
-  let start_time = events.system_time()
-
-  let result = case config.provider(request) {
-    Ok(inference_result) -> {
-      let msg = inference_result.message
-      let meta = inference_result.metadata
-      let duration = events.system_time() - start_time
-      let response_model = case meta.response_model {
-        option.Some(_) as m -> m
-        option.None -> option.Some(model)
-      }
-      emit.to_dispatcher(
-        disp,
-        events.InferenceCompleted(
-          message: msg,
-          response_id: meta.response_id,
-          response_model:,
-          stop_reason: meta.stop_reason,
-          input_tokens: meta.input_tokens,
-          output_tokens: meta.output_tokens,
-          duration_ms: duration,
-          input_messages: agent_st.history,
-          settings:,
-        ),
-      )
-      // Fire after_inference hooks
-      hooks.notify_after_inference(
-        config.hooks,
-        hooks.AfterInferenceEvent(
-          model:,
-          message: msg,
-          duration_ms: duration,
-          settings:,
-        ),
-      )
-      Ok(inference_result)
-    }
-    Error(e) -> {
-      let duration = events.system_time() - start_time
-      emit.to_dispatcher(
-        disp,
-        events.InferenceFailed(
-          model:,
-          error: e,
-          duration_ms: duration,
-          input_messages: agent_st.history,
-          settings:,
-        ),
-      )
-      // Fire error hooks
-      hooks.notify_error(
-        config.hooks,
-        hooks.ErrorEvent(model:, error: e, settings:),
-      )
-      Error(e)
-    }
-  }
-  #(agent_st, on_response(result))
+  process.send(active.sink, agent_run.InferenceStarted(round:))
+  let mailbox = runtime_mailbox(runtime_state)
+  let run_id = active.id
+  let worker =
+    inference_worker.start(runtime_state.config.provider, request, fn(event) {
+      process.send(mailbox, InferenceWorkerEvent(run_id, round, event))
+    })
+  let operation =
+    InferenceOperation(
+      round:,
+      worker:,
+      started_at: events.system_time(),
+      input_messages: final_messages,
+      settings:,
+    )
+  RuntimeState(
+    ..runtime_state,
+    activity: Running(
+      ActiveRun(..active, round:, phase: AwaitingInference(operation)),
+    ),
+  )
 }
 
-/// Execute ExecuteTools: apply tool call hooks, execute allowed tools
-/// in parallel, apply result hooks, emit events.
-fn execute_tools_effect(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
-  _settings: InferenceSettings,
+fn handle_inference_event(
+  runtime_state: RuntimeState,
+  run_id: String,
+  round: Int,
+  inference_event: provider.InferenceEvent,
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(active) if active.id == run_id ->
+      case active.phase {
+        AwaitingInference(operation) if operation.round == round ->
+          case inference_event {
+            provider.Delta(delta) -> {
+              process.send(
+                active.sink,
+                agent_run.InferenceDelta(round:, delta:),
+              )
+              runtime_state
+            }
+            provider.Finished(result) ->
+              finish_inference(runtime_state, active, operation, result)
+          }
+        _ -> runtime_state
+      }
+    _ -> runtime_state
+  }
+}
+
+fn finish_inference(
+  runtime_state: RuntimeState,
+  active: ActiveRun,
+  operation: InferenceOperation,
+  inference_result: Result(provider.InferenceResult, AiError),
+) -> RuntimeState {
+  process.send(
+    active.sink,
+    agent_run.InferenceFinished(
+      round: operation.round,
+      result: inference_result,
+    ),
+  )
+  let duration = events.system_time() - operation.started_at
+  case inference_result {
+    Ok(result) -> {
+      let metadata = result.metadata
+      let response_model = case metadata.response_model {
+        option.Some(_) as model -> model
+        option.None -> option.Some(runtime_state.config.model)
+      }
+      emit.to_dispatcher(
+        runtime_state.config.dispatcher,
+        events.InferenceCompleted(
+          message: result.message,
+          response_id: metadata.response_id,
+          response_model:,
+          stop_reason: metadata.stop_reason,
+          input_tokens: metadata.input_tokens,
+          output_tokens: metadata.output_tokens,
+          duration_ms: duration,
+          input_messages: operation.input_messages,
+          settings: operation.settings,
+        ),
+      )
+      hooks.notify_after_inference(
+        runtime_state.config.hooks,
+        hooks.AfterInferenceEvent(
+          model: runtime_state.config.model,
+          message: result.message,
+          duration_ms: duration,
+          settings: operation.settings,
+        ),
+      )
+      let ready =
+        ActiveRun(
+          ..active,
+          phase: Preparing,
+          last_inference: option.Some(result),
+        )
+      advance(
+        RuntimeState(..runtime_state, activity: Running(ready)),
+        msg.ProviderResponded(Ok(result.message)),
+      )
+    }
+    Error(error) -> {
+      emit_inference_failure(runtime_state, operation, error, duration)
+      let ready = ActiveRun(..active, phase: Preparing)
+      advance(
+        RuntimeState(..runtime_state, activity: Running(ready)),
+        msg.ProviderResponded(Error(error)),
+      )
+    }
+  }
+}
+
+fn emit_inference_failure(
+  runtime_state: RuntimeState,
+  operation: InferenceOperation,
+  error: AiError,
+  duration_ms: Int,
+) -> Nil {
+  emit.to_dispatcher(
+    runtime_state.config.dispatcher,
+    events.InferenceFailed(
+      model: runtime_state.config.model,
+      error:,
+      duration_ms:,
+      input_messages: operation.input_messages,
+      settings: operation.settings,
+    ),
+  )
+  hooks.notify_error(
+    runtime_state.config.hooks,
+    hooks.ErrorEvent(
+      model: runtime_state.config.model,
+      error:,
+      settings: operation.settings,
+    ),
+  )
+}
+
+fn start_tools(
+  runtime_state: RuntimeState,
   calls: List(ToolCall),
-  on_results: fn(List(#(ToolCall, Result(json.Json, tool.ToolError)))) ->
-    msg.AgentMsg,
-) -> #(state.AgentState, msg.AgentMsg) {
-  // Reject the whole batch before hooks, telemetry, or processes can observe it.
+) -> RuntimeState {
   case execution.validate_tool_calls(calls) {
     Error(batch_error) -> {
       let rejected =
         list.map(calls, fn(call) {
           #(call, Error(tool.InvalidToolCallBatch(batch_error)))
         })
-      #(agent_st, on_results(rejected))
+      advance(runtime_state, msg.ToolResults(rejected))
     }
-    Ok(Nil) -> execute_valid_tools_effect(config, agent_st, calls, on_results)
+    Ok(Nil) -> start_valid_tools(runtime_state, calls)
   }
 }
 
-fn execute_valid_tools_effect(
-  config: RuntimeConfig,
-  agent_st: state.AgentState,
+fn start_valid_tools(
+  runtime_state: RuntimeState,
   calls: List(ToolCall),
-  on_results: fn(List(#(ToolCall, Result(json.Json, tool.ToolError)))) ->
-    msg.AgentMsg,
-) -> #(state.AgentState, msg.AgentMsg) {
-  let disp = config.dispatcher
-
-  // Partition into blocked (handled inline) and allowed (spawned)
-  let #(blocked, allowed) = partition_by_hook_decision(config.hooks, calls)
-
-  // Emit ToolBlocked events
-  list.each(blocked, fn(b) {
-    emit.to_dispatcher(
-      disp,
-      events.ToolBlocked(
-        tool_call: b.call,
-        hook_name: b.hook_name,
-        reason: b.reason,
-      ),
-    )
-    emit.to_dispatcher(
-      disp,
-      events.HookActed(
-        hook_name: b.hook_name,
-        hook_point: events.BeforeToolCall,
-        action: events.HookActionDetail(
-          action_type: "block",
-          description: "Blocked tool: " <> b.reason,
-        ),
-      ),
-    )
-  })
-
-  // Spawn processes for allowed calls
-  let results = spawn_and_collect(config, allowed)
-
-  // Process results: emit events, apply hooks, build final results list
-  // First pass: emit events and apply hooks for executed tools
-  let _ =
-    list.map(allowed, fn(call) {
-      let assert Ok(#(result, duration)) = find_result(results, call.id)
-      let raw_content = case result {
-        Ok(json_result) -> json.to_string(json_result)
-        Error(tool_err) -> "Tool error: " <> tool.error_message(tool_err)
-      }
-      // Apply result hooks
-      let result_event =
-        hooks.ToolResultEvent(
-          tool_name: call.name,
-          tool_call_id: call.id,
-          result: raw_content,
-          is_error: is_error(result),
-          duration_ms: duration,
-        )
-      let final_content = case
-        hooks.decide_tool_result(config.hooks, result_event)
-      {
-        hooks.ResultUnchanged(..) -> raw_content
-        hooks.ResultTransformed(final_event:, transformers:) -> {
-          emit_hook_acted_list(
-            disp,
-            transformers,
-            events.AfterToolCall,
-            "transform",
-            "Transformed result",
-          )
-          final_event.result
-        }
-      }
-      // Emit ToolExecuted
+) -> RuntimeState {
+  let assert Running(active) = runtime_state.activity
+  let #(blocked, allowed) =
+    tool_batch.partition_by_hook_decision(runtime_state.config.hooks, calls)
+  let blocked_outcomes =
+    list.map(blocked, fn(blocked_tool) {
       emit.to_dispatcher(
-        disp,
-        events.ToolExecuted(
-          tool_call: call,
-          result: final_content,
-          duration_ms: duration,
+        runtime_state.config.dispatcher,
+        events.ToolBlocked(
+          tool_call: blocked_tool.call,
+          hook_name: blocked_tool.hook_name,
+          reason: blocked_tool.reason,
         ),
       )
+      emit.to_dispatcher(
+        runtime_state.config.dispatcher,
+        events.HookActed(
+          hook_name: blocked_tool.hook_name,
+          hook_point: events.BeforeToolCall,
+          action: events.HookActionDetail(
+            action_type: "block",
+            description: "Blocked tool: " <> blocked_tool.reason,
+          ),
+        ),
+      )
+      process.send(
+        active.sink,
+        agent_run.ToolBlocked(
+          round: active.round,
+          call: blocked_tool.call,
+          reason: blocked_tool.reason,
+        ),
+      )
+      tool_batch.ToolOutcome(
+        call: blocked_tool.call,
+        result: Error(tool.ToolError(
+          message: "Tool blocked by '"
+          <> blocked_tool.hook_name
+          <> "': "
+          <> blocked_tool.reason,
+        )),
+        duration_ms: 0,
+      )
     })
-
-  // Build final results list in original call order
-  let all_results =
-    list.map(calls, fn(call) {
-      case find_blocked(blocked, call.id) {
-        Ok(b) -> #(
+  let mailbox = runtime_mailbox(runtime_state)
+  let active_tools =
+    list.map(allowed, fn(call) {
+      emit.to_dispatcher(
+        runtime_state.config.dispatcher,
+        events.ToolStarted(tool_call: call),
+      )
+      process.send(
+        active.sink,
+        agent_run.ToolStarted(round: active.round, call:),
+      )
+      let run_id = active.id
+      let round = active.round
+      let started_at = events.system_time()
+      let worker =
+        tool_worker.start(
+          runtime_state.config.tools,
           call,
-          Error(tool.ToolError(
-            message: "Tool blocked by '" <> b.hook_name <> "': " <> b.reason,
-          )),
+          fn(result, duration_ms) {
+            process.send(
+              mailbox,
+              ToolWorkerFinished(run_id, round, call, result, duration_ms),
+            )
+          },
         )
-        Error(Nil) -> {
-          let assert Ok(#(res, _dur)) = find_result(results, call.id)
-          #(call, res)
-        }
-      }
+      tool_batch.ActiveTool(call:, worker:, started_at:)
     })
-
-  #(agent_st, on_results(all_results))
+  case active_tools {
+    [] ->
+      advance(
+        runtime_state,
+        msg.ToolResults(tool_batch.ordered_results(calls, blocked_outcomes)),
+      )
+    _ ->
+      RuntimeState(
+        ..runtime_state,
+        activity: Running(
+          ActiveRun(
+            ..active,
+            phase: AwaitingTools(tool_batch.ToolBatch(
+              round: active.round,
+              calls:,
+              active: active_tools,
+              outcomes: blocked_outcomes,
+            )),
+          ),
+        ),
+      )
+  }
 }
 
-// ── Parallel Tool Execution ──────────────────────────────────────
-
-type BlockedTool {
-  BlockedTool(call: ToolCall, hook_name: String, reason: String)
+fn handle_tool_finished(
+  runtime_state: RuntimeState,
+  run_id: String,
+  round: Int,
+  call: ToolCall,
+  tool_result: Result(json.Json, tool.ToolError),
+  duration_ms: Int,
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(active) if active.id == run_id ->
+      handle_active_tool_finished(
+        runtime_state,
+        active,
+        round,
+        call,
+        tool_result,
+        duration_ms,
+      )
+    _ -> runtime_state
+  }
 }
 
-type ToolResult {
-  ToolResult(
-    call_id: String,
-    result: Result(json.Json, tool.ToolError),
-    duration_ms: Int,
+fn handle_active_tool_finished(
+  runtime_state: RuntimeState,
+  active: ActiveRun,
+  round: Int,
+  call: ToolCall,
+  tool_result: Result(json.Json, tool.ToolError),
+  duration_ms: Int,
+) -> RuntimeState {
+  case active.phase {
+    AwaitingTools(batch) if batch.round == round ->
+      finish_active_tool(
+        runtime_state,
+        active,
+        batch,
+        round,
+        call,
+        tool_result,
+        duration_ms,
+      )
+    _ -> runtime_state
+  }
+}
+
+fn finish_active_tool(
+  runtime_state: RuntimeState,
+  active: ActiveRun,
+  batch: tool_batch.ToolBatch,
+  round: Int,
+  call: ToolCall,
+  tool_result: Result(json.Json, tool.ToolError),
+  duration_ms: Int,
+) -> RuntimeState {
+  case tool_batch.finish(batch, call, tool_result, duration_ms) {
+    tool_batch.Ignored -> runtime_state
+    tool_batch.Finished(outcomes) -> {
+      observe_tool_result(
+        runtime_state,
+        active,
+        round,
+        call,
+        tool_result,
+        duration_ms,
+      )
+      let ready = ActiveRun(..active, phase: Preparing)
+      advance(
+        RuntimeState(..runtime_state, activity: Running(ready)),
+        msg.ToolResults(tool_batch.ordered_results(batch.calls, outcomes)),
+      )
+    }
+    tool_batch.Waiting(next_batch) -> {
+      observe_tool_result(
+        runtime_state,
+        active,
+        round,
+        call,
+        tool_result,
+        duration_ms,
+      )
+      RuntimeState(
+        ..runtime_state,
+        activity: Running(ActiveRun(..active, phase: AwaitingTools(next_batch))),
+      )
+    }
+  }
+}
+
+fn observe_tool_result(
+  runtime_state: RuntimeState,
+  active: ActiveRun,
+  round: Int,
+  call: ToolCall,
+  tool_result: Result(json.Json, tool.ToolError),
+  duration_ms: Int,
+) -> Nil {
+  let raw_content = tool_batch.result_content(tool_result)
+  let hook_event =
+    hooks.ToolResultEvent(
+      tool_name: call.name,
+      tool_call_id: call.id,
+      result: raw_content,
+      is_error: tool_batch.is_error(tool_result),
+      duration_ms:,
+    )
+  let final_content = case
+    hooks.decide_tool_result(runtime_state.config.hooks, hook_event)
+  {
+    hooks.ResultUnchanged(..) -> raw_content
+    hooks.ResultTransformed(final_event:, transformers:) -> {
+      emit_hook_acted_list(
+        runtime_state.config.dispatcher,
+        transformers,
+        events.AfterToolCall,
+        "transform",
+        "Transformed result",
+      )
+      final_event.result
+    }
+  }
+  emit.to_dispatcher(
+    runtime_state.config.dispatcher,
+    events.ToolExecuted(tool_call: call, result: final_content, duration_ms:),
+  )
+  process.send(
+    active.sink,
+    agent_run.ToolFinished(round:, call:, result: tool_result),
   )
 }
 
-fn partition_by_hook_decision(
-  hooks_list: List(hooks.Hooks),
-  calls: List(ToolCall),
-) -> #(List(BlockedTool), List(ToolCall)) {
-  list.fold(calls, #([], []), fn(acc, call) {
-    let #(blocked_acc, allowed_acc) = acc
-    let hook_event =
-      hooks.ToolCallEvent(
-        tool_name: call.name,
-        tool_call_id: call.id,
-        arguments_json: call.arguments_json,
+fn resume_from_history(runtime_state: RuntimeState) -> RuntimeState {
+  apply_recovery_action(
+    runtime_state,
+    run_recovery.from_history(runtime_state.agent_state),
+  )
+}
+
+fn resume_disposition(
+  runtime_state: RuntimeState,
+  disposition: durable_session.PostCommitDisposition,
+) -> RuntimeState {
+  apply_recovery_action(
+    runtime_state,
+    run_recovery.from_disposition(disposition),
+  )
+}
+
+fn apply_recovery_action(
+  runtime_state: RuntimeState,
+  action: run_recovery.RecoveryAction,
+) -> RuntimeState {
+  case action {
+    run_recovery.Resume -> resume_from_history(runtime_state)
+    run_recovery.StartInference ->
+      start_inference(
+        runtime_state,
+        state.messages_for_provider(runtime_state.agent_state),
+        state.tool_definitions(runtime_state.agent_state),
       )
-    case hooks.decide_tool_call(hooks_list, hook_event) {
-      hooks.ToolAllowed -> #(blocked_acc, list.append(allowed_acc, [call]))
-      hooks.ToolBlocked(hook_name:, reason:) -> #(
-        list.append(blocked_acc, [
-          BlockedTool(call:, hook_name:, reason:),
-        ]),
-        allowed_acc,
-      )
-    }
-  })
-}
-
-fn spawn_and_collect(
-  config: RuntimeConfig,
-  calls: List(ToolCall),
-) -> List(ToolResult) {
-  let disp = config.dispatcher
-  let pairs =
-    list.map(calls, fn(call) {
-      let reply_subject = process.new_subject()
-      let pid =
-        process.spawn(fn() {
-          emit.to_dispatcher(disp, events.ToolStarted(tool_call: call))
-          let start_time = events.system_time()
-          let result = execution.execute_tool(config.tools, call)
-          let duration = events.system_time() - start_time
-          process.send(reply_subject, ToolResult(call.id, result, duration))
-        })
-      #(pid, reply_subject, call.id)
-    })
-  let timeout_ms = 5000
-  list.map(pairs, fn(pair) {
-    let #(pid, subject, call_id) = pair
-    case process.receive(subject, timeout_ms) {
-      Ok(result) -> result
-      Error(Nil) -> {
-        process.kill(pid)
-        logging.log(
-          logging.Error,
-          "Tool execution timed out after " <> int.to_string(timeout_ms) <> "ms",
-        )
-        ToolResult(
-          call_id: call_id,
-          result: Error(tool.ToolError(message: "Tool execution timed out")),
-          duration_ms: timeout_ms,
-        )
-      }
-    }
-  })
-}
-
-fn find_blocked(
-  blocked: List(BlockedTool),
-  call_id: String,
-) -> Result(BlockedTool, Nil) {
-  list.find(blocked, fn(b) { b.call.id == call_id })
-}
-
-fn find_result(
-  results: List(ToolResult),
-  call_id: String,
-) -> Result(#(Result(json.Json, tool.ToolError), Int), Nil) {
-  case list.find(results, fn(r) { r.call_id == call_id }) {
-    Ok(r) -> Ok(#(r.result, r.duration_ms))
-    Error(Nil) -> Error(Nil)
+    run_recovery.StartTools(calls) -> start_tools(runtime_state, calls)
+    run_recovery.Complete(message) -> complete_run(runtime_state, message)
+    run_recovery.Fail(error) -> fail_run(runtime_state, error)
   }
 }
 
-fn is_error(result: Result(a, b)) -> Bool {
-  case result {
-    Ok(_) -> False
-    Error(_) -> True
+fn complete_run(runtime_state: RuntimeState, message: Message) -> RuntimeState {
+  let assert Running(active) = runtime_state.activity
+  let result = run_recovery.completion_result(active.last_inference, message)
+  finish_terminal(runtime_state, run_recovery.Completed(result))
+}
+
+fn fail_run(
+  runtime_state: RuntimeState,
+  error: run_error.RunError,
+) -> RuntimeState {
+  finish_terminal(runtime_state, run_recovery.TermFailed(error))
+}
+
+fn finish_terminal(
+  runtime_state: RuntimeState,
+  terminal: run_recovery.Terminal,
+) -> RuntimeState {
+  let assert Running(active) = runtime_state.activity
+  let event = case terminal {
+    run_recovery.Completed(result) -> agent_run.Completed(result)
+    run_recovery.TermFailed(error) -> agent_run.Failed(error)
+    run_recovery.TermCancelled(reason) -> agent_run.Cancelled(reason)
+  }
+  agent_run.publish_terminal(active.run, event)
+  run_recovery.notify_terminal(
+    terminal,
+    runtime_state.config.hooks,
+    runtime_state.config.model,
+    runtime_state.agent_state.iterations,
+    active.sink,
+  )
+  client_watcher.stop_option(active.watcher)
+  RuntimeState(..runtime_state, activity: Idle)
+}
+
+fn cancel_matching_run(
+  runtime_state: RuntimeState,
+  run_id: String,
+  reason: run_error.CancelReason,
+) -> RuntimeState {
+  case runtime_state.activity {
+    Running(active) if active.id == run_id ->
+      cancel_current_run(runtime_state, reason)
+    _ -> runtime_state
+  }
+}
+
+fn cancel_current_run(
+  runtime_state: RuntimeState,
+  reason: run_error.CancelReason,
+) -> RuntimeState {
+  case runtime_state.activity {
+    Idle -> runtime_state
+    Running(active) -> {
+      case active.phase {
+        Preparing -> Nil
+        AwaitingInference(operation) -> {
+          inference_worker.cancel(operation.worker)
+          process.send(
+            active.sink,
+            agent_run.InferenceFinished(
+              round: operation.round,
+              result: Error(error.Cancelled),
+            ),
+          )
+          emit_inference_failure(
+            runtime_state,
+            operation,
+            error.Cancelled,
+            events.system_time() - operation.started_at,
+          )
+        }
+        AwaitingTools(batch) ->
+          list.each(batch.active, fn(active_tool) {
+            tool_worker.cancel(active_tool.worker)
+            let cancelled = Error(tool.Cancelled)
+            observe_tool_result(
+              runtime_state,
+              active,
+              batch.round,
+              active_tool.call,
+              cancelled,
+              events.system_time() - active_tool.started_at,
+            )
+          })
+      }
+      finish_terminal(runtime_state, run_recovery.TermCancelled(reason))
+    }
   }
 }
 
 fn emit_hook_acted_list(
-  disp: process.Subject(dispatcher.DispatcherMessage),
+  dispatcher_subject: process.Subject(dispatcher.DispatcherMessage),
   transformer_names: List(String),
-  hook: events.HookPoint,
+  hook_point: events.HookPoint,
   action_type: String,
   description: String,
 ) -> Nil {
   list.each(transformer_names, fn(name) {
     emit.to_dispatcher(
-      disp,
+      dispatcher_subject,
       events.HookActed(
         hook_name: name,
-        hook_point: hook,
+        hook_point:,
         action: events.HookActionDetail(action_type:, description:),
       ),
     )
   })
+}
+
+fn commit_transition(
+  session: durable_session.SessionState,
+  previous: state.AgentState,
+  candidate: state.AgentState,
+  disposition: durable_session.PostCommitDisposition,
+) -> Result(
+  durable_session.SessionState,
+  #(durable_session.SessionState, session_store.SessionError),
+) {
+  let result =
+    durable_session.commit_transition(session, previous, candidate, disposition)
+  case result {
+    Ok(next_session) -> Ok(next_session)
+    Error(#(pending, error)) -> Error(#(pending, error))
+  }
+}
+
+fn retry_pending_commit(
+  pending: durable_session.SessionState,
+) -> Result(
+  #(
+    state.AgentState,
+    durable_session.SessionState,
+    durable_session.PostCommitDisposition,
+  ),
+  #(durable_session.SessionState, session_store.SessionError),
+) {
+  case durable_session.retry_pending(pending) {
+    Error(#(still_pending, error)) -> Error(#(still_pending, error))
+    Ok(#(candidate, ready, disposition)) -> Ok(#(candidate, ready, disposition))
+  }
+}
+
+fn set_runtime_settings(
+  runtime_state: RuntimeState,
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  case runtime_state.activity {
+    Running(_) -> #(
+      runtime_state,
+      Error(run_error.Runtime(
+        "cannot change settings while an agent run is active",
+      )),
+    )
+    Idle ->
+      apply_durable_settings(runtime_state, runtime_state.session, settings)
+  }
+}
+
+fn apply_durable_settings(
+  runtime_state: RuntimeState,
+  session: durable_session.SessionState,
+  settings: InferenceSettings,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  apply_settings_result(
+    runtime_state,
+    durable_session.set_settings(
+      session,
+      runtime_state.agent_state,
+      runtime_state.config.inference_settings,
+      settings,
+    ),
+  )
+}
+
+fn apply_settings_result(
+  runtime_state: RuntimeState,
+  settings_result: durable_session.SettingsResult,
+) -> #(RuntimeState, Result(Nil, run_error.RunError)) {
+  let durable_session.SettingsResult(
+    session:,
+    agent_state:,
+    inference_settings:,
+    outcome:,
+    rejection:,
+  ) = settings_result
+  let next_state =
+    RuntimeState(..runtime_state, agent_state:, session:, inference_settings:)
+  let result = case rejection {
+    option.Some(durable_session.CommitPending) ->
+      Error(run_error.Runtime(
+        "cannot change settings while a session commit is pending",
+      ))
+    option.Some(durable_session.DifferentSettingsPending) ->
+      Error(run_error.Runtime(
+        "a different inference settings commit is pending",
+      ))
+    option.None ->
+      case outcome {
+        Ok(Nil) -> Ok(Nil)
+        Error(error) -> Error(run_error.Session(error))
+      }
+  }
+  #(next_state, result)
+}
+
+fn to_durable_session(session: SessionState) -> durable_session.SessionState {
+  case session {
+    SessionDisabled -> durable_session.SessionDisabled
+    SessionReady(store:, head:) -> durable_session.SessionReady(store:, head:)
+    SessionPending(store:, commit:, candidate:, disposition:) ->
+      durable_session.SessionPending(store:, commit:, candidate:, disposition:)
+    SessionSettingsPending(store:, settings:, mode:) ->
+      durable_session.SessionSettingsPending(store:, settings:, mode:)
+  }
 }

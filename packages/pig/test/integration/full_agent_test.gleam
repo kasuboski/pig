@@ -33,13 +33,11 @@ pub fn main() -> Nil {
 // ── Config helpers ───────────────────────────────────────────────
 
 fn make_provider_fn() -> Provider {
-  let prov =
-    openai.provider_with_base_url(
-      config.api_key(),
-      config.model(),
-      config.base_url(),
-    )
-  prov.call
+  openai.provider_with_base_url(
+    config.api_key(),
+    config.model(),
+    config.base_url(),
+  )
 }
 
 fn add_tool() -> tool.Tool {

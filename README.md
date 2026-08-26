@@ -29,7 +29,7 @@ import pig_protocol/thinking
 pub fn main() {
   let provider = openai.provider("your-api-key", "gpt-5")
   let config =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_system_prompt("You are a helpful assistant.")
     |> pig.with_thinking_level(thinking.Medium)
 
@@ -77,11 +77,20 @@ gleam test
 ### Monorepo package dependencies
 
 The source checkout uses local path dependencies between Pig packages so an
-atomic change to `pig_protocol` and `pig` can build before either package is
-published. Release `pig_protocol` first; before publishing `pig`, replace its
-local dependency with the released `pig_protocol` version and regenerate
-`manifest.toml` with Gleam. The checked-out `pig` package is therefore intended
-for monorepo development, not direct Hex publication without that release step.
+atomic cross-package change can build before any package is published. After a
+release is merged, run the interactive publication wizard from an up-to-date
+`main` branch:
+
+```sh
+scripts/publish.sh
+```
+
+The wizard validates the release, publishes `pig_protocol` and `pig_transport`
+first, and prepares released dependency ranges for `pig` in a temporary Git
+worktree. It can optionally publish `pig_proxy`. Gleam authentication and final
+publication prompts remain interactive, while the checked-out `main` branch is
+left unchanged. A C compiler (`cc`, supplied by GCC or Clang) is required for
+Pig's `esqlite` dependency.
 
 Live provider tests are disabled by default. Run them only with the required
 provider credentials configured:

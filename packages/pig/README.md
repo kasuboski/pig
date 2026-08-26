@@ -21,7 +21,7 @@ import pig_protocol/message
 pub fn main() {
   let provider = openai.provider("your-api-key", "gpt-4o-mini")
   let config =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_model("gpt-4o-mini")
     |> pig.with_system_prompt("You are a helpful assistant.")
 
@@ -58,7 +58,7 @@ import pig_protocol/thinking
 
 let provider = openai.provider("your-api-key", "gpt-5")
 let config =
-  pig.new(provider.call)
+  pig.new(provider)
   |> pig.with_thinking_level(thinking.Medium)
 ```
 
@@ -134,14 +134,17 @@ Register it while building the configuration:
 
 ```gleam
 let config =
-  pig.new(provider.call)
+  pig.new(provider)
   |> pig.with_tool(add_tool())
 ```
 
 ## Timeouts and continued runs
 
-Fresh runs use a 120-second default timeout. Explicit and non-panicking variants
-are available:
+Fresh runs use a 120-second default collector deadline. When a deadline
+is reached, Pig actively cancels in-flight provider and tool work before
+returning. The OpenAI HTTP timeout is configured on the provider/transport
+separately; it is not a generic provider idle cap.
+Explicit and non-panicking variants are available:
 
 ```gleam
 pig.run_with_timeout(agent, "Hello", 30_000)
@@ -149,9 +152,10 @@ pig.try_run_with_timeout(agent, "Hello", 30_000)
 pig.try_run_continue_with_timeout(agent, 30_000)
 ```
 
-The `try_*` functions return an outer `Error(Nil)` when the actor call times out
-or crashes, while preserving the provider's inner result. A timeout does not
-cancel in-flight provider or tool work.
+The `try_*` functions return an outer `Error(Nil)` when the runtime is unavailable
+or the collector deadline is reached; provider and run errors remain in the inner
+result. A timeout actively cancels in-flight provider or tool work before
+returning.
 
 Continued runs resume from preloaded history without adding another user
 message, supporting checkpoint-and-resume workflows.

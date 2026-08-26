@@ -42,6 +42,10 @@ pub fn main() -> Nil {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+type BufferedProvider =
+  fn(provider.InferenceRequest) ->
+    Result(provider.InferenceResult, error.AiError)
+
 fn echo_tool() -> tool.Tool {
   tool.Tool(
     definition: tool_definition.ToolDefinition(
@@ -102,13 +106,17 @@ fn context_tool() -> tool.Tool {
   )
 }
 
-fn fixed_provider(response: message.Message) {
-  fn(_request: provider.InferenceRequest) {
-    Ok(provider.from_message(response))
-  }
+fn fixed_provider(
+  response: message.Message,
+) -> fn(provider.InferenceRequest) ->
+  Result(provider.InferenceResult, error.AiError) {
+  fn(_request) { Ok(provider.from_message(response)) }
 }
 
-fn sequenced_provider(responses: List(message.Message)) {
+fn sequenced_provider(
+  responses: List(message.Message),
+) -> fn(provider.InferenceRequest) ->
+  Result(provider.InferenceResult, error.AiError) {
   fn(request: provider.InferenceRequest) {
     let msgs = request.messages
     let idx =
@@ -132,7 +140,7 @@ fn sequenced_provider(responses: List(message.Message)) {
 
 /// Start a runtime with dispatcher + event collector.
 fn start_with_collector(
-  provider_fn: provider.Provider,
+  provider_fn: BufferedProvider,
   tools: List(tool.Tool),
   hooks_list: List(hooks.Hooks),
 ) -> #(
@@ -140,6 +148,7 @@ fn start_with_collector(
   process.Subject(events.SessionEvent),
   process.Subject(dispatcher.DispatcherMessage),
 ) {
+  let provider_fn = provider.from_buffered(provider_fn)
   let assert Ok(disp) = dispatcher.start()
   let collector = process.new_subject()
   process.send(
@@ -163,12 +172,13 @@ fn start_with_collector(
 
 /// Start a runtime without event collector (simpler setup).
 fn start_simple(
-  provider_fn: provider.Provider,
+  provider_fn: BufferedProvider,
   tools: List(tool.Tool),
 ) -> #(
   process.Subject(runtime.RuntimeMsg),
   process.Subject(dispatcher.DispatcherMessage),
 ) {
+  let provider_fn = provider.from_buffered(provider_fn)
   let assert Ok(disp) = dispatcher.start()
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let config =
@@ -187,7 +197,7 @@ fn start_simple(
 
 /// Start a runtime whose transitions are durably committed to `store`.
 fn start_with_session_store(
-  provider_fn: provider.Provider,
+  provider_fn: BufferedProvider,
   tools: List(tool.Tool),
   store: session_store.SessionStore,
   loaded_head: option.Option(String),
@@ -195,6 +205,7 @@ fn start_with_session_store(
   process.Subject(runtime.RuntimeMsg),
   process.Subject(dispatcher.DispatcherMessage),
 ) {
+  let provider_fn = provider.from_buffered(provider_fn)
   let assert Ok(disp) = dispatcher.start()
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let agent_config =
@@ -213,11 +224,11 @@ fn start_with_session_store(
       inference_settings: agent_config.inference_settings,
     )
   let initial_state =
-    runtime.RuntimeState(
-      agent_state: state.new(agent_config),
-      config:,
-      session: runtime.SessionReady(store, loaded_head),
-      inference_settings: agent_config.inference_settings,
+    runtime.initial_state(
+      state.new(agent_config),
+      config,
+      runtime.SessionReady(store, loaded_head),
+      agent_config.inference_settings,
     )
   let assert Ok(subject) = runtime.start_with_state(config, initial_state)
   #(subject, disp)
@@ -892,7 +903,9 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
   let registry = tool.new_registry() |> tool.register(echo_tool())
   let config =
     runtime.RuntimeConfig(
-      provider: sequenced_provider([response1, response2]),
+      provider: provider.from_buffered(
+        sequenced_provider([response1, response2]),
+      ),
       tools: registry,
       hooks: [guard],
       dispatcher: disp,
@@ -991,7 +1004,7 @@ pub fn runs_accumulate_history_with_hooks_test() {
   let assert Ok(disp2) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
-      provider: provider_fn,
+      provider: provider.from_buffered(provider_fn),
       tools: tool.new_registry(),
       hooks: [guard],
       dispatcher: disp2,
@@ -1039,7 +1052,7 @@ pub fn max_iterations_circuit_breaker_test() {
   let assert Ok(disp) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
-      provider: fixed_provider(looping),
+      provider: provider.from_buffered(fixed_provider(looping)),
       tools: tool.new_registry() |> tool.register(echo_tool()),
       hooks: [],
       dispatcher: disp,
@@ -1634,8 +1647,8 @@ fn is_crash_boundary(
 
 fn counted_provider(
   counter: process.Subject(CounterMessage),
-  provider_fn: provider.Provider,
-) -> provider.Provider {
+  provider_fn: BufferedProvider,
+) -> BufferedProvider {
   fn(request: provider.InferenceRequest) {
     process.send(counter, Increment)
     provider_fn(request)
@@ -1651,7 +1664,7 @@ fn counted_echo_tool(counter: process.Subject(CounterMessage)) -> tool.Tool {
 }
 
 fn start_restored_session(
-  provider_fn: provider.Provider,
+  provider_fn: BufferedProvider,
   tools: List(tool.Tool),
   store: session_store.SessionStore,
   snapshot: session_store.Session,
@@ -1663,7 +1676,7 @@ fn start_restored_session(
   let assert Ok(disp) = dispatcher.start()
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let agent_config =
-    state.config(provider_fn)
+    state.config(provider.from_buffered(provider_fn))
     |> state.with_tools(registry)
     |> state.with_model("test-model")
     |> state.with_max_iterations(50)
@@ -1671,7 +1684,7 @@ fn start_restored_session(
     list.fold(messages, state.new(agent_config), state.add_message)
   let config =
     runtime.RuntimeConfig(
-      provider: provider_fn,
+      provider: provider.from_buffered(provider_fn),
       tools: registry,
       hooks: [],
       dispatcher: disp,
@@ -1680,11 +1693,11 @@ fn start_restored_session(
       inference_settings: agent_config.inference_settings,
     )
   let initial_state =
-    runtime.RuntimeState(
-      agent_state:,
-      config:,
-      session: runtime.SessionReady(store, head),
-      inference_settings: agent_config.inference_settings,
+    runtime.initial_state(
+      agent_state,
+      config,
+      runtime.SessionReady(store, head),
+      agent_config.inference_settings,
     )
   let assert Ok(subject) = runtime.start_with_state(config, initial_state)
   #(subject, disp)
@@ -1839,7 +1852,7 @@ pub fn crash_after_terminal_assistant_commit_returns_durably_test() {
 
 /// Start a runtime with pre-loaded history for run_continue tests.
 fn start_with_history(
-  provider_fn: provider.Provider,
+  provider_fn: BufferedProvider,
   tools: List(tool.Tool),
   history: List(message.Message),
 ) -> #(
@@ -1849,14 +1862,14 @@ fn start_with_history(
   let assert Ok(disp) = dispatcher.start()
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let agent_config =
-    state.config(provider_fn)
+    state.config(provider.from_buffered(provider_fn))
     |> state.with_tools(registry)
     |> state.with_model("test-model")
     |> state.with_max_iterations(50)
   let agent_st = list.fold(history, state.new(agent_config), state.add_message)
   let runtime_config =
     runtime.RuntimeConfig(
-      provider: provider_fn,
+      provider: provider.from_buffered(provider_fn),
       tools: registry,
       hooks: [],
       dispatcher: disp,
@@ -1865,11 +1878,11 @@ fn start_with_history(
       inference_settings: agent_config.inference_settings,
     )
   let rt_state =
-    runtime.RuntimeState(
-      agent_state: agent_st,
-      config: runtime_config,
-      session: runtime.SessionDisabled,
-      inference_settings: agent_config.inference_settings,
+    runtime.initial_state(
+      agent_st,
+      runtime_config,
+      runtime.SessionDisabled,
+      agent_config.inference_settings,
     )
   let assert Ok(subject) = runtime.start_with_state(runtime_config, rt_state)
   #(subject, disp)
@@ -2087,7 +2100,7 @@ pub fn low_level_runtime_config_settings_are_used_test() {
   let assert Ok(disp) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
-      provider: provider_fn,
+      provider: provider.from_buffered(provider_fn),
       tools: tool.new_registry(),
       hooks: [],
       dispatcher: disp,

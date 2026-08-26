@@ -1,5 +1,5 @@
 name = "pig_proxy"
-version = "0.1.0"
+version = "0.2.0"
 target = "erlang"
 description = "Standalone executable proxy server for the pig agent ecosystem."
 licences = ["Apache-2.0"]
@@ -19,6 +19,7 @@ telemetry = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.2.0 and < 3.0.0"
 filepath = ">= 1.0.0 and < 2.0.0"
 pig_protocol = { path = "../pig_protocol" }
+pig_transport = { path = "../pig_transport" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -1,0 +1,9 @@
+: keep-alive
+event: message
+x-ignored: yes
+data: {"text":"hé"}
+data: second line
+
+data: [DONE]
+
+:data-only-comment

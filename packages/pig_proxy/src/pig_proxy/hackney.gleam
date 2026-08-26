@@ -1,45 +1,20 @@
-//// Gleam wrapper around the hackney HTTP client FFI.
-////
-//// Two modes:
-////   - `sync_request`: blocking, returns the full response (non-streaming).
-////   - `stream`: opens a streaming request, returns synchronously at the
-////     first byte (the commit point), then forwards the rest once started.
+//// Compatibility-shaped helpers backed by the shared Hackney transport.
 
-import gleam/erlang/process
-import pig_proxy/transport
+import pig_transport
+import pig_transport/hackney as shared_hackney
 
-/// Result of a synchronous hackney request.
+/// The response shape retained by proxy helper callers.
 pub type HackneyResponse {
   OkResponse(status: Int, headers: List(#(String, String)), body: BitArray)
   ErrorResponse(reason: String)
 }
 
-/// How long to wait for the upstream head (status + first byte) before
-/// declaring a streaming attempt a transport failure.
-const head_timeout_ms = 30_000
+/// Ensure Hackney is running.
+pub fn ensure_started() -> Nil {
+  shared_hackney.ensure_started()
+}
 
-@external(erlang, "pig_proxy_hackney_ffi", "ensure_started")
-pub fn ensure_started() -> Nil
-
-@external(erlang, "pig_proxy_hackney_ffi", "sync_request")
-fn ffi_sync_request(
-  method: String,
-  url: String,
-  headers: List(#(String, String)),
-  body: String,
-  timeout_ms: Int,
-) -> HackneyResponse
-
-@external(erlang, "pig_proxy_hackney_ffi", "stream_connect")
-fn ffi_stream_connect(
-  method: String,
-  url: String,
-  headers: List(#(String, String)),
-  body: String,
-  head: process.Subject(transport.StreamHead),
-) -> Nil
-
-/// Make a blocking HTTP request and return the full response.
+/// Make a blocking request through the shared adapter.
 pub fn sync_request(
   method: String,
   url: String,
@@ -47,44 +22,14 @@ pub fn sync_request(
   body: String,
   timeout_ms: Int,
 ) -> HackneyResponse {
-  ensure_started()
-  ffi_sync_request(method, url, headers, body, timeout_ms)
-}
-
-/// Open a streaming request. A relay process connects to the upstream and
-/// reports the head (status + first byte) to a fresh subject; this returns
-/// synchronously with that head — the commit point. For a committed
-/// attempt the relay then waits to be `StartRelay`-ed by the consumer
-/// before forwarding the body.
-pub fn stream(req: transport.TransportRequest) -> transport.StreamHead {
-  ensure_started()
-  let head = process.new_subject()
-  let relay = process.spawn(fn() {
-    ffi_stream_connect(req.method, req.url, req.headers, req.body, head)
-  })
-  case process.receive(head, head_timeout_ms) {
-    Ok(h) -> h
-    Error(Nil) -> {
-      process.kill(relay)
-      transport.StreamFailure("timeout waiting for upstream head")
-    }
+  case shared_hackney.sync_request(method, url, headers, body, timeout_ms) {
+    pig_transport.Response(status:, headers:, body:) ->
+      OkResponse(status:, headers:, body:)
+    pig_transport.TransportError(reason:) -> ErrorResponse(reason:)
   }
 }
 
-/// The production transport adapter: wraps `sync_request` and `stream` in
-/// the `transport.Transport` port so request execution can talk to
-/// upstream without knowing about hackney.
-pub fn transport() -> transport.Transport {
-  transport.Transport(
-    sync: fn(req) {
-      case
-        sync_request(req.method, req.url, req.headers, req.body, req.timeout_ms)
-      {
-        OkResponse(status:, headers:, body:) ->
-          transport.Response(status:, headers:, body:)
-        ErrorResponse(reason:) -> transport.TransportError(reason:)
-      }
-    },
-    stream: fn(req) { stream(req) },
-  )
+/// Return the shared production transport.
+pub fn transport() -> pig_transport.Transport {
+  shared_hackney.transport()
 }

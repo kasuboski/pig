@@ -168,6 +168,25 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
 
       #(Model(..model, messages:), effect.none())
     }
+    ServerMessage(shared.ServerAssistantDelta(_agent_id, message_id, delta)) -> {
+      let messages = case dict.get(model.messages, message_id) {
+        Ok(message) if message.is_ai ->
+          dict.insert(
+            model.messages,
+            message_id,
+            shared.append_assistant_delta(message, delta),
+          )
+        Ok(_) | Error(_) -> model.messages
+      }
+
+      #(Model(..model, messages:), effect.none())
+    }
+    ServerMessage(shared.ServerRemoveChatMessage(_agent_id, message_id)) -> {
+      #(
+        Model(..model, messages: dict.delete(model.messages, message_id)),
+        effect.none(),
+      )
+    }
     ServerMessage(shared.AgentSelected(agent_id, messages)) -> {
       let messages_dict =
         messages
@@ -228,6 +247,7 @@ fn chat_message_element(chat_msg: ChatMessage) {
   }
 
   let status_indicator = case chat_msg.status {
+    shared.Streaming -> " ..."
     shared.Sending -> " 🕐"
     shared.ClientError -> " ❌"
     shared.ServerError -> " ⚠️"

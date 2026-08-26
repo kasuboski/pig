@@ -3,9 +3,10 @@
 //// Tests provide request data and inspect the resulting JSON without network
 //// access. If the provider builder API changes, only this module needs updates.
 
+import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import pig/openai
-import pig/provider.{InferenceRequest}
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -22,18 +23,37 @@ pub fn check_request(
   provider_default: Option(ThinkingLevel),
   request_level: Option(ThinkingLevel),
 ) -> String {
-  let provider = case api {
-    Chat -> openai.provider("sk-test", "gpt-5")
-    Responses -> openai.responses_provider("sk-test", "gpt-5")
+  let thinking_level = case request_level {
+    Some(level) -> Some(level)
+    None -> provider_default
   }
-  let provider = case provider_default {
-    Some(level) -> openai.with_default_thinking_level(provider, level)
-    None -> provider
+  let instructions =
+    messages
+    |> list.filter_map(fn(message) {
+      case message {
+        message.System(content) -> Ok(content)
+        _ -> Error(Nil)
+      }
+    })
+    |> string.join("\n\n")
+  case api {
+    Chat ->
+      openai.build_request_body_with_thinking(
+        messages,
+        [],
+        "gpt-5",
+        thinking_level,
+      )
+    Responses ->
+      openai.build_responses_request_body_with_thinking(
+        messages,
+        [],
+        "gpt-5",
+        case instructions {
+          "" -> None
+          value -> Some(value)
+        },
+        thinking_level,
+      )
   }
-  let settings = case request_level {
-    Some(level) -> provider.with_thinking_level(level)
-    None -> provider.default_settings()
-  }
-  let request = InferenceRequest(messages:, tools: [], settings:)
-  openai.build_provider_request_body(provider, request)
 }

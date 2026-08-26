@@ -2,6 +2,22 @@ import gleam/option.{type Option, None}
 import pig_protocol/message.{type Message}
 import pig_protocol/stop_reason.{type StopReason}
 
+/// A provider-neutral piece of an assistant response.
+///
+/// Provider-specific stream fields are normalized into these four forms. Tool
+/// calls retain their provider index so parallel calls can be assembled without
+/// changing their order.
+pub type InferenceDelta {
+  /// A fragment of the assistant's visible response.
+  TextDelta(text: String)
+  /// A fragment of the assistant's reasoning or thinking output.
+  ReasoningDelta(text: String)
+  /// The first metadata for a tool call at a provider stream index.
+  ToolCallStarted(index: Int, id: String, name: String)
+  /// A fragment of JSON arguments for a tool call.
+  ToolArgumentDelta(index: Int, delta: String)
+}
+
 /// Metadata returned by the provider alongside the message.
 pub type InferenceMetadata {
   InferenceMetadata(
@@ -13,7 +29,7 @@ pub type InferenceMetadata {
   )
 }
 
-/// Result of a provider call — the message plus metadata from the API response.
+/// Result of a provider call - the message plus metadata from the API response.
 pub type InferenceResult {
   InferenceResult(message: Message, metadata: InferenceMetadata)
 }

@@ -25,7 +25,7 @@ import pig/obs/events.{
 }
 import pig/provider
 import pig_protocol/error.{
-  type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+  type AiError, ApiError, Cancelled, InvalidResponse, RateLimited, Timeout,
 }
 import pig_protocol/message.{
   type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
@@ -388,13 +388,15 @@ pub fn start_consumer(
     Ok(started) -> {
       let subject = started.data
       Ok(
-        consumer_spec.started(
+        consumer_spec.started_with_result(
           fn(event) { process.send(subject, Consume(event)) },
           fn() {
             let reply_subject = process.new_subject()
             process.send(subject, Stop(reply_subject))
-            let _ = process.receive(reply_subject, 5000)
-            Nil
+            case process.receive(reply_subject, 5000) {
+              Ok(Nil) -> Ok(Nil)
+              Error(Nil) -> Error(consumer_spec.StopTimeout)
+            }
           },
         ),
       )
@@ -408,16 +410,15 @@ pub fn stop_consumer(consumer: consumer_spec.StartedConsumer) -> Nil {
   consumer_spec.stop(consumer)
 }
 
-/// Create a supervised session consumer actor for use in a supervision tree.
-/// The supervised actor's message type is SessionEvent directly (not WriterMessage).
+/// Create a supervised session consumer with a graceful drain control.
 pub fn supervised(
   path: String,
-  name: Name(SessionEvent),
+  name: Name(consumer_spec.SupervisedMessage),
 ) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let builder =
       actor.new(State(path: path))
-      |> actor.on_message(handle_consumer_message)
+      |> actor.on_message(handle_control_message)
       |> actor.named(name)
     case actor.start(builder) {
       Ok(started) -> Ok(actor.Started(data: Nil, pid: started.pid))
@@ -669,15 +670,22 @@ fn handle_managed_message(
   }
 }
 
-/// Handle events for the supervised actor. Its supervisor owns shutdown.
-fn handle_consumer_message(
+fn handle_control_message(
   state: State,
-  event: SessionEvent,
-) -> actor.Next(State, SessionEvent) {
-  let json_str = format_event(event)
-  case simplifile.append(state.path, json_str <> "\n") {
-    Ok(_) -> actor.continue(state)
-    Error(_) -> actor.stop()
+  message: consumer_spec.SupervisedMessage,
+) -> actor.Next(State, consumer_spec.SupervisedMessage) {
+  case message {
+    consumer_spec.Event(event) -> {
+      let json_str = format_event(event)
+      case simplifile.append(state.path, json_str <> "\n") {
+        Ok(_) -> actor.continue(state)
+        Error(_) -> actor.stop()
+      }
+    }
+    consumer_spec.Stop(reply_subject) -> {
+      process.send(reply_subject, Nil)
+      actor.continue(state)
+    }
   }
 }
 
@@ -756,6 +764,9 @@ fn error_to_json(error: AiError) -> json.Json {
     }
     Timeout -> {
       json.object([#("type", json.string("timeout"))])
+    }
+    Cancelled -> {
+      json.object([#("type", json.string("cancelled"))])
     }
     InvalidResponse(detail:) -> {
       json.object([

@@ -36,7 +36,7 @@ fn initial_state(tools: List(tool.Tool)) -> state.AgentState {
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
-  state.config(provider)
+  state.config(provider.from_buffered(provider))
   |> state.with_tools(registry)
   |> state.new()
 }
@@ -51,7 +51,7 @@ fn initial_state_with_max(
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
-  state.config(provider)
+  state.config(provider.from_buffered(provider))
   |> state.with_tools(registry)
   |> state.with_max_iterations(max)
   |> state.new()
@@ -63,12 +63,12 @@ fn run_scenario(
   st: state.AgentState,
   user_prompt: String,
   provider_responses: List(message.Message),
-) -> #(state.AgentState, step_result.StepResult(msg.AgentMsg)) {
+) -> #(state.AgentState, step_result.StepResult) {
   // Step 1: Apply UserPrompt
   let result = update.update(st, msg.UserPrompt(user_prompt))
   // Step 2: Extract the CallProvider effect, feed the first response
-  let assert step_result.Continue(state: st1, effects: effs1) = result
-  let assert [effect.CallProvider(..)] = effs1
+  let assert step_result.Continue(state: st1, effect: effect.CallProvider(..)) =
+    result
   // Feed the first provider response
   let resp1 = list.first(provider_responses)
   case resp1 {
@@ -84,66 +84,51 @@ fn run_scenario(
 /// Fold through provider responses, handling tool call chains.
 fn fold_responses(
   st: state.AgentState,
-  current_result: step_result.StepResult(msg.AgentMsg),
+  current_result: step_result.StepResult,
   remaining_responses: List(message.Message),
-) -> #(state.AgentState, step_result.StepResult(msg.AgentMsg)) {
+) -> #(state.AgentState, step_result.StepResult) {
   case current_result {
     step_result.Done(..) -> #(st, current_result)
     step_result.Failed(..) -> #(st, current_result)
-    step_result.Continue(state: new_st, effects: effs) -> {
-      // Process effects — there should be exactly one
-      case effs {
-        [effect.ExecuteTools(calls:, on_results: _)] -> {
-          // Simulate tool execution: produce results for each call
-          let tool_results =
-            list.map(calls, fn(call) {
-              // Produce a mock result based on tool name
-              case call.name {
-                "echo" -> #(
-                  call,
-                  Ok(json.object([#("echo", json.string("mocked"))])),
-                )
-                "boom" -> #(
-                  call,
-                  Error(tool.ToolError(message: "tool exploded")),
-                )
-                _ -> #(call, Error(tool.ToolError(message: "unknown tool")))
-              }
-            })
-          let result2 = update.update(new_st, msg.ToolResults(tool_results))
-          // After tool results, we get a Continue with CallProvider
-          case result2 {
-            step_result.Continue(state: st2, effects: [effect.CallProvider(..)]) -> {
-              // Feed next provider response
-              case list.first(remaining_responses) {
-                Ok(resp) -> {
-                  let result3 =
-                    update.update(st2, msg.ProviderResponded(Ok(resp)))
-                  fold_responses(
-                    st2,
-                    result3,
-                    list.drop(remaining_responses, 1),
-                  )
-                }
-                Error(_) -> #(st2, result2)
-              }
-            }
-            other -> #(new_st, other)
+    step_result.Continue(state: new_st, effect: effect.ExecuteTools(calls:)) -> {
+      // Simulate tool execution: produce results for each call
+      let tool_results =
+        list.map(calls, fn(call) {
+          // Produce a mock result based on tool name
+          case call.name {
+            "echo" -> #(
+              call,
+              Ok(json.object([#("echo", json.string("mocked"))])),
+            )
+            "boom" -> #(call, Error(tool.ToolError(message: "tool exploded")))
+            _ -> #(call, Error(tool.ToolError(message: "unknown tool")))
           }
-        }
-        [effect.CallProvider(..)] -> {
-          // This shouldn't happen in normal flow after UserPrompt,
-          // but handle it anyway
+        })
+      let result2 = update.update(new_st, msg.ToolResults(tool_results))
+      // After tool results, we get a Continue with CallProvider
+      case result2 {
+        step_result.Continue(state: st2, effect: effect.CallProvider(..)) -> {
+          // Feed next provider response
           case list.first(remaining_responses) {
             Ok(resp) -> {
-              let result2 =
-                update.update(new_st, msg.ProviderResponded(Ok(resp)))
-              fold_responses(new_st, result2, list.drop(remaining_responses, 1))
+              let result3 = update.update(st2, msg.ProviderResponded(Ok(resp)))
+              fold_responses(st2, result3, list.drop(remaining_responses, 1))
             }
-            Error(_) -> #(new_st, current_result)
+            Error(_) -> #(st2, result2)
           }
         }
-        _ -> #(new_st, current_result)
+        other -> #(new_st, other)
+      }
+    }
+    step_result.Continue(state: new_st, effect: effect.CallProvider(..)) -> {
+      // This shouldn't happen in normal flow after UserPrompt,
+      // but handle it anyway
+      case list.first(remaining_responses) {
+        Ok(resp) -> {
+          let result2 = update.update(new_st, msg.ProviderResponded(Ok(resp)))
+          fold_responses(new_st, result2, list.drop(remaining_responses, 1))
+        }
+        Error(_) -> #(new_st, current_result)
       }
     }
   }
@@ -218,7 +203,7 @@ pub fn scenario_chained_tool_calls_test() {
 pub fn scenario_provider_error_test() {
   let st = initial_state([])
   let result = update.update(st, msg.UserPrompt("hello"))
-  let assert step_result.Continue(state: st1, effects: _) = result
+  let assert step_result.Continue(state: st1, effect: _) = result
   let result2 =
     update.update(
       st1,
@@ -241,20 +226,20 @@ pub fn scenario_max_iterations_circuit_breaker_test() {
   let st = initial_state_with_max([echo_tool()], 2)
   // Step 1: UserPrompt → Continue
   let result = update.update(st, msg.UserPrompt("loop"))
-  let assert step_result.Continue(state: st1, effects: _) = result
+  let assert step_result.Continue(state: st1, effect: _) = result
   // Step 2: ProviderResponded with tool calls → Continue with ExecuteTools
   let result2 = update.update(st1, msg.ProviderResponded(Ok(looping)))
-  let assert step_result.Continue(state: st2, effects: _) = result2
+  let assert step_result.Continue(state: st2, effect: _) = result2
   // Step 3: ToolResults → Continue (iterations now 1)
   let tool_results = [
     #(tc, Ok(json.object([#("echo", json.string("x"))]))),
   ]
   let result3 = update.update(st2, msg.ToolResults(tool_results))
-  let assert step_result.Continue(state: st3, effects: _) = result3
+  let assert step_result.Continue(state: st3, effect: _) = result3
   assert st3.iterations == 1
   // Step 4: Provider responds with tool calls again
   let result4 = update.update(st3, msg.ProviderResponded(Ok(looping)))
-  let assert step_result.Continue(state: st4, effects: _) = result4
+  let assert step_result.Continue(state: st4, effect: _) = result4
   // Step 5: ToolResults again (iterations now 2) — exceeds max
   let result5 = update.update(st4, msg.ToolResults(tool_results))
   let assert step_result.Failed(state: _, error: e) = result5
@@ -270,16 +255,18 @@ pub fn scenario_tool_error_recovery_test() {
   // Use a custom fold for error tool
   let st = initial_state([failing_tool()])
   let result = update.update(st, msg.UserPrompt("try boom"))
-  let assert step_result.Continue(state: st1, effects: _) = result
+  let assert step_result.Continue(state: st1, effect: _) = result
   let result2 = update.update(st1, msg.ProviderResponded(Ok(tool_resp)))
-  let assert step_result.Continue(state: st2, effects: effs) = result2
-  let assert [effect.ExecuteTools(calls: _, ..)] = effs
+  let assert step_result.Continue(
+    state: st2,
+    effect: effect.ExecuteTools(calls: _),
+  ) = result2
   // Produce error result for the tool
   let tool_results = [
     #(tc, Error(tool.ToolError(message: "tool exploded"))),
   ]
   let result3 = update.update(st2, msg.ToolResults(tool_results))
-  let assert step_result.Continue(state: st3, effects: _) = result3
+  let assert step_result.Continue(state: st3, effect: _) = result3
   // History should contain the error message
   let history = state.history(st3)
   let assert Ok(message.Tool(content:, ..)) = list.last(history)

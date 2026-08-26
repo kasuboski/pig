@@ -82,12 +82,15 @@ fn increment(counter: process.Subject(CounterMessage)) -> Nil {
 fn capturing_consumer_spec(
   capture: process.Subject(SessionEvent),
   started: process.Subject(Nil),
+  stopped: process.Subject(Nil),
 ) -> consumer_spec.ConsumerSpec {
   let name = process.new_name("test_supervised_capture")
   let spec =
-    supervision.worker(fn() { start_capture_named(capture, started, name) })
+    supervision.worker(fn() {
+      start_capture_named(capture, started, stopped, name)
+    })
   let start_fn = fn() { start_capture(capture) }
-  consumer_spec.ConsumerSpec(spec:, name:, start_fn:)
+  consumer_spec.supervised_spec(spec, name, start_fn)
 }
 
 fn start_capture(
@@ -99,11 +102,12 @@ fn start_capture(
 fn start_capture_named(
   capture: process.Subject(SessionEvent),
   started_subject: process.Subject(Nil),
-  name: process.Name(SessionEvent),
+  stopped_subject: process.Subject(Nil),
+  name: process.Name(consumer_spec.SupervisedMessage),
 ) -> Result(actor.Started(Nil), actor.StartError) {
   let builder =
     actor.new(Nil)
-    |> actor.on_message(capture_handler(capture))
+    |> actor.on_message(capture_handler(capture, stopped_subject))
     |> actor.named(name)
   case actor.start(builder) {
     Ok(started) -> {
@@ -116,10 +120,21 @@ fn start_capture_named(
 
 fn capture_handler(
   capture: process.Subject(SessionEvent),
-) -> fn(Nil, SessionEvent) -> actor.Next(Nil, SessionEvent) {
-  fn(state, event) {
-    process.send(capture, event)
-    actor.continue(state)
+  stopped: process.Subject(Nil),
+) -> fn(Nil, consumer_spec.SupervisedMessage) ->
+  actor.Next(Nil, consumer_spec.SupervisedMessage) {
+  fn(state, message) {
+    case message {
+      consumer_spec.Event(event) -> {
+        process.send(capture, event)
+        actor.continue(state)
+      }
+      consumer_spec.Stop(reply_to) -> {
+        process.send(stopped, Nil)
+        process.send(reply_to, Nil)
+        actor.continue(state)
+      }
+    }
   }
 }
 
@@ -275,16 +290,8 @@ pub fn start_supervised_with_consumers_test() {
   let terminal_start = fn() { terminal.start_consumer() }
 
   let consumer_specs = [
-    consumer_spec.ConsumerSpec(
-      spec: session_spec,
-      name: session_name,
-      start_fn: session_start,
-    ),
-    consumer_spec.ConsumerSpec(
-      spec: terminal_spec,
-      name: terminal_name,
-      start_fn: terminal_start,
-    ),
+    consumer_spec.supervised_spec(session_spec, session_name, session_start),
+    consumer_spec.supervised_spec(terminal_spec, terminal_name, terminal_start),
   ]
 
   let assert Ok(sup) = supervisor.start_supervised(config, consumer_specs)
@@ -324,7 +331,9 @@ pub fn consumers_receive_events_test() {
 pub fn supervised_consumers_survive_event_tree_restart_test() {
   let capture = process.new_subject()
   let consumer_started = process.new_subject()
-  let consumer_spec = capturing_consumer_spec(capture, consumer_started)
+  let consumer_stopped = process.new_subject()
+  let consumer_spec =
+    capturing_consumer_spec(capture, consumer_started, consumer_stopped)
   let response = message.Assistant("restart event", [], None, None)
   let config = pig.new(harness.fixed_provider(response)) |> agent_config
 
@@ -337,7 +346,8 @@ pub fn supervised_consumers_survive_event_tree_restart_test() {
   assert_inference_events(capture)
 
   // Force the OneForAll subtree to reconstruct both dispatcher and consumer.
-  let consumer_subject = process.named_subject(consumer_spec.name)
+  let consumer_spec.ConsumerSpec(name: consumer_name, ..) = consumer_spec
+  let consumer_subject = process.named_subject(consumer_name)
   let assert Ok(original_pid) = process.subject_owner(consumer_subject)
   let monitor = process.monitor(original_pid)
   process.kill(original_pid)
@@ -351,6 +361,24 @@ pub fn supervised_consumers_survive_event_tree_restart_test() {
   let assert Ok(_second) = supervisor.run(sup, "second")
   assert_inference_events(capture)
   supervisor.stop(sup)
+}
+
+/// The dispatcher asks a supervised consumer to drain before the tree exits.
+pub fn supervised_stop_gracefully_drains_consumer_test() {
+  let capture = process.new_subject()
+  let consumer_started = process.new_subject()
+  let consumer_stopped = process.new_subject()
+  let consumer_spec =
+    capturing_consumer_spec(capture, consumer_started, consumer_stopped)
+  let response = message.Assistant("graceful stop", [], None, None)
+  let config = pig.new(harness.fixed_provider(response)) |> agent_config
+  let assert Ok(sup) = supervisor.start_supervised(config, [consumer_spec])
+  let assert Ok(Nil) = process.receive(consumer_started, 2000)
+  let assert Ok(_message) = supervisor.run(sup, "drain")
+  assert_inference_events(capture)
+
+  supervisor.stop(sup)
+  assert process.receive(consumer_stopped, 1000) == Ok(Nil)
 }
 
 /// stop kills the entire supervision tree.
@@ -367,11 +395,7 @@ pub fn stop_kills_tree_test() {
   let session_start = fn() { session.start_consumer(session_path) }
 
   let consumer_specs = [
-    consumer_spec.ConsumerSpec(
-      spec: session_spec,
-      name: session_name,
-      start_fn: session_start,
-    ),
+    consumer_spec.supervised_spec(session_spec, session_name, session_start),
   ]
 
   let assert Ok(sup) = supervisor.start_supervised(config, consumer_specs)
@@ -421,7 +445,7 @@ pub fn supervised_session_load_failure_is_distinct_test() {
     increment(provider_calls)
     Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
   }
-  let config = pig.new(provider_fn) |> agent_config
+  let config = pig.new(provider.from_buffered(provider_fn)) |> agent_config
 
   let assert Error(supervisor.SessionLoad(session_store.Unavailable("offline"))) =
     supervisor.start_supervised_with_session_store(config, [], store)
@@ -448,7 +472,7 @@ pub fn supervised_loaded_terminal_assistant_returns_without_provider_test() {
     increment(provider_calls)
     Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
   }
-  let config = pig.new(provider_fn) |> agent_config
+  let config = pig.new(provider.from_buffered(provider_fn)) |> agent_config
 
   let assert Ok(sup) =
     supervisor.start_supervised_with_session_store(config, [], store)
@@ -485,7 +509,7 @@ pub fn supervised_loaded_user_commits_new_assistant_against_loaded_head_test() {
     process.send(provider_messages, messages)
     Ok(provider.from_message(final))
   }
-  let config = pig.new(provider_fn) |> agent_config
+  let config = pig.new(provider.from_buffered(provider_fn)) |> agent_config
 
   let assert Ok(sup) =
     supervisor.start_supervised_with_session_store(config, [], store)
@@ -513,7 +537,7 @@ pub fn supervised_durable_runtime_restart_reloads_latest_session_test() {
     increment(provider_calls)
     Ok(provider.from_message(completed))
   }
-  let config = pig.new(provider_fn) |> agent_config
+  let config = pig.new(provider.from_buffered(provider_fn)) |> agent_config
 
   let assert Ok(sup) =
     supervisor.start_supervised_with_session_store(config, [], store)
@@ -558,7 +582,7 @@ pub fn supervised_durable_restart_restores_inference_settings_test() {
   let assert Ok(memory_store) =
     memory.start(session_store.Session(None, [], Some(restored)))
   let config =
-    pig.new(provider_fn)
+    pig.new(provider.from_buffered(provider_fn))
     |> pig.with_thinking_level(thinking.Low)
     |> agent_config
   let assert Ok(sup) =

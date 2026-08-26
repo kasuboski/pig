@@ -1,7 +1,7 @@
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import jscheam/schema
 import pig_protocol/error.{type AiError}
@@ -23,6 +23,34 @@ pub fn build_request_body(
   build_request_body_with_thinking(messages, tools, model, None)
 }
 
+/// Build a Chat Completions request body for an SSE response.
+///
+/// The buffered builder remains unchanged for callers that own the request
+/// lifecycle. Streaming requests opt into the usage trailer explicitly.
+pub fn build_stream_request_body(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+) -> String {
+  build_stream_request_body_with_thinking(messages, tools, model, None)
+}
+
+/// Build a streaming Chat Completions request with an optional thinking level.
+pub fn build_stream_request_body_with_thinking(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  thinking_level: Option(ThinkingLevel),
+) -> String {
+  build_request_body_with_thinking_and_stream(
+    messages,
+    tools,
+    model,
+    thinking_level,
+    True,
+  )
+}
+
 /// Build a Chat Completions request with an optional thinking level.
 ///
 /// OpenAI-shaped APIs receive this as `reasoning_effort`. Unsupported levels
@@ -33,11 +61,27 @@ pub fn build_request_body_with_thinking(
   model: String,
   thinking_level: Option(ThinkingLevel),
 ) -> String {
+  build_request_body_with_thinking_and_stream(
+    messages,
+    tools,
+    model,
+    thinking_level,
+    False,
+  )
+}
+
+fn build_request_body_with_thinking_and_stream(
+  messages: List(Message),
+  tools: List(ToolDefinition),
+  model: String,
+  thinking_level: Option(ThinkingLevel),
+  streaming: Bool,
+) -> String {
   let msg_entries = list.map(messages, message_to_json)
   let base = [
     #("model", json.string(model)),
     #("messages", json.preprocessed_array(msg_entries)),
-    #("stream", json.bool(False)),
+    #("stream", json.bool(streaming)),
   ]
   let with_thinking = case thinking_level {
     option.Some(level) -> [
@@ -50,7 +94,14 @@ pub fn build_request_body_with_thinking(
     [] -> with_thinking
     ts -> list.append(with_thinking, [#("tools", json.array(ts, tool_to_json))])
   }
-  json.object(with_tools) |> json.to_string()
+  let with_options = case streaming {
+    True ->
+      list.append(with_tools, [
+        #("stream_options", json.object([#("include_usage", json.bool(True))])),
+      ])
+    False -> with_tools
+  }
+  json.object(with_options) |> json.to_string()
 }
 
 /// Parse an OpenAI Chat Completions JSON response into an InferenceResult.
@@ -222,14 +273,43 @@ fn message_decoder() -> decode.Decoder(Message) {
     None,
     decode.optional(decode.list(tool_call_decoder())),
   )
+  use reasoning_content <- decode.optional_field(
+    "reasoning_content",
+    None,
+    decode.optional(decode.string),
+  )
+  use reasoning <- decode.optional_field(
+    "reasoning",
+    None,
+    decode.optional(decode.string),
+  )
+  use reasoning_text <- decode.optional_field(
+    "reasoning_text",
+    None,
+    decode.optional(decode.string),
+  )
   let content_str = option.unwrap(content, "")
   let tcs = option.unwrap(tool_calls, [])
+  let thinking = case
+    first_non_empty([reasoning_content, reasoning, reasoning_text])
+  {
+    Some(text) -> Some(message.Thinking(text))
+    None -> None
+  }
   decode.success(message.Assistant(
     content: content_str,
     tool_calls: tcs,
-    thinking: None,
+    thinking: thinking,
     stop_reason: None,
   ))
+}
+
+fn first_non_empty(values: List(Option(String))) -> Option(String) {
+  case values {
+    [] -> None
+    [Some(value), ..] if value != "" -> Some(value)
+    [_first, ..rest] -> first_non_empty(rest)
+  }
 }
 
 fn tool_call_decoder() -> decode.Decoder(message.ToolCall) {

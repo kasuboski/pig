@@ -1,8 +1,12 @@
 import gleam/dict
+import gleam/erlang/process.{type Pid, type Selector, type Subject}
 import gleam/result
 import lustre/effect
 import omnimessage/server as omniserver
 import pig
+import pig/run as agent_run
+import pig/run_error.{Busy, Rejected, RuntimeStartUnavailable}
+import pig_protocol/inference
 import pig_protocol/message
 import server/context.{type Context}
 import shared.{type ClientMessage, type ServerMessage}
@@ -42,6 +46,11 @@ pub type Msg {
   ServerMessage(ServerMessage)
 }
 
+type RelayMessage {
+  RunEvent(agent_run.RunEvent)
+  RuntimeDown
+}
+
 pub fn update(model: Model, msg: Msg) {
   case msg {
     ClientMessage(shared.SelectAgent(agent_id)) -> {
@@ -63,46 +72,22 @@ pub fn update(model: Model, msg: Msg) {
     }
 
     ClientMessage(shared.UserSendChatMessage(agent_id, chat_msg)) -> {
+      let owner = process.self()
       #(
         model,
         effect.from(fn(dispatch) {
-          // Save user message as Sent
-          let sent_msg = shared.ChatMessage(..chat_msg, status: shared.Sent)
-          context.add_message(model.ctx, agent_id, sent_msg)
-
-          // Reply with sent message
-          [sent_msg]
-          |> shared.ServerUpsertChatMessages(agent_id, _)
-          |> ServerMessage
-          |> dispatch
-
-          // Get the pig agent and run async
-          let agent = context.get_or_create_agent(model.ctx, agent_id)
-          case agent {
-            Ok(pig_agent) -> {
-              case pig.run_with_timeout(pig_agent, chat_msg.content, 120_000) {
-                Ok(message.Assistant(content:, ..)) -> {
-                  let ai_msg = shared.new_ai_chat_msg(content:)
-                  context.add_message(model.ctx, agent_id, ai_msg)
-                  [ai_msg]
-                  |> shared.ServerUpsertChatMessages(agent_id, _)
-                  |> ServerMessage
-                  |> dispatch
-                }
-                _ -> {
-                  let error_msg =
-                    shared.new_ai_chat_msg(
-                      content: "I seem to have lost my train of thought. Please try again.",
-                    )
-                  context.add_message(model.ctx, agent_id, error_msg)
-                  [error_msg]
-                  |> shared.ServerUpsertChatMessages(agent_id, _)
-                  |> ServerMessage
-                  |> dispatch
-                }
-              }
-            }
-            Error(_) -> Nil
+          case context.get_or_create_agent(model.ctx, agent_id) {
+            Ok(pig_agent) ->
+              start_stream(
+                pig_agent,
+                chat_msg.content,
+                agent_id,
+                chat_msg,
+                model.ctx,
+                owner,
+                dispatch,
+              )
+            Error(_) -> reject_pending_message(agent_id, chat_msg.id, dispatch)
           }
         }),
       )
@@ -122,5 +107,131 @@ pub fn update(model: Model, msg: Msg) {
     }
 
     ServerMessage(_) -> #(model, effect.none())
+  }
+}
+
+fn start_stream(
+  agent: pig.Agent,
+  prompt: String,
+  agent_id: shared.AgentId,
+  user_message: shared.ChatMessage,
+  ctx: Context,
+  owner: Pid,
+  dispatch: fn(Msg) -> Nil,
+) -> Nil {
+  let sink = process.new_subject()
+  case pig.stream_owned(agent, prompt, sink, owner) {
+    Ok(run) -> {
+      // Pig accepted the run, so application history can now advance with it.
+      let sent_msg = shared.ChatMessage(..user_message, status: shared.Sent)
+      let placeholder = shared.new_streaming_ai_chat_msg()
+      context.add_message(ctx, agent_id, sent_msg)
+      dispatch(
+        ServerMessage(shared.ServerUpsertChatMessages(agent_id, [sent_msg])),
+      )
+      // This identity is stable for every delta and is replaced on completion.
+      dispatch(
+        ServerMessage(shared.ServerUpsertChatMessages(agent_id, [placeholder])),
+      )
+      let _ =
+        process.spawn_unlinked(fn() {
+          relay_run_events(run, sink, agent_id, placeholder, ctx, dispatch)
+        })
+      Nil
+    }
+    Error(Busy) | Error(Rejected(_)) | Error(RuntimeStartUnavailable) ->
+      reject_pending_message(agent_id, user_message.id, dispatch)
+  }
+}
+
+fn reject_pending_message(
+  agent_id: shared.AgentId,
+  message_id: String,
+  dispatch: fn(Msg) -> Nil,
+) -> Nil {
+  // The client optimistically rendered this message. Remove it without ever
+  // adding it to application history when Pig rejects the run.
+  dispatch(ServerMessage(shared.ServerRemoveChatMessage(agent_id, message_id)))
+}
+
+fn relay_run_events(
+  run: agent_run.Run,
+  sink: Subject(agent_run.RunEvent),
+  agent_id: shared.AgentId,
+  placeholder: shared.ChatMessage,
+  ctx: Context,
+  dispatch: fn(Msg) -> Nil,
+) -> Nil {
+  let runtime_monitor = process.monitor(pig.runtime_owner(run))
+  let selector =
+    process.new_selector()
+    |> process.select_map(sink, RunEvent)
+    |> process.select_specific_monitor(runtime_monitor, fn(_) { RuntimeDown })
+  relay_run_events_from(selector, run, agent_id, placeholder, ctx, dispatch)
+}
+
+fn relay_run_events_from(
+  selector: Selector(RelayMessage),
+  run: agent_run.Run,
+  agent_id: shared.AgentId,
+  placeholder: shared.ChatMessage,
+  ctx: Context,
+  dispatch: fn(Msg) -> Nil,
+) -> Nil {
+  case process.selector_receive_forever(selector) {
+    RuntimeDown -> Nil
+    RunEvent(event) ->
+      case event {
+        agent_run.InferenceDelta(_, inference.TextDelta(delta)) -> {
+          dispatch(
+            ServerMessage(shared.ServerAssistantDelta(
+              agent_id,
+              placeholder.id,
+              delta,
+            )),
+          )
+          relay_run_events_from(
+            selector,
+            run,
+            agent_id,
+            placeholder,
+            ctx,
+            dispatch,
+          )
+        }
+        agent_run.Completed(result) ->
+          case result.message {
+            message.Assistant(content:, ..) -> {
+              let final_message =
+                shared.finalize_assistant_message(placeholder, content)
+              // Transient deltas never reach Context. Only the canonical
+              // completed message is committed and sent as the replacement.
+              context.add_message(ctx, agent_id, final_message)
+              dispatch(
+                ServerMessage(
+                  shared.ServerUpsertChatMessages(agent_id, [final_message]),
+                ),
+              )
+            }
+            _ -> Nil
+          }
+        agent_run.Failed(_) | agent_run.Cancelled(_) ->
+          // Do not retain or commit partial assistant output after failure.
+          dispatch(
+            ServerMessage(shared.ServerRemoveChatMessage(
+              agent_id,
+              placeholder.id,
+            )),
+          )
+        _ ->
+          relay_run_events_from(
+            selector,
+            run,
+            agent_id,
+            placeholder,
+            ctx,
+            dispatch,
+          )
+      }
   }
 }

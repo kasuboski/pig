@@ -10,10 +10,9 @@
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dynamic/decode
-import gleam/int
-import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -21,16 +20,21 @@ import gleam/string
 import logging
 import mist
 import pig_protocol/auth
+import pig_protocol/sse
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/hackney
 import pig_proxy/telemetry
-import pig_proxy/transport
+import pig_transport as transport
 
-/// State held by the streaming chunked loop: accumulated token usage, a
-/// buffer of incomplete SSE data across network fragments, and the upstream
-/// relay PID so it can be killed if the client disconnects.
+/// State held by the streaming chunked loop: accumulated token usage, the
+/// byte-safe SSE decoder, and the upstream opaque handle so it can be
+/// cancelled if the client disconnects.
 type StreamState {
-  StreamState(usage: Usage, buffer: String, relay: process.Pid)
+  StreamState(
+    usage: Usage,
+    decoder: sse.Decoder,
+    handle: transport.StreamHandle,
+  )
 }
 
 // ── Header scrubbing & injection ────────────────────────────────
@@ -149,7 +153,10 @@ fn trim_trailing_slash(url: String) -> String {
 /// includes `/v1`. We strip a leading `/v1` from the client path and append
 /// the remainder to the target base_url. If the client path does not start
 /// with `/v1`, it is appended unchanged.
-pub fn resolve_upstream_url(target: UpstreamTarget, client_path: String) -> String {
+pub fn resolve_upstream_url(
+  target: UpstreamTarget,
+  client_path: String,
+) -> String {
   let suffix = case string.starts_with(client_path, "/v1") {
     True -> string.drop_start(client_path, 3)
     False -> client_path
@@ -249,44 +256,15 @@ pub fn parse_usage(body: String) -> Usage {
   }
 }
 
-/// Parse token usage from an SSE chunk string.
+/// Parse token usage from one completed SSE frame.
 ///
-/// Scans `data:` lines and returns the last valid usage object found.
-pub fn parse_usage_from_sse(chunk: String) -> Usage {
-  chunk
-  |> string.split("\n")
-  |> list.filter_map(fn(line) {
-    case string.starts_with(line, "data: ") {
-      True -> {
-        let json_str = string.drop_start(line, 6)
-        case json.parse(from: json_str, using: usage_decoder()) {
-          Ok(usage) -> Ok(usage)
-          Error(_) -> Error(Nil)
-        }
-      }
-      False -> Error(Nil)
-    }
-  })
-  |> list.last
-  |> option.from_result
-  |> option.unwrap(Usage(None, None))
-}
-
-/// Split a raw SSE buffer into complete events and an incomplete trailing
-/// fragment. Events are delimited by a blank line (`\n\n`). Any text after
-/// the last `\n\n` is returned as the leftover buffer for the next chunk.
-fn split_sse_events(buffer: String) -> #(List(String), String) {
-  // Normalise CRLF to LF so CRLF-delimited SSE streams (valid per the
-  // SSE spec) split the same way as LF-delimited ones. The buffer is
-  // used only for usage parsing, so normalising never affects the bytes
-  // forwarded to the client.
-  let buffer = string.replace(buffer, "\r\n", "\n")
-  case string.split_once(buffer, "\n\n") {
-    Ok(#(event, rest)) -> {
-      let #(events, leftover) = split_sse_events(rest)
-      #([event, ..events], leftover)
-    }
-    Error(_) -> #([], buffer)
+/// Network chunks must be framed by `pig_protocol/sse.Decoder` before this
+/// function is called, so incomplete UTF-8 or event data is never parsed.
+pub fn parse_usage_from_sse(frame: String) -> Usage {
+  let data = sse.frame_data(frame)
+  case json.parse(from: data, using: usage_decoder()) {
+    Ok(usage) -> usage
+    Error(_) -> Usage(None, None)
   }
 }
 
@@ -309,8 +287,41 @@ fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
 
 /// Parse usage from a complete SSE event string and merge it into the
 /// running stream state. Events without a usage object leave state intact.
-fn merge_usage_from_event(existing: Usage, event: String) -> Usage {
-  merge_usage(existing, parse_usage_from_sse(event))
+fn merge_usage_from_event(existing: Usage, frame: String) -> Usage {
+  merge_usage(existing, parse_usage_from_sse(frame))
+}
+
+/// Feed one raw network chunk through the byte-safe SSE decoder.
+fn push_usage(state: StreamState, chunk: BitArray) -> StreamState {
+  case sse.push(state.decoder, chunk) {
+    Ok(#(decoder, frames)) -> {
+      let usage = list.fold(frames, state.usage, merge_usage_from_event)
+      StreamState(..state, decoder:, usage:)
+    }
+    Error(sse.InvalidUtf8) -> {
+      // Forwarding has already succeeded; discard only the unusable decoder
+      // state so malformed bytes cannot crash or poison the relay.
+      logging.log(
+        logging.Warning,
+        "proxy: invalid UTF-8 in SSE frame; skipping usage extraction",
+      )
+      StreamState(..state, decoder: sse.new())
+    }
+  }
+}
+
+/// Finish the decoder at upstream EOF and use any complete trailing frame.
+fn finish_usage(state: StreamState) -> Usage {
+  case sse.finish(state.decoder) {
+    Ok(frames) -> list.fold(frames, state.usage, merge_usage_from_event)
+    Error(sse.InvalidUtf8) -> {
+      logging.log(
+        logging.Warning,
+        "proxy: invalid UTF-8 in trailing SSE frame; skipping usage extraction",
+      )
+      state.usage
+    }
+  }
 }
 
 /// Ensure a request body asks for streaming usage.
@@ -326,9 +337,8 @@ pub fn ensure_stream_usage(body: String) -> String
 /// Drive a committed streaming relay onto the client connection.
 ///
 /// Execution has already walked the fallback chain, committed to `target_id`
-/// (recording one circuit success), and handed back the relay's `run`
-/// subject plus its owning `relay` pid. This starts the relay forwarding
-/// to a fresh chunked loop, pipes each `RelayChunk` to the client while
+/// (recording one circuit success), and handed back the relay handle. This
+/// starts forwarding to a fresh chunked loop, pipes each `Chunk` to the client while
 /// accumulating token usage, and emits the streaming telemetry
 /// (`StreamChunk` per chunk; `RequestStop` on completion; `RequestError`
 /// on a mid-stream failure) — all attributed to the committed target.
@@ -337,8 +347,7 @@ pub fn ensure_stream_usage(body: String) -> String
 /// commit point (the first byte) inside execution.
 pub fn stream_response(
   req: request.Request(mist.Connection),
-  run: process.Subject(transport.RelayControl),
-  relay: process.Pid,
+  handle: transport.StreamHandle,
   target_id: String,
   provider: String,
   model: String,
@@ -347,7 +356,11 @@ pub fn stream_response(
 ) -> response.Response(mist.ResponseData) {
   logging.log(
     logging.Debug,
-    "proxy: stream committed to \"" <> target_id <> "\" (" <> int_status(status) <> ")",
+    "proxy: stream committed to \""
+      <> target_id
+      <> "\" ("
+      <> int_status(status)
+      <> ")",
   )
 
   let initial_response =
@@ -361,12 +374,12 @@ pub fn stream_response(
     initial_response,
     init: fn(subj) {
       // Tell the relay to start forwarding the body to this loop.
-      process.send(run, transport.StartRelay(forward: subj))
-      StreamState(usage: Usage(None, None), buffer: "", relay:)
+      transport.start(handle, subj)
+      StreamState(usage: Usage(None, None), decoder: sse.new(), handle:)
     },
     loop: fn(state, message, conn) {
       case message {
-        transport.RelayChunk(data) -> {
+        transport.Chunk(data) -> {
           case mist.send_chunk(conn, data) {
             Ok(_) -> {
               telemetry.emit(telemetry.StreamChunk(
@@ -376,37 +389,28 @@ pub fn stream_response(
                 chunk_bytes: bit_array.byte_size(data),
               ))
 
-              let new_buffer = case bit_array.to_string(data) {
-                Ok(text) -> state.buffer <> text
-                Error(_) -> state.buffer
-              }
-              let #(events, leftover) = split_sse_events(new_buffer)
-              let new_usage =
-                list.fold(events, state.usage, merge_usage_from_event)
-
-              mist.chunk_continue(StreamState(
-                usage: new_usage,
-                buffer: leftover,
-                relay: state.relay,
-              ))
+              let next_state = push_usage(state, data)
+              mist.chunk_continue(next_state)
             }
             Error(_) -> {
-              logging.log(
-                logging.Debug,
-                "proxy: client disconnected during stream, stopping relay",
-              )
-              process.kill(state.relay)
+              let reason = "client disconnected during stream"
+              // Telemetry records the disconnect; this log covers the
+              // transport action that telemetry does not describe.
+              logging.log(logging.Debug, "proxy: cancelling upstream stream")
+              transport.cancel(state.handle)
+              telemetry.emit(telemetry.RequestError(
+                target_id:,
+                provider:,
+                model:,
+                error_type: reason,
+              ))
               mist.chunk_stop()
             }
           }
         }
-        transport.RelayDone -> {
+        transport.Done -> {
           logging.log(logging.Debug, "proxy: stream complete")
-          // Flush any trailing event that never received a final delimiter.
-          let final_usage = case state.buffer {
-            "" -> state.usage
-            remaining -> merge_usage_from_event(state.usage, remaining)
-          }
+          let final_usage = finish_usage(state)
           let duration = telemetry.system_time() - start_time
           telemetry.emit(telemetry.RequestStop(
             target_id:,
@@ -419,8 +423,7 @@ pub fn stream_response(
           ))
           mist.chunk_stop()
         }
-        transport.RelayError(reason) -> {
-          logging.log(logging.Error, "proxy: stream error: " <> reason)
+        transport.StreamError(reason) -> {
           telemetry.emit(telemetry.RequestError(
             target_id:,
             provider:,
@@ -434,11 +437,23 @@ pub fn stream_response(
             "event: error\ndata: {\"error\":{\"message\":\""
             <> escape_json_string(reason)
             <> "\"}}\n\n"
-          let error_data = bytes_tree.to_bit_array(
-            bytes_tree.from_string(sse_error),
-          )
+          let error_data =
+            bytes_tree.to_bit_array(bytes_tree.from_string(sse_error))
           let _ = mist.send_chunk(conn, error_data)
           mist.chunk_stop_abnormal(reason)
+        }
+        transport.Committed(..)
+        | transport.Rejected(..)
+        | transport.Failed(..) -> mist.chunk_stop()
+        transport.Cancelled -> {
+          let reason = "stream cancelled"
+          telemetry.emit(telemetry.RequestError(
+            target_id:,
+            provider:,
+            model:,
+            error_type: reason,
+          ))
+          mist.chunk_stop()
         }
       }
     },
@@ -471,13 +486,13 @@ pub fn sync_response_to_mist(
     hackney.ErrorResponse(reason:) ->
       response.new(502)
       |> response.set_header("content-type", "application/json")
-      |> response.set_body(mist.Bytes(
-        bytes_tree.from_string(
+      |> response.set_body(
+        mist.Bytes(bytes_tree.from_string(
           "{\"error\":{\"message\":\"upstream error: "
-            <> escape_json_string(reason)
-            <> "\"}}",
-        ),
-      ))
+          <> escape_json_string(reason)
+          <> "\"}}",
+        )),
+      )
   }
 }
 
@@ -499,12 +514,12 @@ fn set_response_headers(
   headers: List(#(String, String)),
 ) -> response.Response(a) {
   let nominated = connection_header_tokens(headers)
-  let filtered = list.filter(headers, fn(h) {
-    !is_hop_by_hop_header(h.0) && !list.contains(nominated, string.lowercase(h.0))
-  })
-  list.fold(filtered, resp, fn(acc, h) {
-    response.set_header(acc, h.0, h.1)
-  })
+  let filtered =
+    list.filter(headers, fn(h) {
+      !is_hop_by_hop_header(h.0)
+      && !list.contains(nominated, string.lowercase(h.0))
+    })
+  list.fold(filtered, resp, fn(acc, h) { response.set_header(acc, h.0, h.1) })
 }
 
 /// Header names nominated by the upstream `Connection` header (RFC 7230

@@ -1,7 +1,7 @@
 //// Step result type for the sans-IO core.
 ////
 //// The outcome of a single state transition — what happened after
-//// processing a message. Carries the new state and optional effects.
+//// processing a message. Carries the new state and at most one effect.
 ////
 //// Three variants:
 ////   - `Done`      — the agent produced a final answer
@@ -14,12 +14,12 @@ import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
 /// Result of a single state transition in the agent loop.
-pub type StepResult(msg) {
+pub type StepResult {
   /// The agent produced a final answer. No further effects needed.
   Done(state: AgentState, message: Message)
 
-  /// The agent needs more work. Contains effects for the runtime to execute.
-  Continue(state: AgentState, effects: List(Effect(msg)))
+  /// The agent needs more work. Contains the next effect for the runtime.
+  Continue(state: AgentState, effect: Effect)
 
   /// An unrecoverable error occurred.
   Failed(state: AgentState, error: AiError)

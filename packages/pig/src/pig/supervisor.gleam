@@ -9,12 +9,15 @@ import gleam/list
 import gleam/otp/actor.{type StartError as ActorStartError}
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
+import gleam/string
+import logging
 import pig/agent/runtime
 import pig/agent/state
 import pig/obs/consumer_spec
 import pig/obs/dispatcher
 import pig/provider.{type InferenceSettings}
-import pig/run_error.{type RunError}
+import pig/run as agent_run
+import pig/run_error.{type CancelReason, type RunError, type RunStartError}
 import pig/session_store.{type SessionError, type SessionStore, SessionStore}
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
@@ -25,7 +28,11 @@ import pig_protocol/thinking.{type ThinkingLevel}
 /// Use `run`/`run_with_timeout` to send prompts, `stop` to
 /// tear down the supervision tree.
 pub type SupervisedAgent {
-  SupervisedAgent(subject: Subject(runtime.RuntimeMsg), sup_pid: Pid)
+  SupervisedAgent(
+    subject: Subject(runtime.RuntimeMsg),
+    sup_pid: Pid,
+    dispatcher: Subject(dispatcher.DispatcherMessage),
+  )
 }
 
 /// Errors that can prevent a supervised agent from starting.
@@ -103,7 +110,7 @@ fn start_with_runtime(
   // point at the reconstructed consumers and dispatcher.
   let consumer_endpoints =
     list.map(consumer_specs, fn(entry) {
-      consumer_spec.supervised_endpoint(entry.name)
+      consumer_spec.supervised_endpoint_for(entry)
     })
   let event_tree =
     static_supervisor.new(static_supervisor.OneForAll)
@@ -112,7 +119,7 @@ fn start_with_runtime(
       consumer_endpoints,
     ))
     |> list.fold(consumer_specs, _, fn(builder, entry) {
-      static_supervisor.add(builder, entry.spec)
+      static_supervisor.add(builder, consumer_spec.child_spec(entry))
     })
 
   // Build top-level: event subtree (as supervised child) → agent
@@ -124,10 +131,55 @@ fn start_with_runtime(
   case static_supervisor.start(app_tree) {
     Ok(started) -> {
       let agent_subject = process.named_subject(agent_name)
-      Ok(SupervisedAgent(subject: agent_subject, sup_pid: started.pid))
+      Ok(SupervisedAgent(
+        subject: agent_subject,
+        sup_pid: started.pid,
+        dispatcher: process.named_subject(dispatcher_name),
+      ))
     }
     Error(e) -> Error(ActorStart(e))
   }
+}
+
+/// Start one streamed run on the supervised agent.
+pub fn stream(
+  sup: SupervisedAgent,
+  prompt: String,
+  sink: Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream(sup.subject, prompt, sink)
+}
+
+/// Start one streamed run with an explicit client owner.
+pub fn stream_owned(
+  sup: SupervisedAgent,
+  prompt: String,
+  sink: Subject(agent_run.RunEvent),
+  owner: Pid,
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream_owned(sup.subject, prompt, sink, owner)
+}
+
+/// Resume history as one streamed run.
+pub fn stream_continue(
+  sup: SupervisedAgent,
+  sink: Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream_continue(sup.subject, sink)
+}
+
+/// Resume history as a streamed run with an explicit client owner.
+pub fn stream_continue_owned(
+  sup: SupervisedAgent,
+  sink: Subject(agent_run.RunEvent),
+  owner: Pid,
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream_continue_owned(sup.subject, sink, owner)
+}
+
+/// Cancel a supervised run. Repeated calls are harmless.
+pub fn cancel(run: agent_run.Run, reason: CancelReason) -> Nil {
+  agent_run.cancel(run, reason)
 }
 
 /// Run a prompt against the supervised agent with a 120-second timeout.
@@ -192,5 +244,15 @@ pub fn reset_inference_settings(sup: SupervisedAgent) -> Result(Nil, RunError) {
 /// Sends an exit signal to the supervisor process. OTP cascades
 /// shutdown to the agent child process.
 pub fn stop(sup: SupervisedAgent) -> Nil {
+  runtime.stop(sup.subject)
+  case dispatcher.shutdown(sup.dispatcher) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      logging.log(
+        logging.Warning,
+        "Supervised agent shutdown did not drain consumers: "
+          <> string.inspect(error),
+      )
+  }
   process.send_exit(sup.sup_pid)
 }

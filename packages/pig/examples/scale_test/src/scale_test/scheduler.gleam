@@ -323,7 +323,7 @@ fn run_llm_call(
 ) -> Result(String, Nil) {
   let provider = openai.provider_with_base_url(api_key, model_name, base_url)
   let cfg =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_model(model_name)
     |> pig.with_thinking_level(thinking.Off)
     |> pig.with_system_prompt(system_prompt_for(otype))

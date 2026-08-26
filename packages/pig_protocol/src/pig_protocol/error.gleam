@@ -5,5 +5,6 @@ pub type AiError {
   ApiError(message: String)
   RateLimited
   Timeout
+  Cancelled
   InvalidResponse(detail: String)
 }

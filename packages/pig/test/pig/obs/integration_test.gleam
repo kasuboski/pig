@@ -199,27 +199,25 @@ pub fn supervised_path_with_consumers_test() {
 
   // Create an AgentConfig with mock provider
   let agent_config =
-    state.config(fn(_request) {
-      Ok(
-        provider.from_message(message.Assistant(
-          "mock response",
-          [],
-          option.None,
-          option.None,
-        )),
-      )
-    })
+    state.config(
+      provider.from_buffered(fn(_request) {
+        Ok(
+          provider.from_message(message.Assistant(
+            "mock response",
+            [],
+            option.None,
+            option.None,
+          )),
+        )
+      }),
+    )
 
   // Create consumer spec for session writer
   let writer_name = process.new_name("test_session_writer")
   let writer_spec = session.supervised(tmp_file, writer_name)
   let writer_start_fn = fn() { session.start_consumer(tmp_file) }
   let consumer_spec =
-    consumer_spec.ConsumerSpec(
-      spec: writer_spec,
-      name: writer_name,
-      start_fn: writer_start_fn,
-    )
+    consumer_spec.supervised_spec(writer_spec, writer_name, writer_start_fn)
 
   // Start supervised agent with consumer - this should not fail
   let assert Ok(supervised_agent) =
@@ -241,27 +239,25 @@ pub fn multiple_supervised_runs_with_consumers_test() {
 
   // Create an AgentConfig with mock provider
   let agent_config =
-    state.config(fn(_request) {
-      Ok(
-        provider.from_message(message.Assistant(
-          "mock response",
-          [],
-          option.None,
-          option.None,
-        )),
-      )
-    })
+    state.config(
+      provider.from_buffered(fn(_request) {
+        Ok(
+          provider.from_message(message.Assistant(
+            "mock response",
+            [],
+            option.None,
+            option.None,
+          )),
+        )
+      }),
+    )
 
   // Create consumer spec for session writer
   let writer_name = process.new_name("test_session_writer_multi")
   let writer_spec = session.supervised(tmp_file, writer_name)
   let writer_start_fn = fn() { session.start_consumer(tmp_file) }
   let consumer_spec =
-    consumer_spec.ConsumerSpec(
-      spec: writer_spec,
-      name: writer_name,
-      start_fn: writer_start_fn,
-    )
+    consumer_spec.supervised_spec(writer_spec, writer_name, writer_start_fn)
 
   // Start supervised agent with consumer
   let assert Ok(supervised_agent) =

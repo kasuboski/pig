@@ -1,0 +1,7 @@
+: keep-alive
+event: message
+unknown: ignored
+data: first
+data: second
+
+data: café

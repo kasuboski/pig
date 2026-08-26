@@ -7,8 +7,8 @@ import gleeunit
 import pig_proxy/circuit_actor
 import pig_proxy/config
 import pig_proxy/execution
-import pig_proxy/transport
 import pig_proxy/vault
+import pig_transport as transport
 import support/in_memory_transport
 
 pub fn main() -> Nil {
@@ -35,7 +35,7 @@ fn ollama() -> config.UpstreamTarget {
   config.openai_target("ollama", "http://y/v1", "k2")
 }
 
-fn ok200() -> transport.TransportResponse {
+fn ok200() -> transport.Response {
   transport.Response(
     200,
     [#("content-type", "application/json")],
@@ -45,11 +45,11 @@ fn ok200() -> transport.TransportResponse {
   )
 }
 
-fn status500() -> transport.TransportResponse {
+fn status500() -> transport.Response {
   transport.Response(500, [], <<>>)
 }
 
-fn transport_error() -> transport.TransportResponse {
+fn transport_error() -> transport.Response {
   transport.TransportError("boom")
 }
 
@@ -108,7 +108,10 @@ pub fn commit_treats_client_4xx_as_a_response_test() {
 pub fn retry_within_budget_then_commit_test() {
   // Budget 1: first attempt 500 (retry), second attempt 200 (commit).
   let assert Ok(s) =
-    in_memory_transport.start([status500(), ok200()], transport.TransportError("x"))
+    in_memory_transport.start(
+      [status500(), ok200()],
+      transport.TransportError("x"),
+    )
   let outcome =
     execution.orchestrate(
       exec_with(in_memory_transport.transport(s), None),
@@ -375,8 +378,7 @@ pub fn stream_open_circuit_target_is_skipped_test() {
 }
 
 pub fn stream_empty_chain_returns_no_targets_test() {
-  let assert Ok(s) =
-    in_memory_transport.start_stream([], failed("x"))
+  let assert Ok(s) = in_memory_transport.start_stream([], failed("x"))
   let outcome =
     execution.orchestrate_stream(
       exec_with(in_memory_transport.transport(s), None),
@@ -390,7 +392,7 @@ pub fn stream_empty_chain_returns_no_targets_test() {
 
 pub fn committed_stream_relay_forwards_chunks_when_started_test() {
   // Once committed, the relay forwards every byte (then the terminal) to
-  // the subject named in `StartRelay` — the contract the mist loop relies on.
+  // the subject named in `start` — the contract the mist loop relies on.
   let assert Ok(s) =
     in_memory_transport.start_stream(
       [
@@ -411,11 +413,10 @@ pub fn committed_stream_relay_forwards_chunks_when_started_test() {
   let assert execution.CommittedStream(run:, ..) = outcome
 
   let fwd = process.new_subject()
-  process.send(run, transport.StartRelay(forward: fwd))
+  transport.start(run, fwd)
 
   let received = drain(fwd, 3)
-  let assert [transport.RelayChunk(a), transport.RelayChunk(b), transport.RelayDone] =
-    received
+  let assert [transport.Chunk(a), transport.Chunk(b), transport.Done] = received
   assert a == bin("data: a\n\n")
   assert b == bin("data: b\n\n")
 }
@@ -423,9 +424,9 @@ pub fn committed_stream_relay_forwards_chunks_when_started_test() {
 /// Collect up to `count` messages from a subject (1s each), returning what
 /// arrived in order. Used to observe the relay's forwarded stream.
 fn drain(
-  subject: process.Subject(transport.StreamRelayMsg),
+  subject: process.Subject(transport.Event),
   count: Int,
-) -> List(transport.StreamRelayMsg) {
+) -> List(transport.Event) {
   drain_loop(subject, count, [])
 }
 
@@ -523,6 +524,24 @@ pub fn codex_target_sends_codex_headers_to_transport_test() {
   let assert Some(out) = in_memory_transport.last_request(s)
   assert list.key_find(out.headers, "authorization") == Ok("Bearer " <> jwt)
   assert list.key_find(out.headers, "chatgpt-account-id") == Ok("acct_123")
-  assert list.key_find(out.headers, "OpenAI-Beta") == Ok("responses=experimental")
+  assert list.key_find(out.headers, "OpenAI-Beta")
+    == Ok("responses=experimental")
   assert list.key_find(out.headers, "originator") == Ok("pig")
+}
+
+pub fn streaming_request_propagates_executor_timeout_test() {
+  let assert Ok(s) =
+    in_memory_transport.start_stream(
+      [committed(200, [bin("data: ok\n\n")], in_memory_transport.StreamDone)],
+      failed("x"),
+    )
+  let outcome =
+    execution.orchestrate_stream(
+      exec_with(in_memory_transport.transport(s), None),
+      req(),
+      execution.FallbackChain([openai()]),
+    )
+  let assert execution.CommittedStream(..) = outcome
+  let assert Some(out) = in_memory_transport.last_request(s)
+  assert out.timeout_ms == 1000
 }

@@ -1,5 +1,5 @@
 name = "pig"
-version = "0.4.0"
+version = "0.5.0"
 target = "erlang"
 description = "A Gleam library for building and orchestrating agents on the BEAM."
 licences = ["Apache-2.0"]
@@ -12,6 +12,7 @@ gleam_crypto = ">= 1.6.0 and < 2.0.0"
 telemetry = ">= 1.4.1 and < 2.0.0"
 # Monorepo development link; see the root README for release sequencing.
 pig_protocol = { path = "../pig_protocol" }
+pig_transport = { path = "../pig_transport" }
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
 logging = ">= 1.5.0 and < 2.0.0"

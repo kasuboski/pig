@@ -163,7 +163,7 @@ pub fn main() {
 
   // Summary agent - no tools, just a simple call
   let summary_cfg =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_model("code_reviewer_summary")
     |> pig.with_thinking_level(thinking.Medium)
     |> pig.with_system_prompt(summary_system_prompt)
@@ -202,6 +202,10 @@ pub fn main() {
       io.println("   Warning: Summary timed out.")
       "(summary timed out)"
     }
+    Error(run_error.Inference(error.Cancelled)) -> {
+      io.println("   Warning: Summary cancelled.")
+      "(summary cancelled)"
+    }
     Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("   Warning: API error: " <> msg)
       "(api error)"
@@ -221,6 +225,14 @@ pub fn main() {
     Error(run_error.Runtime(message)) -> {
       io.println("   Warning: Runtime error: " <> message)
       "(runtime error)"
+    }
+    Error(run_error.RuntimeUnavailable) -> {
+      io.println("   Warning: Runtime unavailable.")
+      "(runtime unavailable)"
+    }
+    Error(run_error.Cancelled(_)) -> {
+      io.println("   Warning: Summary cancelled.")
+      "(summary cancelled)"
     }
   }
 
@@ -254,7 +266,7 @@ pub fn main() {
   let grep_t = tools.grep_tool(conn)
 
   let review_cfg =
-    pig.new(provider.call)
+    pig.new(provider)
     |> pig.with_model("code_reviewer")
     |> pig.with_thinking_level(thinking.Medium)
     |> pig.with_system_prompt(review_system_prompt)
@@ -288,6 +300,9 @@ pub fn main() {
       io.println("\nWarning: Review timed out (5 minute limit).")
       io.println("Try a faster model or increase the timeout.")
     }
+    Error(run_error.Inference(error.Cancelled)) -> {
+      io.println("\nWarning: Review cancelled.")
+    }
     Error(run_error.Inference(error.ApiError(msg))) -> {
       io.println("\nWarning: API error: " <> msg)
     }
@@ -302,6 +317,12 @@ pub fn main() {
     }
     Error(run_error.Runtime(message)) -> {
       io.println("\nWarning: Runtime error: " <> message)
+    }
+    Error(run_error.RuntimeUnavailable) -> {
+      io.println("\nWarning: Runtime unavailable.")
+    }
+    Error(run_error.Cancelled(_)) -> {
+      io.println("\nWarning: Review cancelled.")
     }
   }
 

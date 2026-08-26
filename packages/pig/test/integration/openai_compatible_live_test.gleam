@@ -26,7 +26,7 @@ pub fn main() -> Nil {
   gleeunit.main()
 }
 
-fn make_provider() -> openai.OpenAIProvider {
+fn make_provider() -> provider.Provider {
   openai.provider_with_base_url(
     config.api_key(),
     config.model(),
@@ -176,15 +176,19 @@ pub fn bad_base_url_returns_error_test() {
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn call_provider(
-  prov: openai.OpenAIProvider,
+  prov: provider.Provider,
   messages: List(message.Message),
   tools: List(tool_definition.ToolDefinition),
 ) {
-  prov.call(provider.InferenceRequest(
-    messages:,
-    tools:,
-    settings: provider.default_settings(),
-  ))
+  provider.run(
+    prov,
+    provider.InferenceRequest(
+      messages:,
+      tools:,
+      settings: provider.default_settings(),
+    ),
+    120_000,
+  )
 }
 
 fn ai_error_to_string(err: AiError) -> String {
@@ -192,6 +196,7 @@ fn ai_error_to_string(err: AiError) -> String {
     error.ApiError(message:) -> "ApiError(" <> message <> ")"
     error.RateLimited -> "RateLimited"
     error.Timeout -> "Timeout"
+    error.Cancelled -> "Cancelled"
     error.InvalidResponse(detail:) -> "InvalidResponse(" <> detail <> ")"
   }
 }

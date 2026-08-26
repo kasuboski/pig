@@ -10,8 +10,9 @@ import pig/hooks
 import pig/obs/consumer_spec
 import pig/obs/events.{type SessionEvent, InferenceSettingsChanged}
 import pig/obs/session
-import pig/provider.{type InferenceRequest, type Provider}
+import pig/provider.{type InferenceRequest}
 import pig/session_store
+import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/thinking
 import simplifile
@@ -41,9 +42,10 @@ fn read_file(path: String) -> Result(String, simplifile.FileError) {
 /// Configure and start Pig with a durable session store.
 fn start_with_session_store(
   store: session_store.SessionStore,
-  provider_fn: Provider,
+  provider_fn: fn(InferenceRequest) ->
+    Result(provider.InferenceResult, error.AiError),
 ) -> Result(pig.Agent, pig.StartError) {
-  pig.new(provider_fn)
+  pig.new(provider.from_buffered(provider_fn))
   |> pig.with_session_store(store)
   |> pig.start
 }
@@ -167,7 +169,7 @@ fn start_capture(
 
 fn start_capture_named(
   capture: Subject(SessionEvent),
-  name: process.Name(SessionEvent),
+  name: process.Name(consumer_spec.SupervisedMessage),
 ) {
   let builder =
     actor.new(Nil)
@@ -181,10 +183,19 @@ fn start_capture_named(
 
 fn capture_handler(
   capture: Subject(SessionEvent),
-) -> fn(Nil, SessionEvent) -> actor.Next(Nil, SessionEvent) {
-  fn(state, msg) {
-    process.send(capture, msg)
-    actor.continue(state)
+) -> fn(Nil, consumer_spec.SupervisedMessage) ->
+  actor.Next(Nil, consumer_spec.SupervisedMessage) {
+  fn(state, message) {
+    case message {
+      consumer_spec.Event(event) -> {
+        process.send(capture, event)
+        actor.continue(state)
+      }
+      consumer_spec.Stop(reply_to) -> {
+        process.send(reply_to, Nil)
+        actor.continue(state)
+      }
+    }
   }
 }
 
@@ -456,7 +467,7 @@ pub fn with_initial_history_provider_sees_messages_test() {
     Ok(provider.from_message(mock_response))
   }
   let config =
-    pig.new(provider_fn)
+    pig.new(provider.from_buffered(provider_fn))
     |> pig.with_initial_history([
       message.User("previous question"),
       message.Assistant("previous answer", [], option.None, option.None),
@@ -495,7 +506,7 @@ pub fn with_initial_history_strips_system_messages_test() {
     Ok(provider.from_message(mock_response))
   }
   let config =
-    pig.new(provider_fn)
+    pig.new(provider.from_buffered(provider_fn))
     |> pig.with_system_prompt("configured prompt")
     |> pig.with_initial_history([
       message.System("should be stripped"),
@@ -540,7 +551,7 @@ pub fn session_store_rejects_initial_history_before_load_or_provider_test() {
     )
   }
   let config =
-    pig.new(provider_fn)
+    pig.new(provider.from_buffered(provider_fn))
     |> pig.with_session_store(store)
     |> pig.with_initial_history([message.User("unpersisted")])
 
@@ -688,7 +699,7 @@ pub fn standalone_jsonl_restart_restores_settings_test() {
     )
   }
   let config =
-    pig.new(provider_fn)
+    pig.new(provider.from_buffered(provider_fn))
     |> pig.with_thinking_level(thinking.Low)
     |> pig.with_session_writer(path)
   let assert Ok(agent) = pig.start(config)

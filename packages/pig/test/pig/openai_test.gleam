@@ -1,10 +1,11 @@
-//// Tests for OpenAI provider configuration and pure request construction.
+//// Tests for the streaming OpenAI provider boundary and request construction.
 
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{None, Some}
 import gleeunit
 import pig/openai
+import pig/provider
 import pig_protocol/message
 import pig_protocol/thinking
 import support/openai_harness
@@ -13,60 +14,21 @@ pub fn main() -> Nil {
   gleeunit.main()
 }
 
-pub fn provider_with_default_base_url_test() {
-  let openai.OpenAIProvider(config:, call: _) =
-    openai.provider("sk-test", "gpt-4o")
-  let assert True =
-    config.base_url == "https://api.openai.com/v1"
-    && config.api_key == "sk-test"
-    && config.model == "gpt-4o"
-}
-
-pub fn provider_with_custom_base_url_test() {
-  let openai.OpenAIProvider(config:, call: _) =
-    openai.provider_with_base_url(
-      "key",
-      "qwen3:0.6b",
-      "http://localhost:11434/v1",
+pub fn provider_builders_are_streaming_first_test() {
+  let chat = openai.build_request_body([message.User("hello")], [], "gpt-4o")
+  let assert Ok(True) = json.parse(chat, decode.at(["stream"], decode.bool))
+  let responses =
+    openai.build_responses_request_body(
+      [message.User("hello")],
+      [],
+      "gpt-5",
+      None,
     )
-  let assert True =
-    config.base_url == "http://localhost:11434/v1"
-    && config.model == "qwen3:0.6b"
+  let assert Ok(True) =
+    json.parse(responses, decode.at(["stream"], decode.bool))
 }
 
-pub fn provider_with_base_url_and_timeout_test() {
-  let openai.OpenAIProvider(config:, call: _) =
-    openai.provider_with_base_url_and_timeout(
-      "sk-test",
-      "gpt-4o",
-      "http://localhost:11434/v1",
-      30_000,
-    )
-  let assert True =
-    config.api_key == "sk-test"
-    && config.model == "gpt-4o"
-    && config.base_url == "http://localhost:11434/v1"
-    && config.http_timeout_ms == 30_000
-}
-
-pub fn with_http_timeout_overrides_test() {
-  let original =
-    openai.provider_with_base_url(
-      "sk-test",
-      "gpt-4o",
-      "http://localhost:11434/v1",
-    )
-  let openai.OpenAIProvider(config: updated, call: _) =
-    openai.with_http_timeout(original, 5000)
-  let assert True =
-    updated.api_key == "sk-test"
-    && updated.model == "gpt-4o"
-    && updated.base_url == "http://localhost:11434/v1"
-    && updated.http_timeout_ms == 5000
-}
-
-/// Chat requests encode an explicit request thinking level.
-pub fn configured_provider_builds_request_with_thinking_test() {
+pub fn configured_provider_builds_chat_request_with_thinking_test() {
   let body =
     openai_harness.check_request(
       openai_harness.Chat,
@@ -74,13 +36,11 @@ pub fn configured_provider_builds_request_with_thinking_test() {
       None,
       Some(thinking.Medium),
     )
-
   let assert Ok("medium") =
     json.parse(body, decode.at(["reasoning_effort"], decode.string))
 }
 
-/// Responses requests encode an explicit request thinking level.
-pub fn responses_provider_builds_request_with_thinking_test() {
+pub fn configured_provider_builds_responses_request_with_thinking_test() {
   let body =
     openai_harness.check_request(
       openai_harness.Responses,
@@ -88,12 +48,10 @@ pub fn responses_provider_builds_request_with_thinking_test() {
       None,
       Some(thinking.High),
     )
-
   let assert Ok("high") =
     json.parse(body, decode.at(["reasoning", "effort"], decode.string))
 }
 
-/// Provider thinking defaults apply when a request defers configuration.
 pub fn provider_default_is_used_when_request_defers_test() {
   let body =
     openai_harness.check_request(
@@ -106,7 +64,6 @@ pub fn provider_default_is_used_when_request_defers_test() {
     json.parse(body, decode.at(["reasoning_effort"], decode.string))
 }
 
-/// Explicit request settings override provider defaults.
 pub fn request_level_overrides_provider_default_for_responses_test() {
   let body =
     openai_harness.check_request(
@@ -119,7 +76,6 @@ pub fn request_level_overrides_provider_default_for_responses_test() {
     json.parse(body, decode.at(["reasoning", "effort"], decode.string))
 }
 
-/// Responses providers combine system messages into instructions.
 pub fn responses_provider_maps_system_messages_to_instructions_test() {
   let body =
     openai_harness.check_request(
@@ -132,7 +88,23 @@ pub fn responses_provider_maps_system_messages_to_instructions_test() {
       None,
       None,
     )
-
   let assert Ok("first instruction\n\nsecond instruction") =
     json.parse(body, decode.at(["instructions"], decode.string))
+}
+
+pub fn buffered_provider_has_no_delta_before_completion_test() {
+  let response =
+    provider.from_message(message.Assistant("done", [], None, None))
+  let inference =
+    provider.start(
+      provider.from_buffered(fn(_) { Ok(response) }),
+      provider.InferenceRequest(
+        messages: [message.User("hello")],
+        tools: [],
+        settings: provider.default_settings(),
+      ),
+    )
+  let assert Ok(provider.Finished(Ok(result))) =
+    provider.receive(inference, 1000)
+  assert result == response
 }
