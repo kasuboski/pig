@@ -43,6 +43,7 @@ type Terminal {
     stop_reason: stop_reason.StopReason,
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
   )
 }
 
@@ -152,6 +153,7 @@ pub fn finish(accumulator: Accumulator) -> Result(InferenceResult, AiError) {
           stop_reason: Some(stop),
           input_tokens: terminal.input_tokens,
           output_tokens: terminal.output_tokens,
+          cached_input_tokens: terminal.cached_input_tokens,
         ),
       ))
     }
@@ -664,17 +666,35 @@ fn response_decoder() -> decode.Decoder(Terminal) {
     stop_reason: stop,
     input_tokens: option.map(usage, fn(value) { value.input_tokens }),
     output_tokens: option.map(usage, fn(value) { value.output_tokens }),
+    cached_input_tokens: option.flatten(
+      option.map(usage, fn(value) { value.cached_tokens }),
+    ),
   ))
 }
 
 type Usage {
-  Usage(input_tokens: Int, output_tokens: Int)
+  Usage(input_tokens: Int, output_tokens: Int, cached_tokens: Option(Int))
 }
 
 fn usage_decoder() -> decode.Decoder(Usage) {
   use input_tokens <- decode.field("input_tokens", decode.int)
   use output_tokens <- decode.field("output_tokens", decode.int)
-  decode.success(Usage(input_tokens:, output_tokens:))
+  use cached_tokens <- decode.optional_field(
+    "input_tokens_details",
+    None,
+    cached_tokens_details_decoder(),
+  )
+  decode.success(Usage(input_tokens:, output_tokens:, cached_tokens:))
+}
+
+/// OpenAI nests cached input tokens under `input_tokens_details`.
+fn cached_tokens_details_decoder() -> decode.Decoder(Option(Int)) {
+  use cached_tokens <- decode.optional_field(
+    "cached_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(cached_tokens)
 }
 
 fn response_error_decoder() -> decode.Decoder(String) {

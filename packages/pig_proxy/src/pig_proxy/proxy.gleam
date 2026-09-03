@@ -195,8 +195,12 @@ pub fn extract_model(body: String) -> String {
 // ── Usage extraction ────────────────────────────────────────────
 
 /// Token usage extracted from a response body or SSE chunk.
+///
+/// `cached` counts input tokens served from a provider prompt cache; on
+/// OpenAI APIs it is reported inside the usage `*_details` object and is
+/// already included in `prompt`/`input_tokens`.
 pub type Usage {
-  Usage(prompt: Option(Int), completion: Option(Int))
+  Usage(prompt: Option(Int), completion: Option(Int), cached: Option(Int))
 }
 
 fn usage_fields_decoder() -> decode.Decoder(Usage) {
@@ -210,7 +214,12 @@ fn usage_fields_decoder() -> decode.Decoder(Usage) {
     None,
     decode.optional(decode.int),
   )
-  decode.success(Usage(prompt:, completion:))
+  use cached <- decode.optional_field(
+    "prompt_tokens_details",
+    None,
+    cached_tokens_details_decoder(),
+  )
+  decode.success(Usage(prompt:, completion:, cached:))
 }
 
 /// Usage fields for the Responses API (incl. Codex), which reports
@@ -227,7 +236,23 @@ fn responses_usage_fields_decoder() -> decode.Decoder(Usage) {
     None,
     decode.optional(decode.int),
   )
-  decode.success(Usage(prompt:, completion:))
+  use cached <- decode.optional_field(
+    "input_tokens_details",
+    None,
+    cached_tokens_details_decoder(),
+  )
+  decode.success(Usage(prompt:, completion:, cached:))
+}
+
+/// Both OpenAI APIs nest cached input tokens under a details object keyed
+/// by `cached_tokens`.
+fn cached_tokens_details_decoder() -> decode.Decoder(Option(Int)) {
+  use cached_tokens <- decode.optional_field(
+    "cached_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(cached_tokens)
 }
 
 /// Decode usage from either a Chat Completions chunk (`usage.prompt_tokens`)
@@ -252,7 +277,7 @@ fn responses_usage_decoder() -> decode.Decoder(Usage) {
 pub fn parse_usage(body: String) -> Usage {
   case json.parse(from: body, using: usage_decoder()) {
     Ok(usage) -> usage
-    Error(_) -> Usage(None, None)
+    Error(_) -> Usage(None, None, None)
   }
 }
 
@@ -264,7 +289,7 @@ pub fn parse_usage_from_sse(frame: String) -> Usage {
   let data = sse.frame_data(frame)
   case json.parse(from: data, using: usage_decoder()) {
     Ok(usage) -> usage
-    Error(_) -> Usage(None, None)
+    Error(_) -> Usage(None, None, None)
   }
 }
 
@@ -281,6 +306,10 @@ fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
     completion: case chunk.completion {
       Some(tokens) -> Some(tokens)
       None -> existing.completion
+    },
+    cached: case chunk.cached {
+      Some(tokens) -> Some(tokens)
+      None -> existing.cached
     },
   )
 }
@@ -375,7 +404,7 @@ pub fn stream_response(
     init: fn(subj) {
       // Tell the relay to start forwarding the body to this loop.
       transport.start(handle, subj)
-      StreamState(usage: Usage(None, None), decoder: sse.new(), handle:)
+      StreamState(usage: Usage(None, None, None), decoder: sse.new(), handle:)
     },
     loop: fn(state, message, conn) {
       case message {
@@ -420,6 +449,7 @@ pub fn stream_response(
             duration_ms: duration,
             input_tokens: final_usage.prompt,
             output_tokens: final_usage.completion,
+            cached_input_tokens: final_usage.cached,
           ))
           mist.chunk_stop()
         }

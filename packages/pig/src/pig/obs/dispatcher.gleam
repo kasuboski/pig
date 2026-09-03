@@ -282,6 +282,7 @@ fn emit_telemetry(event: SessionEvent) {
       stop_reason:,
       input_tokens:,
       output_tokens:,
+      cached_input_tokens:,
       duration_ms:,
       input_messages:,
       settings:,
@@ -297,6 +298,7 @@ fn emit_telemetry(event: SessionEvent) {
         base_measurements
         |> maybe_insert_int("input_tokens", input_tokens)
         |> maybe_insert_int("output_tokens", output_tokens)
+        |> maybe_insert_int("cached_input_tokens", cached_input_tokens)
 
       // Build metadata with optional string fields
       // Use response_model if available, otherwise use a placeholder

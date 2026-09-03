@@ -1012,6 +1012,7 @@ fn finish_inference(
           stop_reason: metadata.stop_reason,
           input_tokens: metadata.input_tokens,
           output_tokens: metadata.output_tokens,
+          cached_input_tokens: metadata.cached_input_tokens,
           duration_ms: duration,
           input_messages: operation.input_messages,
           settings: operation.settings,

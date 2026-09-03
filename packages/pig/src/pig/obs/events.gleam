@@ -60,6 +60,7 @@ pub type Event {
     stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
     settings: provider.InferenceSettings,
   )
   InferenceException(
@@ -166,6 +167,7 @@ pub fn emit(event: Event) -> Nil {
       stop_reason:,
       input_tokens:,
       output_tokens:,
+      cached_input_tokens:,
       settings:,
     ) -> {
       // Build measurements with optional token counts
@@ -179,6 +181,7 @@ pub fn emit(event: Event) -> Nil {
         base_measurements
         |> maybe_insert_int("input_tokens", input_tokens)
         |> maybe_insert_int("output_tokens", output_tokens)
+        |> maybe_insert_int("cached_input_tokens", cached_input_tokens)
 
       // Build metadata with optional string fields
       let base_metadata =
@@ -364,6 +367,8 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
       let sr = option.map(raw_stop_reason, stop_reason.from_string)
       let input_tokens = maybe_get_int(raw.measurements, "input_tokens")
       let output_tokens = maybe_get_int(raw.measurements, "output_tokens")
+      let cached_input_tokens =
+        maybe_get_int(raw.measurements, "cached_input_tokens")
       let settings = settings_from_metadata(raw.metadata)
       InferenceStop(
         model:,
@@ -373,6 +378,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
         stop_reason: sr,
         input_tokens:,
         output_tokens:,
+        cached_input_tokens:,
         settings:,
       )
     }
@@ -462,6 +468,7 @@ pub type SessionEvent {
     stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
     duration_ms: Int,
     input_messages: List(Message),
     settings: provider.InferenceSettings,

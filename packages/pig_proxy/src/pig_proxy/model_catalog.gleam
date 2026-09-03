@@ -6,10 +6,10 @@
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/json
-import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -110,16 +110,38 @@ pub fn find(catalog: Catalog, slug: String) -> Option(ModelInfo) {
 /// Estimate request cost in USD from token counts and model pricing.
 ///
 /// Prices are per-million tokens. Missing prices are treated as zero.
-pub fn cost_usd(info: ModelInfo, input_tokens: Int, output_tokens: Int) -> Float {
+///
+/// OpenAI usage counts `input_tokens` inclusively: cached tokens are a
+/// subset of the input total, not an addition. The cached portion is
+/// billed at `cache_read_price` when the catalog has one, falling back to
+/// the full input price otherwise; the remainder is billed at `input_price`.
+pub fn cost_usd(
+  info: ModelInfo,
+  input_tokens: Int,
+  output_tokens: Int,
+  cached_input_tokens: Int,
+) -> Float {
+  let cached = int.clamp(cached_input_tokens, 0, input_tokens)
+  let uncached = input_tokens - cached
   let input_cost = case info.input_price {
-    Some(price) -> int.to_float(input_tokens) *. price /. 1_000_000.0
+    Some(price) -> int.to_float(uncached) *. price /. 1_000_000.0
     None -> 0.0
+  }
+  let cached_cost = case info.cache_read_price {
+    Some(price) -> int.to_float(cached) *. price /. 1_000_000.0
+    // No cache price catalogued: charge cached tokens at the input price
+    // rather than reporting them as free.
+    None ->
+      case info.input_price {
+        Some(price) -> int.to_float(cached) *. price /. 1_000_000.0
+        None -> 0.0
+      }
   }
   let output_cost = case info.output_price {
     Some(price) -> int.to_float(output_tokens) *. price /. 1_000_000.0
     None -> 0.0
   }
-  input_cost +. output_cost
+  input_cost +. cached_cost +. output_cost
 }
 
 /// Parse a models.dev JSON response into a flat catalog.
@@ -161,9 +183,10 @@ fn handle_message(
     Refresh -> {
       // Run the HTTP fetch in a spawned process so the actor stays
       // responsive to snapshot queries while models.dev is slow.
-      let _ = process.spawn(fn() {
-        process.send(state.subject, RefreshComplete(do_refresh(state)))
-      })
+      let _ =
+        process.spawn(fn() {
+          process.send(state.subject, RefreshComplete(do_refresh(state)))
+        })
       actor.continue(state)
     }
 
@@ -176,7 +199,8 @@ fn handle_message(
         }
       }
       let new_state = CatalogState(..state, catalog: new_catalog)
-      let _ = process.send_after(new_state.subject, new_state.refresh_ms, Refresh)
+      let _ =
+        process.send_after(new_state.subject, new_state.refresh_ms, Refresh)
       actor.continue(new_state)
     }
 
@@ -242,7 +266,9 @@ fn catalog_decoder() -> decode.Decoder(Catalog) {
 /// lookups without a provider prefix (e.g. local or unknown providers)
 /// still resolve. When two providers share a bare name the last one
 /// inserted wins — collisions are rare in the models.dev catalog.
-fn add_bare_aliases(models: Dict(String, ModelInfo)) -> Dict(String, ModelInfo) {
+fn add_bare_aliases(
+  models: Dict(String, ModelInfo),
+) -> Dict(String, ModelInfo) {
   dict.fold(models, models, fn(acc, slug, info) {
     case string.split(slug, "/") {
       [_, name] -> dict.insert(acc, name, info)
@@ -252,15 +278,30 @@ fn add_bare_aliases(models: Dict(String, ModelInfo)) -> Dict(String, ModelInfo) 
 }
 
 fn provider_decoder() -> decode.Decoder(Dict(String, ModelInfo)) {
-  use models <- decode.field("models", decode.dict(decode.string, model_info_decoder()))
+  use models <- decode.field(
+    "models",
+    decode.dict(decode.string, model_info_decoder()),
+  )
   decode.success(models)
 }
 
 fn model_info_decoder() -> decode.Decoder(ModelInfo) {
-  use cost <- decode.optional_field("cost", CostFields(None, None, None, None), cost_decoder())
-  use limit <- decode.optional_field("limit", LimitFields(None, None), limit_decoder())
+  use cost <- decode.optional_field(
+    "cost",
+    CostFields(None, None, None, None),
+    cost_decoder(),
+  )
+  use limit <- decode.optional_field(
+    "limit",
+    LimitFields(None, None),
+    limit_decoder(),
+  )
   use tool_call <- decode.optional_field("tool_call", False, decode.bool)
-  use structured_output <- decode.optional_field("structured_output", False, decode.bool)
+  use structured_output <- decode.optional_field(
+    "structured_output",
+    False,
+    decode.bool,
+  )
 
   decode.success(ModelInfo(
     input_price: cost.input,
@@ -277,20 +318,35 @@ fn model_info_decoder() -> decode.Decoder(ModelInfo) {
 fn cost_decoder() -> decode.Decoder(CostFields) {
   use input <- decode.optional_field("input", None, optional_number_decoder())
   use output <- decode.optional_field("output", None, optional_number_decoder())
-  use cache_read <- decode.optional_field("cache_read", None, optional_number_decoder())
-  use cache_write <- decode.optional_field("cache_write", None, optional_number_decoder())
+  use cache_read <- decode.optional_field(
+    "cache_read",
+    None,
+    optional_number_decoder(),
+  )
+  use cache_write <- decode.optional_field(
+    "cache_write",
+    None,
+    optional_number_decoder(),
+  )
   decode.success(CostFields(input:, output:, cache_read:, cache_write:))
 }
 
 fn limit_decoder() -> decode.Decoder(LimitFields) {
-  use context <- decode.optional_field("context", None, decode.optional(decode.int))
-  use output <- decode.optional_field("output", None, decode.optional(decode.int))
+  use context <- decode.optional_field(
+    "context",
+    None,
+    decode.optional(decode.int),
+  )
+  use output <- decode.optional_field(
+    "output",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(LimitFields(context:, output:))
 }
 
 fn optional_number_decoder() -> decode.Decoder(Option(Float)) {
-  decode.one_of(
-    decode.map(decode.float, Some),
-    or: [decode.map(decode.int, fn(n) { Some(int.to_float(n)) })],
-  )
+  decode.one_of(decode.map(decode.float, Some), or: [
+    decode.map(decode.int, fn(n) { Some(int.to_float(n)) }),
+  ])
 }

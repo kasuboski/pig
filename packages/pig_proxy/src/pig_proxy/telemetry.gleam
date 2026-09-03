@@ -70,6 +70,7 @@ pub type ProxyEvent {
     duration_ms: Int,
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
   )
   /// A request failed (after exhausting retries).
   RequestError(
@@ -183,6 +184,7 @@ fn emit_external(event: ProxyEvent) -> Nil {
       duration_ms:,
       input_tokens:,
       output_tokens:,
+      cached_input_tokens:,
     ) ->
       ffi_execute(
         request_stop_name(),
@@ -197,6 +199,7 @@ fn emit_external(event: ProxyEvent) -> Nil {
           #("model", model),
           #("input_tokens", option_to_string(input_tokens)),
           #("output_tokens", option_to_string(output_tokens)),
+          #("cached_input_tokens", option_to_string(cached_input_tokens)),
         ]),
       )
 

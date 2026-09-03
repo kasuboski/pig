@@ -68,6 +68,7 @@ pub fn event_name_matches_inference_stop_test() {
       stop_reason: None,
       input_tokens: None,
       output_tokens: None,
+      cached_input_tokens: None,
       settings: provider.default_settings(),
     ))
     == events.inference_stop_name()
@@ -187,6 +188,7 @@ pub fn emit_all_variants_test() {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    cached_input_tokens: None,
     settings: provider.default_settings(),
   ))
   events.emit(events.InferenceException(
@@ -291,6 +293,7 @@ pub fn decode_preserves_inference_stop_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    cached_input_tokens: None,
     settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"
@@ -394,6 +397,7 @@ pub fn emit_enriched_inference_stop_does_not_crash_test() {
     stop_reason: Some(stop_reason.Stop),
     input_tokens: Some(100),
     output_tokens: Some(50),
+    cached_input_tokens: None,
     settings: provider.default_settings(),
   ))
   Nil
@@ -410,6 +414,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
         #("duration", 150),
         #("input_tokens", 100),
         #("output_tokens", 50),
+        #("cached_input_tokens", 80),
       ]),
       metadata: dict.from_list([
         #("model", "gpt-4"),
@@ -425,6 +430,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    cached_input_tokens:,
     settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"
@@ -434,6 +440,7 @@ pub fn decode_preserves_enriched_inference_stop_test() {
   assert stop_reason == Some(stop_reason.Stop)
   assert input_tokens == Some(100)
   assert output_tokens == Some(50)
+  assert cached_input_tokens == Some(80)
 }
 
 /// Decode InferenceStop without optional fields — should decode to None.
@@ -456,6 +463,7 @@ pub fn decode_enriched_inference_stop_handles_missing_optional_fields_test() {
     stop_reason:,
     input_tokens:,
     output_tokens:,
+    cached_input_tokens: None,
     settings: _,
   ) = events.decode(raw)
   assert model == "gpt-4"

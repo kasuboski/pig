@@ -488,6 +488,7 @@ pub fn format_event(event: SessionEvent) -> String {
       stop_reason:,
       input_tokens:,
       output_tokens:,
+      cached_input_tokens:,
       duration_ms:,
       input_messages:,
       settings:,
@@ -531,8 +532,15 @@ pub fn format_event(event: SessionEvent) -> String {
           list.append(with_input_tokens, [#("output_tokens", json.int(v))])
         None -> with_input_tokens
       }
+      let with_cached_input_tokens = case cached_input_tokens {
+        Some(v) ->
+          list.append(with_output_tokens, [
+            #("cached_input_tokens", json.int(v)),
+          ])
+        None -> with_output_tokens
+      }
 
-      json.object(with_output_tokens) |> json.to_string()
+      json.object(with_cached_input_tokens) |> json.to_string()
     }
 
     ToolStarted(tool_call:) -> {

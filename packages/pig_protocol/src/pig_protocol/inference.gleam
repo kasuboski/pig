@@ -19,6 +19,11 @@ pub type InferenceDelta {
 }
 
 /// Metadata returned by the provider alongside the message.
+///
+/// `cached_input_tokens` counts input tokens served from a provider-side
+/// prompt cache (OpenAI reports them inside usage details). Providers that
+/// include cached tokens in `input_tokens` keep that inclusive convention;
+/// this field is the cached subset.
 pub type InferenceMetadata {
   InferenceMetadata(
     response_id: Option(String),
@@ -26,6 +31,7 @@ pub type InferenceMetadata {
     stop_reason: Option(StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
   )
 }
 
@@ -42,6 +48,7 @@ pub fn default_metadata() -> InferenceMetadata {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    cached_input_tokens: None,
   )
 }
 
@@ -88,4 +95,12 @@ pub fn with_output_tokens(
   tokens: Int,
 ) -> InferenceMetadata {
   InferenceMetadata(..meta, output_tokens: option.Some(tokens))
+}
+
+/// Set cached_input_tokens on metadata.
+pub fn with_cached_input_tokens(
+  meta: InferenceMetadata,
+  tokens: Int,
+) -> InferenceMetadata {
+  InferenceMetadata(..meta, cached_input_tokens: option.Some(tokens))
 }

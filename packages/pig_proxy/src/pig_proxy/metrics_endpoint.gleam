@@ -5,18 +5,18 @@
 
 import gleam/bytes_tree
 import gleam/dict
+import gleam/float
 import gleam/http/response
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import mist
 import pig_proxy/metrics.{
-  type MetricSnapshot, MetricSnapshot, type MetricsSnapshot,
+  type MetricSnapshot, type MetricsSnapshot, MetricSnapshot,
 }
 import pig_proxy/model_catalog.{type Catalog}
-import gleam/float
-import gleam/option.{None, Some}
 
 /// Render a metrics snapshot as Prometheus text.
 ///
@@ -30,6 +30,7 @@ import gleam/option.{None, Some}
 ///   - `pig_proxy_bytes_streamed_total` (counter)
 ///   - `pig_proxy_input_tokens_total` (counter)
 ///   - `pig_proxy_output_tokens_total` (counter)
+///   - `pig_proxy_cached_input_tokens_total` (counter)
 ///   - `pig_proxy_cost_usd` (gauge)
 pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
   let lines = [
@@ -41,6 +42,7 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
     "# TYPE pig_proxy_bytes_streamed_total counter",
     "# TYPE pig_proxy_input_tokens_total counter",
     "# TYPE pig_proxy_output_tokens_total counter",
+    "# TYPE pig_proxy_cached_input_tokens_total counter",
     "# TYPE pig_proxy_cost_usd gauge",
   ]
 
@@ -60,39 +62,55 @@ pub fn render(snapshot: MetricsSnapshot, catalog: Catalog) -> String {
           bytes_streamed:,
           input_tokens:,
           output_tokens:,
+          cached_input_tokens:,
           last_status: _,
         ),
       ) = entry
       let label = "model=\"" <> escape_prometheus_label(model) <> "\""
       let cost = case model_catalog.find(catalog, model) {
-        Some(info) -> model_catalog.cost_usd(info, input_tokens, output_tokens)
+        Some(info) ->
+          model_catalog.cost_usd(
+            info,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+          )
         None -> 0.0
       }
       [
-        "pig_proxy_requests_total{" <> label <> "} " <> int.to_string(
-          request_count,
-        ),
-        "pig_proxy_errors_total{" <> label <> "} " <> int.to_string(
-          error_count,
-        ),
-        "pig_proxy_latency_p50_ms{" <> label <> "} " <> int.to_string(
-          latency_p50_ms,
-        ),
-        "pig_proxy_latency_p95_ms{" <> label <> "} " <> int.to_string(
-          latency_p95_ms,
-        ),
-        "pig_proxy_latency_p99_ms{" <> label <> "} " <> int.to_string(
-          latency_p99_ms,
-        ),
-        "pig_proxy_bytes_streamed_total{" <> label <> "} " <> int.to_string(
-          bytes_streamed,
-        ),
-        "pig_proxy_input_tokens_total{" <> label <> "} " <> int.to_string(
-          input_tokens,
-        ),
-        "pig_proxy_output_tokens_total{" <> label <> "} " <> int.to_string(
-          output_tokens,
-        ),
+        "pig_proxy_requests_total{"
+          <> label
+          <> "} "
+          <> int.to_string(request_count),
+        "pig_proxy_errors_total{" <> label <> "} " <> int.to_string(error_count),
+        "pig_proxy_latency_p50_ms{"
+          <> label
+          <> "} "
+          <> int.to_string(latency_p50_ms),
+        "pig_proxy_latency_p95_ms{"
+          <> label
+          <> "} "
+          <> int.to_string(latency_p95_ms),
+        "pig_proxy_latency_p99_ms{"
+          <> label
+          <> "} "
+          <> int.to_string(latency_p99_ms),
+        "pig_proxy_bytes_streamed_total{"
+          <> label
+          <> "} "
+          <> int.to_string(bytes_streamed),
+        "pig_proxy_input_tokens_total{"
+          <> label
+          <> "} "
+          <> int.to_string(input_tokens),
+        "pig_proxy_output_tokens_total{"
+          <> label
+          <> "} "
+          <> int.to_string(output_tokens),
+        "pig_proxy_cached_input_tokens_total{"
+          <> label
+          <> "} "
+          <> int.to_string(cached_input_tokens),
         "pig_proxy_cost_usd{" <> label <> "} " <> float_to_string(cost),
       ]
     })
@@ -141,5 +159,7 @@ pub fn response(
 ) -> response.Response(mist.ResponseData) {
   response.new(200)
   |> response.set_header("content-type", "text/plain; version=0.0.4")
-  |> response.set_body(mist.Bytes(bytes_tree.from_string(render(snapshot, catalog))))
+  |> response.set_body(
+    mist.Bytes(bytes_tree.from_string(render(snapshot, catalog))),
+  )
 }

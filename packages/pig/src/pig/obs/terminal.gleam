@@ -63,14 +63,23 @@ pub fn format_event(event: SessionEvent) -> String {
       stop_reason:,
       input_tokens:,
       output_tokens:,
+      cached_input_tokens:,
       duration_ms:,
       input_messages: _,
       settings: _,
     ) -> {
       let duration_str = int.to_string(duration_ms) <> "ms"
+      let cached_part = case cached_input_tokens {
+        Some(cached) -> " (" <> int.to_string(cached) <> " cached)"
+        None -> ""
+      }
       let token_part = case input_tokens, output_tokens {
         Some(input), Some(output) -> {
-          " | tokens: " <> int.to_string(input) <> "→" <> int.to_string(output)
+          " | tokens: "
+          <> int.to_string(input)
+          <> "→"
+          <> int.to_string(output)
+          <> cached_part
         }
         _, _ -> ""
       }

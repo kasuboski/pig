@@ -194,6 +194,7 @@ pub fn parse_text_response_test() {
   let assert Some(stop_reason.Stop) = result.metadata.stop_reason
   let assert Some(15) = result.metadata.input_tokens
   let assert Some(30) = result.metadata.output_tokens
+  let assert Some(12) = result.metadata.cached_input_tokens
 }
 
 pub fn parse_tool_call_response_test() {
@@ -258,7 +259,7 @@ fn sample_text_response() -> String {
         \"status\": \"completed\"
       }
     ],
-    \"usage\": { \"input_tokens\": 15, \"output_tokens\": 30, \"total_tokens\": 45 }
+    \"usage\": { \"input_tokens\": 15, \"output_tokens\": 30, \"total_tokens\": 45, \"input_tokens_details\": { \"cached_tokens\": 12 } }
   }"
 }
 

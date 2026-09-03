@@ -30,6 +30,7 @@ pub type MetricSnapshot {
     bytes_streamed: Int,
     input_tokens: Int,
     output_tokens: Int,
+    cached_input_tokens: Int,
     last_status: Int,
   )
 }
@@ -55,6 +56,7 @@ type ModelMetrics {
     bytes_streamed: Int,
     input_tokens: Int,
     output_tokens: Int,
+    cached_input_tokens: Int,
     last_status: Int,
   )
 }
@@ -63,11 +65,11 @@ type MetricsState {
   MetricsState(models: Dict(String, ModelMetrics))
 }
 
-const snapshot_timeout_ms = 5_000
+const snapshot_timeout_ms = 5000
 
 /// Maximum number of latency samples retained per model.
 /// Prevents unbounded memory growth in long-running proxies.
-const max_latency_samples = 1_000
+const max_latency_samples = 1000
 
 /// Cap the latency samples list to `max_latency_samples` by keeping
 /// the most recent entries (prepended) and dropping the oldest.
@@ -86,6 +88,7 @@ fn fresh_model_metrics() -> ModelMetrics {
     bytes_streamed: 0,
     input_tokens: 0,
     output_tokens: 0,
+    cached_input_tokens: 0,
     last_status: 0,
   )
 }
@@ -94,9 +97,10 @@ fn handle_message(state: MetricsState, msg: MetricsMsg) {
   case msg {
     ProxyEvent(event:) -> actor.continue(process_event(state, event))
     GetSnapshot(reply_to) -> {
-      let snapshot = MetricsSnapshot(
-        models: dict.map_values(state.models, fn(_, m) { to_snapshot(m) }),
-      )
+      let snapshot =
+        MetricsSnapshot(
+          models: dict.map_values(state.models, fn(_, m) { to_snapshot(m) }),
+        )
       process.send(reply_to, snapshot)
       actor.continue(state)
     }
@@ -116,33 +120,39 @@ fn process_event(
       duration_ms:,
       input_tokens:,
       output_tokens:,
-      ..
+      cached_input_tokens:,
+      ..,
     ) -> {
-      let updated = update_model(state.models, key(provider, model), fn(m) {
-        ModelMetrics(
-          request_count: m.request_count + 1,
-          error_count: m.error_count,
-          latency_samples: cap_samples([duration_ms, ..m.latency_samples]),
-          bytes_streamed: m.bytes_streamed,
-          input_tokens: m.input_tokens + option.unwrap(input_tokens, 0),
-          output_tokens: m.output_tokens + option.unwrap(output_tokens, 0),
-          last_status: status,
-        )
-      })
+      let updated =
+        update_model(state.models, key(provider, model), fn(m) {
+          ModelMetrics(
+            request_count: m.request_count + 1,
+            error_count: m.error_count,
+            latency_samples: cap_samples([duration_ms, ..m.latency_samples]),
+            bytes_streamed: m.bytes_streamed,
+            input_tokens: m.input_tokens + option.unwrap(input_tokens, 0),
+            output_tokens: m.output_tokens + option.unwrap(output_tokens, 0),
+            cached_input_tokens: m.cached_input_tokens
+              + option.unwrap(cached_input_tokens, 0),
+            last_status: status,
+          )
+        })
       MetricsState(models: updated)
     }
 
     telemetry.RequestError(provider:, model:, ..) -> {
-      let updated = update_model(state.models, key(provider, model), fn(m) {
-        ModelMetrics(..m, error_count: m.error_count + 1)
-      })
+      let updated =
+        update_model(state.models, key(provider, model), fn(m) {
+          ModelMetrics(..m, error_count: m.error_count + 1)
+        })
       MetricsState(models: updated)
     }
 
     telemetry.StreamChunk(provider:, model:, chunk_bytes:, ..) -> {
-      let updated = update_model(state.models, key(provider, model), fn(m) {
-        ModelMetrics(..m, bytes_streamed: m.bytes_streamed + chunk_bytes)
-      })
+      let updated =
+        update_model(state.models, key(provider, model), fn(m) {
+          ModelMetrics(..m, bytes_streamed: m.bytes_streamed + chunk_bytes)
+        })
       MetricsState(models: updated)
     }
 
@@ -174,6 +184,7 @@ fn to_snapshot(m: ModelMetrics) -> MetricSnapshot {
     bytes_streamed: m.bytes_streamed,
     input_tokens: m.input_tokens,
     output_tokens: m.output_tokens,
+    cached_input_tokens: m.cached_input_tokens,
     last_status: m.last_status,
   )
 }
@@ -260,9 +271,7 @@ pub fn attach_named(name: process.Name(MetricsMsg)) -> telemetry.HandlerId {
 }
 
 /// Synchronously request a metrics snapshot from the aggregator.
-pub fn get_snapshot(
-  metrics: process.Subject(MetricsMsg),
-) -> MetricsSnapshot {
+pub fn get_snapshot(metrics: process.Subject(MetricsMsg)) -> MetricsSnapshot {
   actor.call(metrics, waiting: snapshot_timeout_ms, sending: fn(reply_to) {
     GetSnapshot(reply_to)
   })

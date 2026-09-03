@@ -218,7 +218,7 @@ pub fn parse_responses_event_function_call_arguments_done_test() {
 pub fn parse_responses_event_completed_test() {
   let event =
     sse.parse_responses_event(
-      "{\"type\": \"response.completed\", \"response\": {\"id\": \"r1\", \"model\": \"m\", \"status\": \"completed\", \"usage\": {\"input_tokens\": 1, \"output_tokens\": 2, \"total_tokens\": 3}}}",
+      "{\"type\": \"response.completed\", \"response\": {\"id\": \"r1\", \"model\": \"m\", \"status\": \"completed\", \"usage\": {\"input_tokens\": 1, \"output_tokens\": 2, \"total_tokens\": 3, \"input_tokens_details\": {\"cached_tokens\": 1}}}}",
     )
   let assert sse.ResponseCompleted(metadata) = event
   let assert Some("r1") = metadata.response_id
@@ -226,6 +226,7 @@ pub fn parse_responses_event_completed_test() {
   let assert Some(stop_reason.Stop) = metadata.stop_reason
   let assert Some(1) = metadata.input_tokens
   let assert Some(2) = metadata.output_tokens
+  let assert Some(1) = metadata.cached_input_tokens
 }
 
 pub fn parse_responses_event_error_test() {

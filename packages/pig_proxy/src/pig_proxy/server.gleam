@@ -196,6 +196,7 @@ fn emit_outcome_telemetry(outcome: execution.Outcome, model: String) -> Nil {
         duration_ms:,
         input_tokens: usage.prompt,
         output_tokens: usage.completion,
+        cached_input_tokens: usage.cached,
       ))
     execution.Exhausted(target_id:, provider:, reason:, ..) ->
       telemetry.emit(telemetry.RequestError(

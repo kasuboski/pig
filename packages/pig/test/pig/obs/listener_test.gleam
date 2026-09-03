@@ -57,6 +57,7 @@ pub fn captures_multiple_events_in_order_test() {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    cached_input_tokens: None,
     settings: provider.default_settings(),
   ))
   let captured = listener.get_events(handle)
@@ -87,6 +88,7 @@ pub fn captures_multiple_events_in_order_test() {
         stop_reason: None,
         input_tokens: None,
         output_tokens: None,
+        cached_input_tokens: None,
         settings: provider.default_settings(),
       ),
     ]
@@ -128,6 +130,7 @@ pub fn detach_stops_capture_test() {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    cached_input_tokens: None,
     settings: provider.default_settings(),
   ))
   assert count_before == 1

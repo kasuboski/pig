@@ -276,6 +276,9 @@ fn response_decoder() -> decode.Decoder(InferenceResult) {
       stop_reason: Some(stop_reason),
       input_tokens: option.map(usage, fn(u) { u.input_tokens }),
       output_tokens: option.map(usage, fn(u) { u.output_tokens }),
+      cached_input_tokens: option.flatten(
+        option.map(usage, fn(u) { u.cached_tokens }),
+      ),
     )
 
   let thinking = case reasoning {
@@ -386,12 +389,37 @@ fn function_call_output_decoder() -> decode.Decoder(OutputItem) {
 }
 
 type Usage {
-  Usage(input_tokens: Int, output_tokens: Int, total_tokens: Int)
+  Usage(
+    input_tokens: Int,
+    output_tokens: Int,
+    total_tokens: Int,
+    cached_tokens: Option(Int),
+  )
 }
 
 fn usage_decoder() -> decode.Decoder(Usage) {
   use input_tokens <- decode.field("input_tokens", decode.int)
   use output_tokens <- decode.field("output_tokens", decode.int)
   use total_tokens <- decode.field("total_tokens", decode.int)
-  decode.success(Usage(input_tokens:, output_tokens:, total_tokens:))
+  use cached_tokens <- decode.optional_field(
+    "input_tokens_details",
+    None,
+    cached_tokens_details_decoder(),
+  )
+  decode.success(Usage(
+    input_tokens:,
+    output_tokens:,
+    total_tokens:,
+    cached_tokens:,
+  ))
+}
+
+/// OpenAI nests cached input tokens under `input_tokens_details`.
+fn cached_tokens_details_decoder() -> decode.Decoder(Option(Int)) {
+  use cached_tokens <- decode.optional_field(
+    "cached_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(cached_tokens)
 }

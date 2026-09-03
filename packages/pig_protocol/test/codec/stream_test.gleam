@@ -1,7 +1,7 @@
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleeunit
 import pig_protocol/codec/chat
 import pig_protocol/codec/chat_stream
@@ -145,6 +145,21 @@ pub fn responses_stream_reports_terminal_errors_and_early_eof_test() {
     )
   let assert Error(error.InvalidResponse(_)) =
     responses_stream.finish(responses_stream.new())
+}
+
+pub fn chat_stream_captures_cached_input_tokens_test() {
+  let #(accumulator, _) = accumulate_chat("./test_data/streams/chat_stream.sse")
+  let assert Ok(result) = chat_stream.finish(accumulator)
+  let assert Some(12) = result.metadata.input_tokens
+  let assert Some(8) = result.metadata.cached_input_tokens
+}
+
+pub fn responses_stream_captures_cached_input_tokens_test() {
+  let #(accumulator, _) =
+    accumulate_responses("./test_data/streams/responses_stream.sse")
+  let assert Ok(result) = responses_stream.finish(accumulator)
+  let assert Some(15) = result.metadata.input_tokens
+  let assert Some(10) = result.metadata.cached_input_tokens
 }
 
 fn accumulate_chat(

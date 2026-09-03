@@ -411,3 +411,11 @@ pub fn with_output_tokens(
 ) -> InferenceMetadata {
   inference.with_output_tokens(meta, tokens)
 }
+
+/// Set cached_input_tokens on metadata.
+pub fn with_cached_input_tokens(
+  meta: InferenceMetadata,
+  tokens: Int,
+) -> InferenceMetadata {
+  inference.with_cached_input_tokens(meta, tokens)
+}

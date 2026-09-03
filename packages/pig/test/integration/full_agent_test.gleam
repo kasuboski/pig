@@ -16,13 +16,13 @@ import integration/config
 import integration/gate
 import jscheam/schema
 import pig
-import pig_protocol/message
-import pig/openai
-import pig/provider.{type Provider}
-import pig_protocol/tool_definition
 import pig/obs/events
 import pig/obs/listener
+import pig/openai
+import pig/provider.{type Provider}
 import pig/tool
+import pig_protocol/message
+import pig_protocol/tool_definition
 import simplifile
 import temporary
 
@@ -90,7 +90,12 @@ pub fn full_agent_with_tool_test() {
           // Both are valid — the test verifies the full lifecycle completes.
           assert string.length(content) > 0
         }
-        message.Assistant(content: _, tool_calls: calls, thinking: _, stop_reason: _) -> {
+        message.Assistant(
+          content: _,
+          tool_calls: calls,
+          thinking: _,
+          stop_reason: _,
+        ) -> {
           let _ = calls
           panic as "agent returned unfinished tool calls"
         }

@@ -29,6 +29,7 @@ type State {
     stop_reason: Option(stop_reason.StopReason),
     input_tokens: Option(Int),
     output_tokens: Option(Int),
+    cached_input_tokens: Option(Int),
     completion: Completion,
   )
 }
@@ -69,7 +70,7 @@ type ToolDelta {
 }
 
 type Usage {
-  Usage(input_tokens: Int, output_tokens: Int)
+  Usage(input_tokens: Int, output_tokens: Int, cached_tokens: Option(Int))
 }
 
 /// Create an empty Chat Completions accumulator.
@@ -83,6 +84,7 @@ pub fn new() -> Accumulator {
     stop_reason: None,
     input_tokens: None,
     output_tokens: None,
+    cached_input_tokens: None,
     completion: Open,
   ))
 }
@@ -142,6 +144,7 @@ fn apply_chunk(state: State, chunk: Chunk) -> #(State, List(InferenceDelta)) {
       response_model: first_value(state.response_model, chunk.response_model),
       input_tokens: usage_input(state.input_tokens, chunk.usage),
       output_tokens: usage_output(state.output_tokens, chunk.usage),
+      cached_input_tokens: usage_cached(state.cached_input_tokens, chunk.usage),
     )
   list.fold(chunk.choices, #(next, []), apply_choice)
 }
@@ -273,6 +276,7 @@ fn to_result(
       stop_reason: stop,
       input_tokens: state.input_tokens,
       output_tokens: state.output_tokens,
+      cached_input_tokens: state.cached_input_tokens,
     ),
   )
 }
@@ -329,6 +333,13 @@ fn usage_input(current: Option(Int), usage: Option(Usage)) -> Option(Int) {
 fn usage_output(current: Option(Int), usage: Option(Usage)) -> Option(Int) {
   case usage {
     Some(value) -> Some(value.output_tokens)
+    None -> current
+  }
+}
+
+fn usage_cached(current: Option(Int), usage: Option(Usage)) -> Option(Int) {
+  case usage {
+    Some(value) -> value.cached_tokens
     None -> current
   }
 }
@@ -449,5 +460,20 @@ fn function_delta_decoder() -> decode.Decoder(FunctionDelta) {
 fn usage_decoder() -> decode.Decoder(Usage) {
   use input_tokens <- decode.field("prompt_tokens", decode.int)
   use output_tokens <- decode.field("completion_tokens", decode.int)
-  decode.success(Usage(input_tokens:, output_tokens:))
+  use cached_tokens <- decode.optional_field(
+    "prompt_tokens_details",
+    None,
+    cached_tokens_details_decoder(),
+  )
+  decode.success(Usage(input_tokens:, output_tokens:, cached_tokens:))
+}
+
+/// OpenAI nests cached input tokens under `prompt_tokens_details`.
+fn cached_tokens_details_decoder() -> decode.Decoder(Option(Int)) {
+  use cached_tokens <- decode.optional_field(
+    "cached_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(cached_tokens)
 }

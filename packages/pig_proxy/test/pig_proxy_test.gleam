@@ -247,6 +247,25 @@ pub fn parse_usage_reads_prompt_and_completion_tokens_test() {
   let usage = proxy.parse_usage(body)
   assert usage.prompt == Some(42)
   assert usage.completion == Some(17)
+  assert usage.cached == None
+}
+
+pub fn parse_usage_reads_chat_cached_tokens_test() {
+  let body =
+    "{\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":17,\"prompt_tokens_details\":{\"cached_tokens\":40}}}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == Some(42)
+  assert usage.completion == Some(17)
+  assert usage.cached == Some(40)
+}
+
+pub fn parse_usage_reads_responses_cached_tokens_test() {
+  let body =
+    "{\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":64}}}}"
+  let usage = proxy.parse_usage(body)
+  assert usage.prompt == Some(100)
+  assert usage.completion == Some(4)
+  assert usage.cached == Some(64)
 }
 
 pub fn parse_usage_missing_usage_returns_none_test() {
@@ -265,10 +284,11 @@ pub fn parse_usage_partial_tokens_test() {
 
 pub fn parse_usage_from_sse_reads_one_completed_frame_test() {
   let frame =
-    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20}}\n\n"
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"prompt_tokens_details\":{\"cached_tokens\":6}}}\n\n"
   let usage = proxy.parse_usage_from_sse(frame)
   assert usage.prompt == Some(10)
   assert usage.completion == Some(20)
+  assert usage.cached == Some(6)
 }
 
 pub fn parse_usage_from_sse_does_not_scan_multiple_frames_test() {

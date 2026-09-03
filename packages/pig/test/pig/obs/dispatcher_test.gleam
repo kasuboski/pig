@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleeunit
 import pig/obs/consumer_spec
 import pig/obs/dispatcher
@@ -101,6 +101,7 @@ pub fn dispatcher_emits_inference_stop_telemetry_test() {
       stop_reason: Some(stop_reason.Stop),
       input_tokens: Some(100),
       output_tokens: Some(50),
+      cached_input_tokens: None,
       duration_ms: 150,
       input_messages: [message],
       settings: provider.default_settings(),

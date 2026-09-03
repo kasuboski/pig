@@ -73,13 +73,13 @@ pub fn parse_indexes_bare_model_name_test() {
   // Bare name (no provider prefix) should also resolve
   let assert Some(gpt4o) = model_catalog.find(catalog, "gpt-4o")
   assert gpt4o.input_price == Some(5.0)
-  let assert Some(sonnet) =
-    model_catalog.find(catalog, "claude-3-5-sonnet")
+  let assert Some(sonnet) = model_catalog.find(catalog, "claude-3-5-sonnet")
   assert sonnet.input_price == Some(3.0)
 }
 
 pub fn parse_ignores_extra_fields_test() {
-  let json = "{
+  let json =
+    "{
     \"provider\": {
       \"id\": \"provider\",
       \"models\": {
@@ -100,33 +100,90 @@ pub fn parse_ignores_extra_fields_test() {
 // ── cost_usd ────────────────────────────────────────────────────
 
 pub fn cost_usd_computes_from_prices_test() {
-  let info = model_catalog.ModelInfo(
-    input_price: Some(5.0),
-    output_price: Some(15.0),
-    cache_read_price: None,
-    cache_write_price: None,
-    context_limit: None,
-    output_limit: None,
-    tool_call: True,
-    structured_output: True,
-  )
-  let cost = model_catalog.cost_usd(info, 1000, 500)
+  let info =
+    model_catalog.ModelInfo(
+      input_price: Some(5.0),
+      output_price: Some(15.0),
+      cache_read_price: None,
+      cache_write_price: None,
+      context_limit: None,
+      output_limit: None,
+      tool_call: True,
+      structured_output: True,
+    )
+  let cost = model_catalog.cost_usd(info, 1000, 500, 0)
   // (1000 * 5 / 1e6) + (500 * 15 / 1e6) = 0.005 + 0.0075 = 0.0125
   assert float.loosely_equals(cost, 0.0125, 0.000_001)
 }
 
+pub fn cost_usd_bills_cached_tokens_at_cache_read_price_test() {
+  let info =
+    model_catalog.ModelInfo(
+      input_price: Some(5.0),
+      output_price: Some(15.0),
+      cache_read_price: Some(0.5),
+      cache_write_price: None,
+      context_limit: None,
+      output_limit: None,
+      tool_call: True,
+      structured_output: True,
+    )
+  // OpenAI counts cached tokens inside the input total: 400 of the 1000
+  // input tokens were cache hits, so they bill at the cache-read price.
+  // (600 * 5 + 400 * 0.5 + 500 * 15) / 1e6 = 0.0107
+  let cost = model_catalog.cost_usd(info, 1000, 500, 400)
+  assert float.loosely_equals(cost, 0.0107, 0.000_001)
+}
+
+pub fn cost_usd_without_cache_price_falls_back_to_input_price_test() {
+  let info =
+    model_catalog.ModelInfo(
+      input_price: Some(5.0),
+      output_price: None,
+      cache_read_price: None,
+      cache_write_price: None,
+      context_limit: None,
+      output_limit: None,
+      tool_call: True,
+      structured_output: True,
+    )
+  // No catalogued cache price: cached tokens bill at the input price, so
+  // the split between cached and uncached makes no difference.
+  let cost = model_catalog.cost_usd(info, 1000, 0, 400)
+  assert float.loosely_equals(cost, 0.005, 0.000_001)
+}
+
+pub fn cost_usd_clamps_cached_above_input_test() {
+  let info =
+    model_catalog.ModelInfo(
+      input_price: Some(5.0),
+      output_price: None,
+      cache_read_price: Some(0.5),
+      cache_write_price: None,
+      context_limit: None,
+      output_limit: None,
+      tool_call: True,
+      structured_output: True,
+    )
+  // A malformed cached count above the input total must not go negative
+  // on the uncached portion — it is clamped to the input total.
+  let cost = model_catalog.cost_usd(info, 100, 0, 500)
+  assert float.loosely_equals(cost, 0.00005, 0.000_001)
+}
+
 pub fn cost_usd_missing_prices_are_zero_test() {
-  let info = model_catalog.ModelInfo(
-    input_price: None,
-    output_price: None,
-    cache_read_price: None,
-    cache_write_price: None,
-    context_limit: None,
-    output_limit: None,
-    tool_call: False,
-    structured_output: False,
-  )
-  assert model_catalog.cost_usd(info, 1000, 500) == 0.0
+  let info =
+    model_catalog.ModelInfo(
+      input_price: None,
+      output_price: None,
+      cache_read_price: None,
+      cache_write_price: None,
+      context_limit: None,
+      output_limit: None,
+      tool_call: False,
+      structured_output: False,
+    )
+  assert model_catalog.cost_usd(info, 1000, 500, 0) == 0.0
 }
 
 pub fn empty_catalog_has_no_models_test() {

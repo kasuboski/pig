@@ -171,6 +171,7 @@ pub fn parse_response_captures_token_usage_test() {
   let assert Ok(result) = chat.parse_response(raw)
   let assert Some(25) = result.metadata.input_tokens
   let assert Some(6) = result.metadata.output_tokens
+  let assert Some(20) = result.metadata.cached_input_tokens
 }
 
 // === parse_response error cases (inline) ===
