@@ -61,7 +61,14 @@ pub fn start(
   check_interval_ms: Int,
   refresh_buffer_ms: Int,
 ) -> Result(process.Subject(RefreshMsg), actor.StartError) {
-  start_started(vault_name, target_id, credentials_path, creds, check_interval_ms, refresh_buffer_ms)
+  start_started(
+    vault_name,
+    target_id,
+    credentials_path,
+    creds,
+    check_interval_ms,
+    refresh_buffer_ms,
+  )
   |> result.map(fn(s) { s.data })
 }
 
@@ -76,10 +83,7 @@ pub fn start_started(
   creds: CodexCredentials,
   check_interval_ms: Int,
   refresh_buffer_ms: Int,
-) -> Result(
-  actor.Started(process.Subject(RefreshMsg)),
-  actor.StartError,
-) {
+) -> Result(actor.Started(process.Subject(RefreshMsg)), actor.StartError) {
   let vault_subject = process.named_subject(vault_name)
   actor.new_with_initialiser(
     5000,
@@ -143,7 +147,11 @@ fn handle_message(
       let state = flush_pending_write(state)
       let now_ms = telemetry.system_time()
       let new_state = case
-        codex_credentials.is_expired(state.creds, now_ms, state.refresh_buffer_ms)
+        codex_credentials.is_expired(
+          state.creds,
+          now_ms,
+          state.refresh_buffer_ms,
+        )
       {
         True -> do_refresh(state)
         False -> state
@@ -181,19 +189,20 @@ fn do_refresh(state: RefreshState) -> RefreshState {
   case codex_login.refresh(state.creds.refresh_token) {
     Ok(new_creds) -> {
       vault.rotate_token(state.vault, state.target_id, new_creds.access_token)
-      let pending_write =
-        case codex_credentials.save(state.credentials_path, new_creds) {
-          Ok(_) -> option.None
-          Error(reason) -> {
-            logging.log(
-              logging.Warning,
-              "codex_refresh: failed to persist refreshed credentials: "
-                <> reason
-                <> " — will retry next tick",
-            )
-            option.Some(new_creds)
-          }
+      let pending_write = case
+        codex_credentials.save(state.credentials_path, new_creds)
+      {
+        Ok(_) -> option.None
+        Error(reason) -> {
+          logging.log(
+            logging.Warning,
+            "codex_refresh: failed to persist refreshed credentials: "
+              <> reason
+              <> " — will retry next tick",
+          )
+          option.Some(new_creds)
         }
+      }
       logging.log(
         logging.Info,
         "codex_refresh: refreshed Codex access token for target \""

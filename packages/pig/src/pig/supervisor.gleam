@@ -19,6 +19,7 @@ import pig/provider.{type InferenceSettings}
 import pig/run as agent_run
 import pig/run_error.{type CancelReason, type RunError, type RunStartError}
 import pig/session_store.{type SessionError, type SessionStore, SessionStore}
+import pig/turn.{type Input}
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -147,7 +148,7 @@ pub fn stream(
   prompt: String,
   sink: Subject(agent_run.RunEvent),
 ) -> Result(agent_run.Run, RunStartError) {
-  runtime.stream(sup.subject, prompt, sink)
+  stream_turn(sup, turn.User(prompt), sink)
 }
 
 /// Start one streamed run with an explicit client owner.
@@ -157,7 +158,26 @@ pub fn stream_owned(
   sink: Subject(agent_run.RunEvent),
   owner: Pid,
 ) -> Result(agent_run.Run, RunStartError) {
-  runtime.stream_owned(sup.subject, prompt, sink, owner)
+  stream_turn_owned(sup, turn.User(prompt), sink, owner)
+}
+
+/// Start one typed turn on the supervised agent.
+pub fn stream_turn(
+  sup: SupervisedAgent,
+  input: Input,
+  sink: Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream_turn(sup.subject, input, sink)
+}
+
+/// Start one typed turn while watching an explicit client owner.
+pub fn stream_turn_owned(
+  sup: SupervisedAgent,
+  input: Input,
+  sink: Subject(agent_run.RunEvent),
+  owner: Pid,
+) -> Result(agent_run.Run, RunStartError) {
+  runtime.stream_turn_owned(sup.subject, input, sink, owner)
 }
 
 /// Resume history as one streamed run.
@@ -184,7 +204,7 @@ pub fn cancel(run: agent_run.Run, reason: CancelReason) -> Nil {
 
 /// Run a prompt against the supervised agent with a 120-second timeout.
 pub fn run(sup: SupervisedAgent, prompt: String) -> Result(Message, RunError) {
-  run_with_timeout(sup, prompt, 120_000)
+  run_turn(sup, turn.User(prompt))
 }
 
 /// Run a prompt against the supervised agent with an explicit timeout.
@@ -193,7 +213,24 @@ pub fn run_with_timeout(
   prompt: String,
   timeout_ms: Int,
 ) -> Result(Message, RunError) {
-  runtime.run(sup.subject, prompt, timeout_ms)
+  runtime.run_turn(sup.subject, turn.User(prompt), timeout_ms)
+}
+
+/// Run one typed turn with the default 120-second timeout.
+pub fn run_turn(
+  sup: SupervisedAgent,
+  input: Input,
+) -> Result(Message, RunError) {
+  run_turn_with_timeout(sup, input, 120_000)
+}
+
+/// Run one typed turn with an explicit timeout.
+pub fn run_turn_with_timeout(
+  sup: SupervisedAgent,
+  input: Input,
+  timeout_ms: Int,
+) -> Result(Message, RunError) {
+  runtime.run_turn(sup.subject, input, timeout_ms)
 }
 
 /// Resume a supervised agent's loaded or interrupted history.

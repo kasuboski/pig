@@ -269,35 +269,26 @@ fn request_body(
     provider.UseThinkingLevel(level) -> Some(level)
   }
   case config.api {
-    ChatCompletions ->
+    ChatCompletions -> {
+      let messages = case request.system_prompt {
+        Some(prompt) -> [message.System(prompt), ..request.messages]
+        None -> request.messages
+      }
       chat.build_stream_request_body_with_thinking(
-        request.messages,
+        messages,
         request.tools,
         config.model,
         thinking_level,
       )
+    }
     Responses ->
       responses.build_stream_request_body_with_thinking(
         request.messages,
         request.tools,
         config.model,
-        instructions(request.messages),
+        request.system_prompt,
         thinking_level,
       )
-  }
-}
-
-fn instructions(messages: List(Message)) -> Option(String) {
-  let system_messages =
-    list.filter_map(messages, fn(part) {
-      case part {
-        message.System(content) -> Ok(content)
-        _ -> Error(Nil)
-      }
-    })
-  case system_messages {
-    [] -> None
-    values -> Some(string.join(values, "\n\n"))
   }
 }
 

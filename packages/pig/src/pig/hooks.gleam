@@ -9,16 +9,19 @@
 //// Composition functions run handlers in order with per-event semantics.
 
 import gleam/list
+import gleam/option.{type Option}
 import pig/provider.{type InferenceSettings}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
 // ── Event Types ─────────────────────────────────────────────────────
 
-/// Before the provider is called. Handlers can modify the messages sent.
+/// Before the provider is called. Handlers can modify conversation messages;
+/// standing guidance is provided separately and remains configuration-owned.
 pub type BeforeInferenceEvent {
   BeforeInferenceEvent(
     model: String,
+    system_prompt: Option(String),
     messages: List(Message),
     settings: InferenceSettings,
   )
@@ -306,6 +309,7 @@ pub fn decide_messages(
         ReplaceMessages(messages) -> #(
           BeforeInferenceEvent(
             model: ev.model,
+            system_prompt: ev.system_prompt,
             messages:,
             settings: ev.settings,
           ),

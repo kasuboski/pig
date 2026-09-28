@@ -128,15 +128,13 @@ pub fn parse_callback_query_missing_state_is_error_test() {
 // ── device authorization ─────────────────────────────────────────
 
 pub fn device_endpoints_match_openai_codex_test() {
-  assert
-    codex.device_usercode_url()
-      == "https://auth.openai.com/api/accounts/deviceauth/usercode"
-  assert
-    codex.device_token_url()
-      == "https://auth.openai.com/api/accounts/deviceauth/token"
+  assert codex.device_usercode_url()
+    == "https://auth.openai.com/api/accounts/deviceauth/usercode"
+  assert codex.device_token_url()
+    == "https://auth.openai.com/api/accounts/deviceauth/token"
   assert codex.device_verification_uri == "https://auth.openai.com/codex/device"
-  assert
-    codex.device_redirect_uri == "https://auth.openai.com/deviceauth/callback"
+  assert codex.device_redirect_uri
+    == "https://auth.openai.com/deviceauth/callback"
 }
 
 pub fn device_request_bodies_contain_expected_fields_test() {
@@ -179,11 +177,11 @@ pub fn parse_device_token_success_test() {
 }
 
 pub fn device_error_code_accepts_object_or_string_test() {
-  assert
-    codex.device_error_code("{\"error\":{\"code\":\"slow_down\"}}")
-      == Some("slow_down")
-  assert
-    codex.device_error_code("{\"error\":\"deviceauth_authorization_pending\"}")
-      == Some("deviceauth_authorization_pending")
+  assert codex.device_error_code("{\"error\":{\"code\":\"slow_down\"}}")
+    == Some("slow_down")
+  assert codex.device_error_code(
+      "{\"error\":\"deviceauth_authorization_pending\"}",
+    )
+    == Some("deviceauth_authorization_pending")
   assert codex.device_error_code("{}") == None
 }

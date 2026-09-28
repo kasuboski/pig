@@ -74,7 +74,6 @@ pub fn get_status_reports_per_target_state_test() {
   let assert Ok(c) = circuit_actor.start(1, 1_000_000)
   circuit_actor.record_failure(c, "openai")
   let status = circuit_actor.get_status(c, 2000)
-  let openai_state =
-    list.find(status.states, fn(entry) { entry.0 == "openai" })
+  let openai_state = list.find(status.states, fn(entry) { entry.0 == "openai" })
   let assert Ok(#("openai", "open")) = openai_state
 }

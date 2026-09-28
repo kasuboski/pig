@@ -89,10 +89,11 @@ pub fn primary_target(route: ResolvedRoute) -> Option(UpstreamTarget) {
 pub fn fallback_targets(route: ResolvedRoute) -> List(UpstreamTarget) {
   case route {
     NoTargets -> []
-    ResolvedRoute(targets) -> case targets {
-      [] -> []
-      [_, ..rest] -> rest
-    }
+    ResolvedRoute(targets) ->
+      case targets {
+        [] -> []
+        [_, ..rest] -> rest
+      }
   }
 }
 
@@ -122,10 +123,7 @@ fn find_route(
   }
 }
 
-fn resolve_target_ids(
-  cfg: ProxyConfig,
-  ids: List(String),
-) -> ResolvedRoute {
+fn resolve_target_ids(cfg: ProxyConfig, ids: List(String)) -> ResolvedRoute {
   let targets =
     ids
     |> list.filter_map(fn(id) {

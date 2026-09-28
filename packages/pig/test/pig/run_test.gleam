@@ -69,7 +69,7 @@ fn fake_runtime(
     let subject = process.new_subject()
     process.send(ready, subject)
     case process.receive_forever(subject) {
-      runtime.StartPrompt(..) | runtime.StartContinue(..) -> {
+      runtime.StartTurn(..) | runtime.StartContinue(..) -> {
         process.send(request_received, Nil)
         process.receive_forever(process.new_subject())
       }

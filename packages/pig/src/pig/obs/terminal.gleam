@@ -17,7 +17,9 @@ import pig/obs/events.{
 import pig/provider
 import pig_protocol/error.{
   type AiError, ApiError, Cancelled, InvalidResponse, RateLimited, Timeout,
+  UnsupportedMessageRole,
 }
+import pig_protocol/message
 import pig_protocol/stop_reason
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -146,6 +148,15 @@ fn format_error(error: AiError) -> String {
     Timeout -> "Timeout"
     Cancelled -> "Cancelled"
     InvalidResponse(detail) -> "InvalidResponse: " <> detail
+    UnsupportedMessageRole(role) ->
+      "UnsupportedMessageRole: "
+      <> case role {
+        message.DeveloperRole -> "developer"
+        message.SystemRole -> "system"
+        message.UserRole -> "user"
+        message.AssistantRole -> "assistant"
+        message.ToolRole -> "tool"
+      }
   }
 }
 

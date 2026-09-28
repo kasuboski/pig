@@ -130,6 +130,12 @@ fn message_to_json(msg: Message) -> json.Json {
         #("content", json.string(content)),
       ])
 
+    message.Developer(content:) ->
+      json.object([
+        #("role", json.string("developer")),
+        #("content", json.string(content)),
+      ])
+
     message.System(content:) ->
       json.object([
         #("role", json.string("system")),

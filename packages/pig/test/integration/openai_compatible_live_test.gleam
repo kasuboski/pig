@@ -183,6 +183,7 @@ fn call_provider(
   provider.run(
     prov,
     provider.InferenceRequest(
+      system_prompt: option.None,
       messages:,
       tools:,
       settings: provider.default_settings(),
@@ -198,5 +199,6 @@ fn ai_error_to_string(err: AiError) -> String {
     error.Timeout -> "Timeout"
     error.Cancelled -> "Cancelled"
     error.InvalidResponse(detail:) -> "InvalidResponse(" <> detail <> ")"
+    error.UnsupportedMessageRole(_) -> "UnsupportedMessageRole"
   }
 }

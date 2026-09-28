@@ -71,7 +71,7 @@ fn poll_until_content(path: String, remaining: Int) -> Result(String, Nil) {
 fn get_content(msg: message.Message) -> String {
   case msg {
     message.User(content) -> content
-    message.System(content) -> content
+    message.System(content) | message.Developer(content) -> content
     message.Assistant(content, _, _, _) -> content
     message.Tool(_, content) -> content
   }

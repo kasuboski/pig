@@ -21,6 +21,7 @@ import pig/agent/step_result
 import pig/agent/update
 import pig/provider
 import pig/tool
+import pig/turn
 import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/tool_definition
@@ -38,7 +39,12 @@ fn state_for_update(tools: List(tool.Tool)) -> state.AgentState {
   // Provider is never called by update — it's a runtime concern.
   // But we need one to construct AgentConfig.
   let provider = fn(request: provider.InferenceRequest) {
-    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let provider.InferenceRequest(
+      system_prompt: _,
+      messages:,
+      tools:,
+      settings:,
+    ) = request
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
@@ -53,7 +59,12 @@ fn state_for_update_with_max(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(request: provider.InferenceRequest) {
-    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let provider.InferenceRequest(
+      system_prompt: _,
+      messages:,
+      tools:,
+      settings:,
+    ) = request
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
@@ -65,10 +76,22 @@ fn state_for_update_with_max(
 
 // ── Task 2.1: UserPrompt ──────────────────────────────────────────
 
-/// UserPrompt adds User message to history.
+/// A typed Developer input is retained as a Developer conversation message.
+pub fn developer_turn_adds_developer_message_to_history_test() {
+  let result = update.update(
+    state_for_update([]),
+    msg.StartTurn(turn.Developer("focus on security")),
+  )
+  let assert step_result.Continue(state: new_st, effect: effect.CallProvider(..)) =
+    result
+  assert list.last(state.history(new_st))
+    == Ok(message.Developer("focus on security"))
+}
+
+/// User input adds a User message to history.
 pub fn user_prompt_adds_user_message_to_history_test() {
   let st = state_for_update([])
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(state: new_st, effect: _) = result
   // History should contain the User message
   let history = state.history(new_st)
@@ -78,7 +101,7 @@ pub fn user_prompt_adds_user_message_to_history_test() {
 /// UserPrompt returns Continue with a CallProvider effect.
 pub fn user_prompt_returns_continue_with_call_provider_test() {
   let st = state_for_update([])
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(state: _, effect: effect.CallProvider(..)) =
     result
 }
@@ -86,7 +109,7 @@ pub fn user_prompt_returns_continue_with_call_provider_test() {
 /// CallProvider effect's messages include the prompt.
 pub fn user_prompt_call_provider_includes_prompt_test() {
   let st = state_for_update([])
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(
     state: _,
     effect: effect.CallProvider(messages: msgs, ..),
@@ -113,7 +136,7 @@ pub fn user_prompt_call_provider_includes_tools_test() {
       Error(tool.ToolError(message: "unused"))
     })
   let st = state_for_update([t])
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(
     state: _,
     effect: effect.CallProvider(tools: tool_defs, ..),
@@ -123,10 +146,15 @@ pub fn user_prompt_call_provider_includes_tools_test() {
   assert td2.name == "echo"
 }
 
-/// System prompt is prepended to messages in the effect when configured.
-pub fn user_prompt_system_prompt_prepended_test() {
+/// Standing guidance is separate from conversation history in the effect.
+pub fn user_prompt_system_prompt_is_not_in_effect_test() {
   let provider = fn(request: provider.InferenceRequest) {
-    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let provider.InferenceRequest(
+      system_prompt: _,
+      messages:,
+      tools:,
+      settings:,
+    ) = request
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("x", [], None, None)))
   }
@@ -134,13 +162,12 @@ pub fn user_prompt_system_prompt_prepended_test() {
     state.config(provider.from_buffered(provider))
     |> state.with_system_prompt("you are a helper")
     |> state.new()
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(
     state: _,
     effect: effect.CallProvider(messages: msgs, ..),
   ) = result
-  // First message should be the system prompt
-  assert list.first(msgs) == Ok(message.System("you are a helper"))
+  assert msgs == [message.User("hello")]
 }
 
 // ── Task 2.2: ProviderResponded ──────────────────────────────────

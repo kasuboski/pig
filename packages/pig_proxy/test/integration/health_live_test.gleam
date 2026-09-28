@@ -15,12 +15,12 @@ import gleam/bit_array
 import gleam/int
 import gleam/string
 import gleeunit
+import integration/config
+import integration/gate
 import pig_proxy/config as proxy_config
 import pig_proxy/hackney
 import pig_proxy/runtime
 import pig_proxy/server
-import integration/config
-import integration/gate
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -38,10 +38,7 @@ pub fn health_endpoint_serves_after_boot_test() {
       server.start(state)
       let assert True = gate.wait_until_ready(cfg.port)
 
-      let url =
-        "http://localhost:"
-        <> int.to_string(cfg.port)
-        <> "/health"
+      let url = "http://localhost:" <> int.to_string(cfg.port) <> "/health"
       let assert hackney.OkResponse(status: 200, body:, ..) =
         hackney.sync_request("GET", url, [], "", 30_000)
       let assert Ok(text) = bit_array.to_string(body)

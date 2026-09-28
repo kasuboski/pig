@@ -218,6 +218,12 @@ pub fn main() {
       io.println("   Warning: Invalid response: " <> detail)
       "(invalid response)"
     }
+    Error(run_error.Inference(error.UnsupportedMessageRole(role))) -> {
+      io.println(
+        "   Warning: Unsupported message role: " <> string.inspect(role),
+      )
+      "(unsupported message role)"
+    }
     Error(run_error.Session(session_error)) -> {
       io.println("   Warning: Session error: " <> string.inspect(session_error))
       "(session error)"
@@ -311,6 +317,11 @@ pub fn main() {
     }
     Error(run_error.Inference(error.InvalidResponse(detail))) -> {
       io.println("\nWarning: Invalid response from provider: " <> detail)
+    }
+    Error(run_error.Inference(error.UnsupportedMessageRole(role))) -> {
+      io.println(
+        "\nWarning: Unsupported message role: " <> string.inspect(role),
+      )
     }
     Error(run_error.Session(session_error)) -> {
       io.println("\nWarning: Session error: " <> string.inspect(session_error))

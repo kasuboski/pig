@@ -33,11 +33,11 @@ The library is organized into layered modules:
 A unified type system for messages and a common interface for model providers.
 
 *   **Types:**
-    *   `Message`: A union type of `User`, `Assistant` (containing optional `ToolCalls` and `Thinking` blocks), `Tool` (results), and `System`.
+    *   `Message`: A union type of `System` (standing guidance transport representation), `Developer` (application-originated conversation input), `User`, `Assistant` (containing optional `ToolCalls` and `Thinking` blocks), and `Tool` (results).
     *   `ToolDefinition`: The JSON Schema representation of a tool.
     *   `InferenceResult`: Wraps a `Message` with `InferenceMetadata` (response ID, model, finish reason, token counts).
     *   `ThinkingLevel`: Provider-neutral reasoning effort (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, or `Max`).
-*   **Interface:** A provider is `fn(InferenceRequest) -> Result(InferenceResult, AiError)`. `InferenceRequest` carries messages, tools, and agent-owned inference settings. Providers may also have a default for requests without an explicit agent setting. OpenAI Chat Completions maps thinking level to `reasoning_effort`; Responses maps it to `reasoning.effort`.
+*   **Interface:** A provider is `fn(InferenceRequest) -> Result(InferenceResult, AiError)`. `InferenceRequest` carries a separate optional `system_prompt`, conversation messages, tools, and agent-owned inference settings. Messages never contain the configured standing prompt; adapters map it to the upstream API's system/instructions field. Providers may also have a default for requests without an explicit agent setting. OpenAI Chat Completions maps thinking level to `reasoning_effort`; Responses maps it to `reasoning.effort`. Adapters that cannot represent a message role return `UnsupportedMessageRole` rather than silently dropping or relabeling it.
 
 ### 3.2 `pig/agent`: Sans-IO State Machine + Runtime
 
@@ -47,14 +47,14 @@ The agent is split into two layers:
 
 The core operates on three types:
 
-*   **`AgentMsg`:** `UserPrompt(String)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
+*   **`AgentMsg`:** `StartTurn(turn.Input)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
 *   **`Effect(msg)`:** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it. Inference settings remain runtime-owned.
 *   **`StepResult(msg):** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
 
 **Runtime interpreter (`pig/agent/runtime.gleam`):** An OTP actor that holds the provider function, tool registry, hooks list, and dispatcher subject. The runtime loop:
 
-1.  Receives a `Run(prompt)` message.
-2.  Calls `update(state, UserPrompt(prompt))` — pure.
+1.  Receives a typed turn request; admission rejects concurrent turns with `Busy`.
+2.  Calls the pure `StartTurn` transition to form candidate history, then commits its delta before inference when a store is configured.
 3.  For each effect returned, applies hooks as middleware, then executes the effect.
 4.  Produces `SessionEvent` values from hook processing and effect execution.
 5.  Feeds results back as new `AgentMsg` values and loops.
@@ -86,14 +86,18 @@ The observability system uses a dispatcher-actor pattern.
 
 ## 4. The Execution Loop Detail
 
-When `pig.run(agent, prompt)` is called:
-1.  **Entry:** The runtime receives `Run(prompt)`, wraps it in `UserPrompt`, calls `update(state, UserPrompt(prompt))`. The core returns `Continue(state, [CallProvider(messages, tools, on_response)])`.
-2.  **Inference:** The runtime's effect handler applies `on_before_inference` hooks (which may transform messages), builds an `InferenceRequest` from the resulting messages, tools, and the agent's current settings, emits `InferenceStarted`, calls the one-argument provider, then emits `InferenceCompleted` or `InferenceFailed`. On success it fires `on_after_inference` hooks before feeding the response back as `ProviderResponded`.
-3.  **Branching:** The core processes `ProviderResponded`:
+A fresh turn accepts only `turn.Input`: `User(String)` for ordinary prompts or `Developer(String)` for application-originated input (steering, context, constraints, or outcomes). The convenience `pig.run(agent, prompt)` and string streaming APIs delegate to `User`; `run_turn` and `stream_turn` accept either typed input. System is standing configuration, not fresh turn input. The runtime admits one run at a time; starting a turn while busy returns `Busy` (there is no queue or injection into in-flight inference).
+
+For each accepted turn the runtime appends its input once and commits it through the configured `SessionStore` before starting inference. Crash durability requires a durable store; with sessions disabled, history is only in memory. A successful streaming start means accepted, not necessarily committed. After restart, callers explicitly invoke `run_continue` or `stream_continue` to resume committed history; continuation adds no input and does not automatically execute on startup. Retrying an already committed input is continuation, not another identical `run_turn`.
+
+When inference is called, the runtime applies `on_before_inference` hooks to conversation messages, carries standing `system_prompt` separately into `InferenceRequest`, and invokes the provider. Hook message replacement affects conversation only. Developer remains a durable in-band message and is replayed in its original order. A provider/model that rejects Developer must surface an explicit unsupported-role/API error; Pig does not convert it to User or System.
+1.  **Branching:** The core processes `ProviderResponded`:
     *   **If text:** Returns `Done(state, message)`. The runtime returns the message to the caller.
     *   **If tool calls:** Returns `Continue(state, [ExecuteTools(calls, on_results)])`. The runtime applies `on_tool_call` hooks (allow/block), executes allowed tools in parallel, applies `on_tool_result` hooks, emits events, then feeds results back as `ToolResults`.
-4.  **Loop:** The runtime continues calling `update` with each response until it gets `Done` or `Failed`.
-5.  **Circuit breaker:** If `exceeded_max_iterations` is true, the core returns `Failed` instead of `Continue`.
+2.  **Loop:** The runtime continues calling `update` with each response until it gets `Done` or `Failed`.
+3.  **Circuit breaker:** If `exceeded_max_iterations` is true, the core returns `Failed` instead of `Continue`.
+
+The runtime uses the same tool-capable execution path for User and Developer turns. Durable stores preserve Developer role literally; legacy System history is not promoted to Developer.
 
 ---
 

@@ -14,7 +14,7 @@ import pig/obs/events.{
   ToolExecuted,
 }
 import pig/obs/session
-import pig_protocol/message.{Assistant, Tool, ToolCall, User}
+import pig_protocol/message.{Assistant, Developer, Tool, ToolCall, User}
 import pig_protocol/thinking
 import simplifile
 import temporary
@@ -131,6 +131,19 @@ pub fn replay_missing_authoritative_settings_is_parse_error_test() {
     "{\"event\":\"inference_settings_changed\",\"settings\":{}}",
   ])
   let assert Error(session.ParseError(_)) = session.replay_with_settings(path)
+}
+
+pub fn replay_latest_failed_inference_retains_developer_input_test() {
+  use path <- with_temp_file("latest_failed_inference")
+  write_jsonl(path, [
+    "{\"event\":\"inference_completed\",\"duration_ms\":1,\"message\":{\"role\":\"assistant\",\"content\":\"done\",\"tool_calls\":[]},\"input_messages\":[{\"role\":\"user\",\"content\":\"previous turn\"}]}",
+    "{\"event\":\"inference_failed\",\"model\":\"gpt-4\",\"duration_ms\":1,\"error\":{\"message\":\"request failed\"},\"input_messages\":[{\"role\":\"user\",\"content\":\"previous turn\"},{\"role\":\"assistant\",\"content\":\"done\",\"tool_calls\":[]},{\"role\":\"developer\",\"content\":\"latest context\"}]}",
+  ])
+  let assert Ok([
+    User("previous turn"),
+    Assistant("done", [], _, _),
+    Developer("latest context"),
+  ]) = session.replay(path)
 }
 
 pub fn replay_single_inference_reconstructs_messages_test() {

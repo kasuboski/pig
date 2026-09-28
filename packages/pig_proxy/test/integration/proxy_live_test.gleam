@@ -19,12 +19,12 @@
 import gleam/int
 import gleam/io
 import gleeunit
+import integration/config
+import integration/gate
 import pig_proxy/config as proxy_config
 import pig_proxy/hackney
 import pig_proxy/runtime
 import pig_proxy/server
-import integration/config
-import integration/gate
 
 pub fn main() -> Nil {
   gleeunit.main()

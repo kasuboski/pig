@@ -18,6 +18,10 @@ pub fn role_user_test() {
   assert message.role(message.User("x")) == message.UserRole
 }
 
+pub fn role_developer_test() {
+  assert message.role(message.Developer("x")) == message.DeveloperRole
+}
+
 pub fn role_system_test() {
   assert message.role(message.System("x")) == message.SystemRole
 }

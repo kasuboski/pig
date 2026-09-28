@@ -47,7 +47,7 @@ const callback_wait_ms = 300_000
 
 const device_request_timeout_ms = 30_000
 
-const slow_down_ms = 5_000
+const slow_down_ms = 5000
 
 type CallbackResult {
   CallbackOk(code: String)
@@ -71,15 +71,16 @@ pub fn main() -> Nil {
 /// Default headless-safe flow: visit OpenAI's device page and enter a code.
 fn run_device() -> Nil {
   case request_device_usercode() {
-    Error(reason) -> io.println_error("Could not start device login: " <> reason)
+    Error(reason) ->
+      io.println_error("Could not start device login: " <> reason)
     Ok(device) -> {
       io.println(
         "Open this URL in any browser and enter this code:\n\n"
-          <> "  "
-          <> codex_oauth.device_verification_uri
-          <> "\n\n  "
-          <> device.user_code
-          <> "\n",
+        <> "  "
+        <> codex_oauth.device_verification_uri
+        <> "\n\n  "
+        <> device.user_code
+        <> "\n",
       )
       io.println("Waiting for OpenAI authorization…")
       poll_device(
@@ -106,7 +107,8 @@ fn poll_device(
         DevicePending -> poll_device(device, delay_ms, remaining_ms - delay_ms)
         DeviceSlowDown ->
           poll_device(device, delay_ms + slow_down_ms, remaining_ms - delay_ms)
-        DeviceFailed(reason) -> io.println_error("Device login failed: " <> reason)
+        DeviceFailed(reason) ->
+          io.println_error("Device login failed: " <> reason)
       }
     }
   }
@@ -172,10 +174,15 @@ fn poll_device_token(device: codex_oauth.DeviceUserCode) -> DevicePollResult {
         Some("slow_down") -> DeviceSlowDown
         Some(code) ->
           DeviceFailed(
-            "device authorization returned " <> int.to_string(status) <> ": " <> code,
+            "device authorization returned "
+            <> int.to_string(status)
+            <> ": "
+            <> code,
           )
         None ->
-          DeviceFailed("device authorization returned status " <> int.to_string(status))
+          DeviceFailed(
+            "device authorization returned status " <> int.to_string(status),
+          )
       }
     }
     hackney.ErrorResponse(reason:) -> DeviceFailed(reason)
@@ -212,15 +219,16 @@ fn run_callback(
       )
       io.println(
         "Waiting for the browser callback on "
-          <> redirect_uri
-          <> " ...\n"
-          <> "  On a remote/headless host the browser can't reach this callback.\n"
-          <> "  Re-run without PIG_CODEX_LOGIN_BROWSER to use device-code login\n"
-          <> "  instead (no port or tunnel needed).",
+        <> redirect_uri
+        <> " ...\n"
+        <> "  On a remote/headless host the browser can't reach this callback.\n"
+        <> "  Re-run without PIG_CODEX_LOGIN_BROWSER to use device-code login\n"
+        <> "  instead (no port or tunnel needed).",
       )
 
       case process.receive(subject, callback_wait_ms) {
-        Error(_) -> io.println_error("Timed out waiting for the OAuth callback.")
+        Error(_) ->
+          io.println_error("Timed out waiting for the OAuth callback.")
         Ok(CallbackError(reason)) ->
           io.println_error("Login failed: " <> reason)
         Ok(CallbackOk(code)) -> finish_login(code, verifier, redirect_uri)
@@ -229,7 +237,7 @@ fn run_callback(
     Error(_) ->
       io.println_error(
         "Failed to start the OAuth callback server on 127.0.0.1:1455"
-          <> " — is the port already in use? Run the default device-code login instead.",
+        <> " — is the port already in use? Run the default device-code login instead.",
       )
   }
 }
@@ -363,7 +371,9 @@ fn handle_callback_query(
       process.send(subject, CallbackOk(code))
       html_response(
         200,
-        success_html("OpenAI authentication completed. You can close this window."),
+        success_html(
+          "OpenAI authentication completed. You can close this window.",
+        ),
       )
     }
     Some(_), Some(_) -> {
@@ -377,7 +387,10 @@ fn handle_callback_query(
   }
 }
 
-fn find_param(params: List(#(String, String)), key: String) -> option.Option(String) {
+fn find_param(
+  params: List(#(String, String)),
+  key: String,
+) -> option.Option(String) {
   case params {
     [] -> None
     [#(k, v), ..rest] ->

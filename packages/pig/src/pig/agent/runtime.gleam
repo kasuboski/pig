@@ -33,6 +33,7 @@ import pig/run_error
 import pig/session_store
 import pig/tool
 import pig/tool/execution
+import pig/turn.{type Input}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
 import pig_protocol/tool_definition
@@ -52,8 +53,8 @@ pub type RuntimeConfig {
 
 /// Messages accepted by the runtime actor.
 pub type RuntimeMsg {
-  StartPrompt(
-    prompt: String,
+  StartTurn(
+    input: Input,
     sink: process.Subject(agent_run.RunEvent),
     terminal: process.Subject(agent_run.RunEvent),
     owner: option.Option(process.Pid),
@@ -230,8 +231,7 @@ pub fn stream(
   prompt: String,
   sink: process.Subject(agent_run.RunEvent),
 ) -> Result(agent_run.Run, run_error.RunStartError) {
-  let terminal = process.new_subject()
-  start_prompt(subject, prompt, sink, terminal, sink_owner(sink))
+  stream_turn(subject, turn.User(prompt), sink)
 }
 
 /// Start a run with an explicit process to watch for client disconnection.
@@ -241,8 +241,7 @@ pub fn stream_owned(
   sink: process.Subject(agent_run.RunEvent),
   owner: process.Pid,
 ) -> Result(agent_run.Run, run_error.RunStartError) {
-  let terminal = process.new_subject()
-  start_prompt(subject, prompt, sink, terminal, option.Some(owner))
+  stream_turn_owned(subject, turn.User(prompt), sink, owner)
 }
 
 /// Continue history and infer the watched client from the caller-owned sink.
@@ -264,9 +263,30 @@ pub fn stream_continue_owned(
   start_continuation(subject, sink, terminal, option.Some(owner))
 }
 
-fn start_prompt(
+/// Start a typed turn, inferring the owner from the sink.
+pub fn stream_turn(
   subject: process.Subject(RuntimeMsg),
-  prompt: String,
+  input: Input,
+  sink: process.Subject(agent_run.RunEvent),
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_turn(subject, input, sink, terminal, sink_owner(sink))
+}
+
+/// Start a typed turn while explicitly watching the client owner.
+pub fn stream_turn_owned(
+  subject: process.Subject(RuntimeMsg),
+  input: Input,
+  sink: process.Subject(agent_run.RunEvent),
+  owner: process.Pid,
+) -> Result(agent_run.Run, run_error.RunStartError) {
+  let terminal = process.new_subject()
+  start_turn(subject, input, sink, terminal, option.Some(owner))
+}
+
+fn start_turn(
+  subject: process.Subject(RuntimeMsg),
+  input: Input,
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
@@ -278,7 +298,7 @@ fn start_prompt(
       let monitor = process.monitor(runtime_pid)
       process.send(
         subject,
-        StartPrompt(prompt:, sink:, terminal:, owner:, reply_to:),
+        StartTurn(input:, sink:, terminal:, owner:, reply_to:),
       )
       await_start_reply(reply_to, monitor)
     }
@@ -352,8 +372,17 @@ pub fn run(
   prompt: String,
   timeout: Int,
 ) -> Result(Message, run_error.RunError) {
+  run_turn(subject, turn.User(prompt), timeout)
+}
+
+/// Collect a typed turn into its final message.
+pub fn run_turn(
+  subject: process.Subject(RuntimeMsg),
+  input: Input,
+  timeout: Int,
+) -> Result(Message, run_error.RunError) {
   let sink = process.new_subject()
-  case stream(subject, prompt, sink) {
+  case stream_turn(subject, input, sink) {
     Ok(run) -> collect(run, sink, timeout)
     Error(error) -> Error(start_error_to_run_error(error))
   }
@@ -555,10 +584,10 @@ fn handle_message(
   message: RuntimeMsg,
 ) -> actor.Next(RuntimeState, RuntimeMsg) {
   case message {
-    StartPrompt(prompt, sink, terminal, owner, reply_to) ->
-      actor.continue(handle_start_prompt(
+    StartTurn(input, sink, terminal, owner, reply_to) ->
+      actor.continue(handle_start_turn(
         runtime_state,
-        prompt,
+        input,
         sink,
         terminal,
         owner,
@@ -615,9 +644,9 @@ fn handle_message(
   }
 }
 
-fn handle_start_prompt(
+fn handle_start_turn(
   runtime_state: RuntimeState,
-  prompt: String,
+  input: Input,
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
@@ -648,7 +677,7 @@ fn handle_start_prompt(
           let reset = state.AgentState(..accepted.agent_state, iterations: 0)
           advance(
             RuntimeState(..accepted, agent_state: reset),
-            msg.UserPrompt(prompt),
+            msg.StartTurn(input),
           )
         }
       }
@@ -903,6 +932,7 @@ fn start_inference(
   let before_event =
     hooks.BeforeInferenceEvent(
       model: runtime_state.config.model,
+      system_prompt: runtime_state.agent_state.config.system_prompt,
       messages:,
       settings:,
     )
@@ -921,9 +951,45 @@ fn start_inference(
       final_messages
     }
   }
+  case
+    list.any(final_messages, fn(item) {
+      case item {
+        message.System(_) -> True
+        _ -> False
+      }
+    })
+  {
+    True ->
+      fail_run(
+        runtime_state,
+        run_error.Inference(error.UnsupportedMessageRole(message.SystemRole)),
+      )
+    False ->
+      start_valid_inference(
+        runtime_state,
+        active,
+        final_messages,
+        tools,
+        settings,
+      )
+  }
+}
+
+fn start_valid_inference(
+  runtime_state: RuntimeState,
+  active: ActiveRun,
+  final_messages: List(Message),
+  tools: List(tool_definition.ToolDefinition),
+  settings: InferenceSettings,
+) -> RuntimeState {
   let round = active.round + 1
   let request =
-    provider.InferenceRequest(messages: final_messages, tools:, settings:)
+    provider.InferenceRequest(
+      system_prompt: runtime_state.agent_state.config.system_prompt,
+      messages: final_messages,
+      tools:,
+      settings:,
+    )
   emit.to_dispatcher(
     runtime_state.config.dispatcher,
     events.InferenceStarted(

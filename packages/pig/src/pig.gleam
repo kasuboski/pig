@@ -29,6 +29,7 @@ import pig/session_store.{type Session, type SessionError, type SessionStore}
 import pig/skill
 import pig/skill/librarian
 import pig/tool
+import pig/turn.{type Input}
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -487,7 +488,26 @@ pub fn stream(
   prompt: String,
   sink: Subject(RunEvent),
 ) -> Result(Run, RunStartError) {
-  runtime.stream(agent.subject, prompt, sink)
+  stream_turn(agent, turn.User(prompt), sink)
+}
+
+/// Start one typed turn and return as soon as it is accepted.
+pub fn stream_turn(
+  agent: Agent,
+  input: Input,
+  sink: Subject(RunEvent),
+) -> Result(Run, RunStartError) {
+  runtime.stream_turn(agent.subject, input, sink)
+}
+
+/// Start a typed turn while watching an explicit client owner.
+pub fn stream_turn_owned(
+  agent: Agent,
+  input: Input,
+  sink: Subject(RunEvent),
+  owner: Pid,
+) -> Result(Run, RunStartError) {
+  runtime.stream_turn_owned(agent.subject, input, sink, owner)
 }
 
 /// Start one run and explicitly watch the client owner for disconnection.
@@ -497,7 +517,7 @@ pub fn stream_owned(
   sink: Subject(RunEvent),
   owner: Pid,
 ) -> Result(Run, RunStartError) {
-  runtime.stream_owned(agent.subject, prompt, sink, owner)
+  runtime.stream_turn_owned(agent.subject, turn.User(prompt), sink, owner)
 }
 
 /// Resume the current history as one streamed run.
@@ -538,7 +558,21 @@ pub fn collect(
 
 /// Run a prompt against the agent with a 120-second default timeout.
 pub fn run(agent: Agent, prompt: String) -> Result(Message, RunError) {
-  run_with_timeout(agent, prompt, 120_000)
+  run_turn(agent, turn.User(prompt))
+}
+
+/// Run one typed turn with the default 120-second timeout.
+pub fn run_turn(agent: Agent, input: Input) -> Result(Message, RunError) {
+  run_turn_with_timeout(agent, input, 120_000)
+}
+
+/// Run one typed turn with an explicit timeout in milliseconds.
+pub fn run_turn_with_timeout(
+  agent: Agent,
+  input: Input,
+  timeout_ms: Int,
+) -> Result(Message, RunError) {
+  runtime.run_turn(agent.subject, input, timeout_ms)
 }
 
 /// Run a prompt against the agent with an explicit timeout in milliseconds.

@@ -8,7 +8,7 @@ import pig/provider
 
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleeunit
 import pig/hooks
 import pig_protocol/error
@@ -67,6 +67,7 @@ pub fn new_hooks_keeps_messages_by_default_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages: messages,
       settings: provider.default_settings(),
     )
@@ -121,6 +122,7 @@ pub fn on_before_inference_replaces_handler_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages: [
         message.User("original"),
       ],
@@ -130,6 +132,27 @@ pub fn on_before_inference_replaces_handler_test() {
     hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
   }
   assert action == hooks.ReplaceMessages(new_messages)
+}
+
+pub fn before_inference_hook_preserves_standing_guidance_test() {
+  let seen = process.new_subject()
+  let h =
+    hooks.new("guidance")
+    |> hooks.on_before_inference(fn(event) {
+      process.send(seen, event.system_prompt)
+      hooks.KeepMessages
+    })
+  let event =
+    hooks.BeforeInferenceEvent(
+      model: "gpt-4",
+      system_prompt: Some("standing guidance"),
+      messages: [message.Developer("replay me"), message.Tool("id", "result")],
+      settings: provider.default_settings(),
+    )
+  let assert hooks.KeepMessages = case h {
+    hooks.Hooks(on_before_inference: handler, ..) -> handler(event)
+  }
+  let assert Ok(Some("standing guidance")) = process.receive(seen, 1000)
 }
 
 /// Verify on after inference replaces handler.
@@ -458,6 +481,7 @@ pub fn decide_messages_unchanged_when_no_hooks_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages:,
       settings: provider.default_settings(),
     )
@@ -471,6 +495,7 @@ pub fn decide_messages_unchanged_when_all_keep_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages:,
       settings: provider.default_settings(),
     )
@@ -483,13 +508,14 @@ pub fn decide_messages_unchanged_when_all_keep_test() {
 
 /// Verify decide messages replaced carries attribution.
 pub fn decide_messages_replaced_carries_attribution_test() {
-  let new_msgs = [message.System("injected"), message.User("hello")]
+  let new_msgs = [message.Developer("injected"), message.User("hello")]
   let h =
     hooks.new("injector")
     |> hooks.on_before_inference(fn(_) { hooks.ReplaceMessages(new_msgs) })
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages: [message.User("hello")],
       settings: provider.default_settings(),
     )
@@ -501,16 +527,21 @@ pub fn decide_messages_replaced_carries_attribution_test() {
 
 /// Verify decide messages chain carries all transformers.
 pub fn decide_messages_chain_carries_all_transformers_test() {
-  // h1 prepends [System("ctx")] to the incoming messages
+  // h1 prepends an application context update to the incoming messages
   let h1 =
     hooks.new("first")
     |> hooks.on_before_inference(fn(event) {
-      hooks.ReplaceMessages(list.append([message.System("ctx")], event.messages))
+      assert event.system_prompt == Some("standing guidance")
+      hooks.ReplaceMessages(list.append(
+        [message.Developer("ctx")],
+        event.messages,
+      ))
     })
   // h2 appends [User("suffix")] to whatever h1 produced
   let h2 =
     hooks.new("second")
     |> hooks.on_before_inference(fn(event) {
+      assert event.system_prompt == Some("standing guidance")
       hooks.ReplaceMessages(
         list.append(event.messages, [message.User("suffix")]),
       )
@@ -518,15 +549,15 @@ pub fn decide_messages_chain_carries_all_transformers_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: Some("standing guidance"),
       messages: [message.User("hello")],
       settings: provider.default_settings(),
     )
   let decision = hooks.decide_messages([h1, h2], event)
   let assert hooks.MessagesReplaced(final_messages:, transformers:) = decision
-  // Only proper chaining produces: [System("ctx"), User("hello"), User("suffix")]
   assert final_messages
     == [
-      message.System("ctx"),
+      message.Developer("ctx"),
       message.User("hello"),
       message.User("suffix"),
     ]
@@ -548,6 +579,7 @@ pub fn hooks_keep_requested_settings_in_before_inference_test() {
   let event =
     hooks.BeforeInferenceEvent(
       model: "gpt-4",
+      system_prompt: option.None,
       messages: [message.User("hello")],
       settings: requested,
     )

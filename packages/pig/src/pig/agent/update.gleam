@@ -13,6 +13,7 @@ import pig/agent/msg.{type AgentMsg}
 import pig/agent/state.{type AgentState}
 import pig/agent/step_result.{type StepResult}
 import pig/tool.{type ToolError}
+import pig/turn
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 
@@ -22,16 +23,20 @@ import pig_protocol/message.{type Message}
 /// This is the entire agent loop logic, sans IO.
 pub fn update(st: AgentState, m: AgentMsg) -> StepResult {
   case m {
-    msg.UserPrompt(prompt) -> handle_user_prompt(st, prompt)
+    msg.StartTurn(input) -> handle_start_turn(st, input)
     msg.ProviderResponded(result) -> handle_provider_responded(st, result)
     msg.ToolResults(results) -> handle_tool_results(st, results)
   }
 }
 
-// ── UserPrompt ──────────────────────────────────────────────────
+// ── StartTurn ───────────────────────────────────────────────────
 
-fn handle_user_prompt(st: AgentState, prompt: String) -> StepResult {
-  let new_st = state.add_message(st, message.User(prompt))
+fn handle_start_turn(st: AgentState, input: turn.Input) -> StepResult {
+  let conversation_message = case input {
+    turn.User(content) -> message.User(content)
+    turn.Developer(content) -> message.Developer(content)
+  }
+  let new_st = state.add_message(st, conversation_message)
   let msgs = state.messages_for_provider(new_st)
   let tools = state.tool_definitions(new_st)
   step_result.Continue(

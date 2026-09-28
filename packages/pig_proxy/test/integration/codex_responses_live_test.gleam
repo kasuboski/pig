@@ -28,12 +28,12 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleeunit
+import integration/config
+import integration/gate
 import pig_proxy/config as proxy_config
 import pig_proxy/hackney
 import pig_proxy/runtime
 import pig_proxy/server
-import integration/config
-import integration/gate
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -90,7 +90,8 @@ pub fn proxy_forwards_codex_responses_test() {
                     False -> {
                       // Print headers + body so the failure reason is visible.
                       // 401/403 = credentials; other 4xx = request shape / model.
-                      let body_text = result.unwrap(bit_array.to_string(resp_body), "")
+                      let body_text =
+                        result.unwrap(bit_array.to_string(resp_body), "")
                       let header_text =
                         list.fold(headers, "", fn(acc, h) {
                           acc <> h.0 <> ": " <> h.1 <> " | "

@@ -38,6 +38,40 @@ pub fn main() {
 `provider_with_base_url`, so the same runtime can be used with compatible local
 or hosted providers.
 
+## Application turns and standing guidance
+
+`with_system_prompt` configures standing guidance; it is not a conversation
+turn. Keep that prompt separate from application-originated input. Use the
+restricted `pig/turn` input type for steering, updated context, constraints, or
+other application messages while retaining normal tool execution:
+
+```gleam
+import pig/turn
+
+let assert Ok(message) =
+  pig.run_turn(agent, turn.Developer("Focus on security; do not edit files."))
+```
+
+`pig.run(agent, "...")` remains the convenient User-input API. Typed
+`run_turn` and `stream_turn` (including their owned/timeout variants) accept
+`turn.User` or `turn.Developer`; the supervised API provides the same
+entrypoints. A busy agent rejects a streamed turn with `RunStartError.Busy`;
+collecting `run_turn` reports `RunError.Runtime("agent is busy")`. Pig does not
+queue inputs or inject them into an active inference.
+
+Accepted input is added once to conversation history and committed before
+inference when a `SessionStore` is configured. Crash durability therefore
+requires a durable store; without one, history is in memory only. A successful
+stream start means accepted, not necessarily committed. After restart, explicitly
+call `run_continue` or `stream_continue` to resume committed history; continuation
+adds no new input and Pig does not automatically run on startup. Do not retry a
+committed turn by resubmitting it as a fresh turn.
+
+Developer messages are persisted/replayed with their `developer` role. Provider
+adapters or models that do not support that role must report an error rather
+than silently recasting it as User or System. OpenAI-compatible services may
+reject the role; their API error is surfaced without fallback.
+
 ## Thinking levels
 
 ### Why this previously appeared supported
@@ -84,7 +118,9 @@ let provider =
 Use `responses_provider` for OpenAI's Responses API. It uses the same
 one-argument `Provider(InferenceRequest)` interface. Responses requests send
 `reasoning.effort`; enabled levels also request an automatic provider-generated
-reasoning summary. System messages are mapped to Responses `instructions`.
+reasoning summary. The configured `system_prompt` is mapped to Responses
+`instructions`; conversation messages, including Developer turns, remain in
+input.
 Pig does not maintain a model capability catalog, clamp levels, or promise that
 a model supports a selected level; unsupported values are reported by the
 provider. Setting changes and inference start/stop events are observable through
@@ -157,8 +193,19 @@ or the collector deadline is reached; provider and run errors remain in the inne
 result. A timeout actively cancels in-flight provider or tool work before
 returning.
 
-Continued runs resume from preloaded history without adding another user
-message, supporting checkpoint-and-resume workflows.
+Continued runs resume from committed/preloaded history without adding another
+message, supporting checkpoint-and-resume workflows. Use `run_continue` or
+`stream_continue` explicitly after restoring a session.
+
+### Custom providers
+
+A custom provider receives `provider.InferenceRequest` with `system_prompt`
+separate from `messages`. Treat the latter as conversation history; do not look
+for or extract the standing prompt from a System message. Preserve Developer
+messages and their role when encoding requests. If your upstream cannot support
+Developer, return `pig_protocol/error.UnsupportedMessageRole` (or its normal
+provider API error) before any unsafe relabeling; never silently drop or convert
+the input. Use `None` when no standing prompt is configured.
 
 ## Features
 
@@ -182,7 +229,6 @@ The [`examples`](examples) directory includes:
 - a knowledge notebook
 - URL summarization
 - scale testing
-- a client/server chat application
 
 Each example is a standalone Gleam project.
 

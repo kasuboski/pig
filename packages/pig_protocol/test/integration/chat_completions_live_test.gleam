@@ -18,7 +18,7 @@ import jscheam/schema
 import pig_protocol/auth
 import pig_protocol/codec/chat
 import pig_protocol/error.{type AiError}
-import pig_protocol/inference.{InferenceResult, type InferenceResult as Ir}
+import pig_protocol/inference.{type InferenceResult as Ir, InferenceResult}
 import pig_protocol/message
 import pig_protocol/tool_definition.{type ToolDefinition}
 import pig_protocol/transport
@@ -73,8 +73,7 @@ pub fn chat_completions_text_completion_test() {
             }
             _ -> panic as "expected Assistant with no tool calls"
           }
-        Error(e) ->
-          panic as { "chat request failed: " <> ai_error_to_string(e) }
+        Error(e) -> panic as { "chat request failed: " <> ai_error_to_string(e) }
       }
     }
   }
@@ -148,7 +147,7 @@ pub fn chat_completions_bad_url_returns_error_test() {
           url: url,
           headers: headers,
           body: body,
-          timeout_ms: 5_000,
+          timeout_ms: 5000,
         )
       case httpc.transport(req) {
         Error(_) -> Nil
@@ -193,5 +192,6 @@ fn ai_error_to_string(err: AiError) -> String {
     error.Timeout -> "Timeout"
     error.Cancelled -> "Cancelled"
     error.InvalidResponse(detail:) -> "InvalidResponse(" <> detail <> ")"
+    error.UnsupportedMessageRole(_) -> "UnsupportedMessageRole"
   }
 }

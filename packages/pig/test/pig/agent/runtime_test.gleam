@@ -23,10 +23,12 @@ import pig/obs/dispatcher
 import pig/obs/events
 import pig/obs/session as session_writer
 import pig/provider
+import pig/run
 import pig/run_error
 import pig/session_store
 import pig/session_store/memory
 import pig/tool
+import pig/turn
 import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/stop_reason
@@ -561,6 +563,42 @@ pub fn call_provider_emits_inference_events_test() {
   process.send(disp, dispatcher.Stop)
 }
 
+/// A Developer turn is rejected before the custom provider is called, while
+/// the committed turn remains in history.
+pub fn unsupported_developer_turn_preserves_history_without_provider_io_test() {
+  let provider_calls = start_counter()
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    case
+      list.any(request.messages, fn(message) {
+        case message {
+          message.Developer(_) -> True
+          _ -> False
+        }
+      })
+    {
+      True -> Error(error.UnsupportedMessageRole(message.DeveloperRole))
+      False -> {
+        process.send(provider_calls, Increment)
+        Ok(
+          provider.from_message(message.Assistant("unexpected", [], None, None)),
+        )
+      }
+    }
+  }
+  let #(subject, disp) = start_simple(provider_fn, [])
+
+  let assert Error(run_error.Inference(error.UnsupportedMessageRole(
+    message.DeveloperRole,
+  ))) = runtime.run_turn(subject, turn.Developer("Focus on safety"), 5000)
+  assert count(provider_calls) == 0
+  assert runtime.history(subject, 1000)
+    == [message.Developer("Focus on safety")]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+}
+
 /// Runtime emits InferenceFailed on provider error.
 pub fn call_provider_emits_inference_failed_test() {
   let #(subject, collector, disp) =
@@ -874,6 +912,33 @@ pub fn hook_transforms_messages_before_inference_test() {
   let assert Ok(content) = process.receive(seen, 2000)
   assert content == "[scrubbed] hello"
   process.send(disp, dispatcher.Stop)
+}
+
+/// A hook cannot turn conversation replacement into standing System guidance.
+pub fn hook_cannot_inject_system_message_test() {
+  let provider_calls = start_counter()
+  let provider_fn = fn(_request: provider.InferenceRequest) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let injector =
+    hooks.new("injector")
+    |> hooks.on_before_inference(fn(event) {
+      hooks.ReplaceMessages([
+        message.System("not conversation"),
+        ..event.messages
+      ])
+    })
+  let #(subject, _collector, disp) =
+    start_with_collector(provider_fn, [], [injector])
+  let assert Error(run_error.Inference(error.UnsupportedMessageRole(
+    message.SystemRole,
+  ))) = runtime.run_turn(subject, turn.Developer("new context"), 5000)
+  assert count(provider_calls) == 0
+  assert runtime.history(subject, 1000) == [message.Developer("new context")]
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
 }
 
 /// Hook blocks tool → session writer records tool_blocked event.
@@ -2238,6 +2303,63 @@ pub fn durable_settings_parent_conflict_replaces_runtime_snapshot_test() {
   memory.stop(handle)
 }
 
+/// Reloading authoritative settings after a conflict retains a Developer turn
+/// and continuation infers from that committed history without another input.
+pub fn settings_conflict_recovery_preserves_developer_turn_test() {
+  let developer = message.Developer("Use the latest constraints")
+  let initial_settings = provider.with_thinking_level(thinking.High)
+  let requested = provider.with_thinking_level(thinking.Medium)
+  let assert Ok(handle) =
+    memory.start(session_store.Session(
+      Some("authoritative-head"),
+      [developer],
+      Some(initial_settings),
+    ))
+  let commits = process.new_subject()
+  let provider_seen = process.new_subject()
+  let final = message.Assistant("continued", [], None, None)
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(provider_seen, request)
+    Ok(provider.from_message(final))
+  }
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [],
+      recording_memory_store(handle, commits),
+      Some("stale-head"),
+    )
+
+  let assert Error(run_error.Session(session_store.ParentConflict(..))) =
+    runtime.set_inference_settings(subject, requested, 5000)
+  assert runtime.history(subject, 1000) == [developer]
+  let assert Ok(stale) = process.receive(commits, 1000)
+  assert stale.parent == Some("stale-head")
+  let assert Ok(Nil) = runtime.set_inference_settings(subject, requested, 5000)
+  let assert Ok(settings_commit) = process.receive(commits, 1000)
+  assert settings_commit.parent == Some("authoritative-head")
+
+  let assert Ok(response) = runtime.run_continue(subject, 5000)
+  assert response == final
+  let assert Ok(request) = process.receive(provider_seen, 1000)
+  assert request.messages == [developer]
+  assert request.settings == requested
+  assert runtime.history(subject, 1000) == [developer, final]
+  let assert Ok(assistant_commit) = process.receive(commits, 1000)
+  assert assistant_commit.parent == Some(settings_commit.id)
+  assert harness.messages_in_commit(assistant_commit) == [final]
+  assert memory.snapshot(handle)
+    == session_store.Session(
+      Some(assistant_commit.id),
+      [developer, final],
+      Some(requested),
+    )
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
 /// After a settings conflict, the next request commits against the loaded
 /// authoritative head rather than the stale commit's parent.
 pub fn durable_settings_parent_conflict_retries_with_new_parent_test() {
@@ -2561,4 +2683,366 @@ pub fn corrupt_settings_retry_does_not_remain_pending_test() {
   assert_settings_retry_error_is_non_pending(session_store.Corrupt(
     "damaged settings",
   ))
+}
+
+/// A Developer turn is committed before inference and remains in conversation history.
+pub fn developer_turn_commits_before_inference_test() {
+  let commits = process.new_subject()
+  let release_channel = process.new_subject()
+  let provider_messages = process.new_subject()
+  let provider_calls = start_counter()
+  let final = message.Assistant("done", [], None, None)
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [], None)) },
+      commit: fn(commit) {
+        process.send(commits, commit)
+        case harness.messages_in_commit(commit) {
+          [message.Developer(_)] -> {
+            let release = process.new_subject()
+            process.send(release_channel, release)
+            let assert Ok(Nil) = process.receive(release, 15_000)
+            Nil
+          }
+          _ -> Nil
+        }
+        Ok(session_store.Session(
+          Some(commit.id),
+          harness.messages_in_commit(commit),
+          None,
+        ))
+      },
+    )
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(provider_calls, Increment)
+    process.send(provider_messages, request.messages)
+    Ok(provider.from_message(final))
+  }
+  let #(subject, disp) = start_with_session_store(provider_fn, [], store, None)
+  let result_channel = process.new_subject()
+  let _caller =
+    process.spawn_unlinked(fn() {
+      process.send(
+        result_channel,
+        runtime.run_turn(subject, turn.Developer("Focus"), 15_000),
+      )
+      Nil
+    })
+  let assert Ok(release) = process.receive(release_channel, 5000)
+  assert count(provider_calls) == 0
+  process.send(release, Nil)
+  let assert Ok(Ok(result)) = process.receive(result_channel, 10_000)
+  assert result == final
+  let assert Ok(seen) = process.receive(provider_messages, 1000)
+  assert seen == [message.Developer("Focus")]
+  let assert Ok(input_commit) = process.receive(commits, 1000)
+  assert harness.messages_in_commit(input_commit)
+    == [message.Developer("Focus")]
+  assert runtime.history(subject, 1000) == [message.Developer("Focus"), final]
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
+}
+
+/// A persisted-but-unacknowledged Developer input is retried with its exact
+/// identity. Neither persistence alone nor a blocked retry starts inference.
+pub fn developer_ambiguous_commit_retries_exactly_test() {
+  let assert Ok(handle) = memory.start(session_store.Session(None, [], None))
+  let commits = process.new_subject()
+  let retry_ready = process.new_subject()
+  let provider_calls = start_counter()
+  let provider_seen = process.new_subject()
+  let durable = recording_memory_store(handle, commits)
+  let session_store.SessionStore(load:, commit:) = durable
+  let store =
+    session_store.SessionStore(load:, commit: fn(next) {
+      let before = memory.snapshot(handle)
+      let assert Ok(persisted) = commit(next)
+      case harness.messages_in_commit(next), before.head {
+        [message.Developer(_)], None -> {
+          // The write really happened; only its acknowledgement is lost.
+          Error(session_store.Unavailable("acknowledgement lost"))
+        }
+        [message.Developer(_)], Some(_) -> {
+          let release = process.new_subject()
+          process.send(retry_ready, release)
+          let assert Ok(Nil) = process.receive(release, 5000)
+          Ok(persisted)
+        }
+        _, _ -> Ok(persisted)
+      }
+    })
+  let final = message.Assistant("retried", [], None, None)
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(provider_calls, Increment)
+    process.send(provider_seen, #(request.messages, memory.snapshot(handle)))
+    Ok(provider.from_message(final))
+  }
+  let #(subject, disp) = start_with_session_store(provider_fn, [], store, None)
+
+  let assert Error(run_error.Session(session_store.Unavailable(
+    "acknowledgement lost",
+  ))) = runtime.run_turn(subject, turn.Developer("Focus"), 5000)
+  let assert Ok(first) = process.receive(commits, 1000)
+  assert first.parent == None
+  assert harness.messages_in_commit(first) == [message.Developer("Focus")]
+  let input_snapshot =
+    session_store.Session(Some(first.id), [message.Developer("Focus")], None)
+  assert memory.snapshot(handle) == input_snapshot
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+
+  let sink = process.new_subject()
+  let assert Ok(active_run) = runtime.stream_continue(subject, sink)
+  let assert Ok(release) = process.receive(retry_ready, 1000)
+  let assert Ok(retried) = process.receive(commits, 1000)
+  assert retried == first
+  assert memory.snapshot(handle) == input_snapshot
+  assert count(provider_calls) == 0
+  process.send(release, Nil)
+
+  let assert Ok(result) = runtime.collect(active_run, sink, 5000)
+  assert result == final
+  let assert Ok(#(seen, durable_at_inference)) =
+    process.receive(provider_seen, 1000)
+  assert seen == [message.Developer("Focus")]
+  assert durable_at_inference == input_snapshot
+  let assert Ok(assistant_commit) = process.receive(commits, 1000)
+  assert harness.messages_in_commit(assistant_commit) == [final]
+  assert assistant_commit.parent == Some(first.id)
+  assert count(provider_calls) == 1
+  assert runtime.history(subject, 1000) == [message.Developer("Focus"), final]
+  assert memory.snapshot(handle)
+    == session_store.Session(
+      Some(assistant_commit.id),
+      [message.Developer("Focus"), final],
+      None,
+    )
+  assert process.receive(commits, 0) == Error(Nil)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+  stop_counter(provider_calls)
+}
+
+/// Developer input follows the normal provider/tool/provider stream lifecycle,
+/// with every conversation transition persisted in order.
+pub fn developer_tool_capable_lifecycle_is_durable_test() {
+  let input = message.Developer("Use echo with the updated context")
+  let call =
+    message.ToolCall(
+      id: "developer-echo",
+      name: "echo",
+      arguments_json: "{\"msg\":\"updated\"}",
+    )
+  let tool_request = message.Assistant("", [call], None, None)
+  let tool_result = message.Tool("developer-echo", "{\"echo\":\"updated\"}")
+  let final = message.Assistant("done", [], None, None)
+  let requests = process.new_subject()
+  let tool_calls = start_counter()
+  let respond = sequenced_provider([tool_request, final])
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(requests, request)
+    respond(request)
+  }
+  let assert Ok(handle) = memory.start(session_store.Session(None, [], None))
+  let commits = process.new_subject()
+  let registered_tool = counted_echo_tool(tool_calls)
+  let #(subject, disp) =
+    start_with_session_store(
+      provider_fn,
+      [registered_tool],
+      recording_memory_store(handle, commits),
+      None,
+    )
+  let sink = process.new_subject()
+  let assert Ok(active_run) =
+    runtime.stream_turn(
+      subject,
+      turn.Developer("Use echo with the updated context"),
+      sink,
+    )
+  let assert Ok(result) = runtime.collect(active_run, sink, 5000)
+  assert result == final
+
+  let assert Ok(first_request) = process.receive(requests, 1000)
+  let assert Ok(second_request) = process.receive(requests, 1000)
+  assert first_request.messages == [input]
+  assert second_request.messages == [input, tool_request, tool_result]
+  assert first_request.tools == [registered_tool.definition]
+  assert second_request.tools == [registered_tool.definition]
+  assert count(tool_calls) == 1
+
+  let assert Ok(run.RunStarted) = process.receive(sink, 1000)
+  let assert Ok(run.InferenceStarted(1)) = process.receive(sink, 1000)
+  let assert Ok(run.InferenceFinished(1, Ok(first_result))) =
+    process.receive(sink, 1000)
+  assert first_result.message == tool_request
+  let assert Ok(run.ToolStarted(1, started_call)) = process.receive(sink, 1000)
+  let assert Ok(run.ToolFinished(1, finished_call, Ok(output))) =
+    process.receive(sink, 1000)
+  assert started_call == call
+  assert finished_call == call
+  assert json.to_string(output) == "{\"echo\":\"updated\"}"
+  let assert Ok(run.InferenceStarted(2)) = process.receive(sink, 1000)
+  let assert Ok(run.InferenceFinished(2, Ok(last_result))) =
+    process.receive(sink, 1000)
+  let assert Ok(run.Completed(completed)) = process.receive(sink, 1000)
+  assert last_result.message == final
+  assert completed == last_result
+
+  let assert Ok(input_commit) = process.receive(commits, 1000)
+  let assert Ok(request_commit) = process.receive(commits, 1000)
+  let assert Ok(tool_commit) = process.receive(commits, 1000)
+  let assert Ok(final_commit) = process.receive(commits, 1000)
+  assert list.map(
+      [input_commit, request_commit, tool_commit, final_commit],
+      harness.messages_in_commit,
+    )
+    == [[input], [tool_request], [tool_result], [final]]
+  assert input_commit.parent == None
+  assert request_commit.parent == Some(input_commit.id)
+  assert tool_commit.parent == Some(request_commit.id)
+  assert final_commit.parent == Some(tool_commit.id)
+  let expected_history = [input, tool_request, tool_result, final]
+  assert runtime.history(subject, 1000) == expected_history
+  assert memory.snapshot(handle)
+    == session_store.Session(Some(final_commit.id), expected_history, None)
+  assert process.receive(sink, 0) == Error(Nil)
+  assert process.receive(requests, 0) == Error(Nil)
+  assert process.receive(commits, 0) == Error(Nil)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+  stop_counter(tool_calls)
+}
+
+type DeveloperCancellation {
+  ExplicitCancellation
+  OwnerDisconnection
+}
+
+/// Exercise cancellation at the run-stream boundary with a provider handshake.
+/// The source monitor proves cancellation stops work, not merely event delivery.
+fn check_developer_cancellation(mode: DeveloperCancellation) {
+  let provider_ready = process.new_subject()
+  let provider_fn = fn(_request: provider.InferenceRequest) {
+    let gate = process.new_subject()
+    process.send(provider_ready, #(process.self(), gate))
+    let assert Ok(Nil) = process.receive(gate, 5000)
+    Ok(provider.from_message(message.Assistant("too late", [], None, None)))
+  }
+  let assert Ok(handle) = memory.start(session_store.Session(None, [], None))
+  let #(subject, disp) =
+    start_with_session_store(provider_fn, [], memory.store(handle), None)
+  let sink = process.new_subject()
+  let #(active_run, owner, reason) = case mode {
+    ExplicitCancellation -> {
+      let assert Ok(active_run) =
+        runtime.stream_turn(subject, turn.Developer("Stay cancellable"), sink)
+      #(active_run, None, run_error.CallerRequested)
+    }
+    OwnerDisconnection -> {
+      let owner_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let exit = process.new_subject()
+          process.send(owner_ready, exit)
+          process.receive_forever(exit)
+        })
+      let assert Ok(exit) = process.receive(owner_ready, 1000)
+      let assert Ok(active_run) =
+        runtime.stream_turn_owned(
+          subject,
+          turn.Developer("Stay cancellable"),
+          sink,
+          owner,
+        )
+      #(active_run, Some(exit), run_error.ClientDisconnected)
+    }
+  }
+  let assert Ok(run.RunStarted) = process.receive(sink, 1000)
+  let assert Ok(run.InferenceStarted(1)) = process.receive(sink, 1000)
+  let assert Ok(#(source, gate)) = process.receive(provider_ready, 1000)
+  let monitor = process.monitor(source)
+  let input_history = [message.Developer("Stay cancellable")]
+  assert runtime.history(subject, 1000) == input_history
+  let committed = memory.snapshot(handle)
+  assert committed.messages == input_history
+  let assert Some(_) = committed.head
+
+  case owner {
+    None -> {
+      run.cancel(active_run, reason)
+      run.cancel(active_run, reason)
+    }
+    Some(exit) -> process.send(exit, Nil)
+  }
+  let assert Ok(run.InferenceFinished(1, Error(error.Cancelled))) =
+    process.receive(sink, 1000)
+  let assert Ok(run.Cancelled(actual_reason)) = process.receive(sink, 1000)
+  assert actual_reason == reason
+  assert runtime.collect(active_run, sink, 1000)
+    == Error(run_error.Cancelled(reason))
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 1000)
+
+  // Once the provider has exited, releasing its gate cannot append a reply.
+  // A runtime round-trip also fences repeated cancellation before draining.
+  process.send(gate, Nil)
+  assert runtime.history(subject, 1000) == input_history
+  assert memory.snapshot(handle) == committed
+  assert process.receive(sink, 0) == Error(Nil)
+
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  memory.stop(handle)
+}
+
+/// Explicit cancellation emits one terminal and retains only the durable input.
+pub fn developer_cancellation_preserves_durable_input_test() {
+  check_developer_cancellation(ExplicitCancellation)
+}
+
+/// The explicitly watched owner, not the still-live sink owner, cancels the run.
+pub fn developer_owned_stream_disconnect_preserves_durable_input_test() {
+  check_developer_cancellation(OwnerDisconnection)
+}
+
+/// A failed Developer checkpoint never reaches the provider.
+pub fn developer_commit_failure_prevents_inference_test() {
+  let provider_calls = start_counter()
+  let store =
+    session_store.SessionStore(
+      load: fn() { Ok(session_store.Session(None, [], None)) },
+      commit: fn(commit) {
+        case harness.messages_in_commit(commit) {
+          [message.Developer(_)] -> Error(session_store.Unavailable("offline"))
+          _ ->
+            Ok(session_store.Session(
+              Some(commit.id),
+              harness.messages_in_commit(commit),
+              None,
+            ))
+        }
+      },
+    )
+  let provider_fn = fn(_request: provider.InferenceRequest) {
+    process.send(provider_calls, Increment)
+    Ok(provider.from_message(message.Assistant("unexpected", [], None, None)))
+  }
+  let #(subject, disp) = start_with_session_store(provider_fn, [], store, None)
+  let assert Error(run_error.Session(session_store.Unavailable("offline"))) =
+    runtime.run_turn(subject, turn.Developer("Do this"), 5000)
+  assert runtime.history(subject, 1000) == []
+  assert count(provider_calls) == 0
+  runtime.stop(subject)
+  process.send(disp, dispatcher.Stop)
+  stop_counter(provider_calls)
 }

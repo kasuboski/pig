@@ -85,7 +85,7 @@ pub const default_circuit_cooldown_ms = 30_000
 
 pub const default_models_dev_url = "https://models.dev/api.json"
 
-pub const default_models_refresh_ms = 3600_000
+pub const default_models_refresh_ms = 3_600_000
 
 /// Create a config with sensible defaults and the given targets.
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {

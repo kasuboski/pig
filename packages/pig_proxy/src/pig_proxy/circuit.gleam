@@ -47,8 +47,7 @@ pub fn record_failure(
         False -> Closed(failure_count: new_count)
       }
     }
-    HalfOpen ->
-      Open(opened_at_ms: now_ms, failure_count: threshold)
+    HalfOpen -> Open(opened_at_ms: now_ms, failure_count: threshold)
     Open(opened_at_ms:, failure_count:) ->
       Open(opened_at_ms:, failure_count: failure_count + 1)
   }
@@ -60,11 +59,7 @@ pub fn record_failure(
 /// to half-open (admitting attempts again). A half-open circuit admits
 /// attempts; the circuit actor admits concurrent probes with no
 /// single-slot reservation. A closed circuit never blocks.
-pub fn is_open(
-  state: CircuitState,
-  now_ms: Int,
-  cooldown_ms: Int,
-) -> Bool {
+pub fn is_open(state: CircuitState, now_ms: Int, cooldown_ms: Int) -> Bool {
   case state {
     Closed(_) -> False
     HalfOpen -> False

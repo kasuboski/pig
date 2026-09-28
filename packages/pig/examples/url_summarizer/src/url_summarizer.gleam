@@ -104,6 +104,9 @@ pub fn main() {
     Error(run_error.Inference(error.InvalidResponse(detail))) -> {
       io.println("\n⚠ Invalid response from provider: " <> detail)
     }
+    Error(run_error.Inference(error.UnsupportedMessageRole(role))) -> {
+      io.println("\nUnsupported message role: " <> string.inspect(role))
+    }
     Error(run_error.Session(session_error)) -> {
       io.println("\n⚠ Session error: " <> string.inspect(session_error))
     }

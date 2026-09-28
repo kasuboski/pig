@@ -23,7 +23,7 @@ import pig/obs/events.{
 }
 import pig/obs/session
 import pig_protocol/error.{ApiError}
-import pig_protocol/message.{Assistant, ToolCall, User}
+import pig_protocol/message.{Assistant, Developer, ToolCall, User}
 import pig_protocol/stop_reason
 import simplifile
 import temporary
@@ -115,6 +115,44 @@ pub fn format_session_started_single_line_test() {
 
   // Verify no newlines in the JSON string
   assert string.contains(json_str, "\n") == False
+}
+
+pub fn developer_message_json_roundtrip_test() {
+  let encoded =
+    json.object([
+      #("role", json.string("developer")),
+      #("content", json.string("updated context")),
+    ])
+    |> json.to_string()
+  let assert Ok(Developer("updated context")) =
+    json.parse(from: encoded, using: session.decode_message())
+  let event =
+    InferenceCompleted(
+      message: Assistant(
+        content: "ok",
+        tool_calls: [],
+        thinking: None,
+        stop_reason: None,
+      ),
+      response_id: None,
+      response_model: None,
+      stop_reason: None,
+      input_tokens: None,
+      output_tokens: None,
+      cached_input_tokens: None,
+      duration_ms: 1,
+      input_messages: [Developer("updated context")],
+      settings: provider.default_settings(),
+    )
+  let json_str = session.format_event(event)
+  let assert Ok([Developer("updated context")]) =
+    json.parse(
+      from: json_str,
+      using: dynamic_decode.at(
+        ["input_messages"],
+        dynamic_decode.list(session.decode_message()),
+      ),
+    )
 }
 
 pub fn format_inference_completed_includes_fields_test() {

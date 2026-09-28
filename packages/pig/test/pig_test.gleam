@@ -9,8 +9,9 @@ import gleam/string
 import gleeunit
 import pig
 import pig/agent/state
-import pig_protocol/message
 import pig/skill
+import pig/turn
+import pig_protocol/message
 import support/harness
 
 pub fn main() -> Nil {
@@ -26,6 +27,16 @@ pub fn new_starts_and_runs_test() {
   let assert Ok(agent) = pig.start(config)
   let assert Ok(msg) = pig.run_with_timeout(agent, "hi", 5000)
   let assert True = msg == response
+  pig.stop(agent)
+}
+
+/// The typed top-level entrypoint accepts an application-originated turn.
+pub fn run_turn_accepts_developer_input_test() {
+  let response = message.Assistant("done", [], None, None)
+  let config = pig.new(harness.fixed_provider(response))
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(msg) = pig.run_turn(agent, turn.Developer("Focus on safety"))
+  assert msg == response
   pig.stop(agent)
 }
 

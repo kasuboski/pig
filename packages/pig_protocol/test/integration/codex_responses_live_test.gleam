@@ -25,7 +25,7 @@ import integration/gate
 import pig_protocol/auth
 import pig_protocol/codec/responses
 import pig_protocol/error.{type AiError}
-import pig_protocol/inference.{InferenceResult, type InferenceResult as Ir}
+import pig_protocol/inference.{type InferenceResult as Ir, InferenceResult}
 import pig_protocol/message
 import pig_protocol/transport
 import pig_protocol/transport/httpc
@@ -46,21 +46,13 @@ fn run_codex(
   instructions: Option(String),
 ) -> Result(Ir, AiError) {
   case config.codex_token() {
-    "" ->
-      Error(error.InvalidResponse(
-        "OPENAI_COMPAT_CODEX_TOKEN is empty",
-      ))
+    "" -> Error(error.InvalidResponse("OPENAI_COMPAT_CODEX_TOKEN is empty"))
     token -> {
       let mode = auth.CodexOAuth(token, config.codex_base_url())
       let url = auth.responses_url(mode)
       use headers <- result.try(auth.headers(mode, False))
       let body =
-        responses.build_request_body(
-          messages,
-          [],
-          config.model(),
-          instructions,
-        )
+        responses.build_request_body(messages, [], config.model(), instructions)
       let req =
         transport.HttpRequest(
           url: url,
@@ -80,10 +72,9 @@ pub fn codex_responses_text_completion_test() {
   case gate.skip_unless_enabled() {
     True -> Nil
     False ->
-      case run_codex(
-        [message.User("Say exactly the words: hello world")],
-        None,
-      ) {
+      case
+        run_codex([message.User("Say exactly the words: hello world")], None)
+      {
         Ok(InferenceResult(message: msg, metadata: _)) ->
           case msg {
             message.Assistant(
@@ -105,8 +96,7 @@ pub fn codex_responses_text_completion_test() {
               )
               Nil
             }
-            _ ->
-              panic as { "codex request failed: " <> ai_error_to_string(e) }
+            _ -> panic as { "codex request failed: " <> ai_error_to_string(e) }
           }
       }
   }
@@ -125,8 +115,7 @@ pub fn codex_responses_metadata_test() {
         Error(error.InvalidResponse("OPENAI_COMPAT_CODEX_TOKEN is empty")) -> {
           Nil
         }
-        Error(_) ->
-          Nil
+        Error(_) -> Nil
         // Missing metadata from a real provider is acceptable.
       }
   }
@@ -156,5 +145,6 @@ fn ai_error_to_string(err: AiError) -> String {
     error.Timeout -> "Timeout"
     error.Cancelled -> "Cancelled"
     error.InvalidResponse(detail:) -> "InvalidResponse(" <> detail <> ")"
+    error.UnsupportedMessageRole(_) -> "UnsupportedMessageRole"
   }
 }

@@ -48,6 +48,22 @@ pub fn build_request_body_system_ignored_when_instructions_missing_test() {
   assert list.length(input) == 1
 }
 
+pub fn build_request_body_encodes_developer_input_test() {
+  let body =
+    responses.build_request_body(
+      [message.Developer("context")],
+      [],
+      "gpt-4o",
+      None,
+    )
+  let item_decoder = {
+    use role <- decode.field("role", decode.string)
+    decode.success(role)
+  }
+  let assert Ok(["developer"]) =
+    json.parse(body, decode.at(["input"], decode.list(item_decoder)))
+}
+
 pub fn build_request_body_instructions_added_test() {
   let body = responses.build_request_body([], [], "gpt-4o", Some("be helpful"))
   let assert Ok("be helpful") =

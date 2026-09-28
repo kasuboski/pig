@@ -64,31 +64,37 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
 
   let sup =
     static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(supervision.worker(fn() {
-      circuit_actor.start_named(
-        cfg.circuit_threshold,
-        cfg.circuit_cooldown_ms,
-        circuit_name,
-      )
-    }))
-    |> static_supervisor.add(supervision.worker(fn() {
-      model_catalog.start_named(
-        cfg.models_dev_url,
-        cfg.models_refresh_ms,
-        catalog_name,
-      )
-    }))
-    |> static_supervisor.add(supervision.worker(fn() {
-      // `attach_named` below installs one handler after the tree boots; it
-      // resolves this named actor after every supervised restart.
-      metrics.start_named(metrics_name)
-    }))
+    |> static_supervisor.add(
+      supervision.worker(fn() {
+        circuit_actor.start_named(
+          cfg.circuit_threshold,
+          cfg.circuit_cooldown_ms,
+          circuit_name,
+        )
+      }),
+    )
+    |> static_supervisor.add(
+      supervision.worker(fn() {
+        model_catalog.start_named(
+          cfg.models_dev_url,
+          cfg.models_refresh_ms,
+          catalog_name,
+        )
+      }),
+    )
+    |> static_supervisor.add(
+      supervision.worker(fn() {
+        // `attach_named` below installs one handler after the tree boots; it
+        // resolves this named actor after every supervised restart.
+        metrics.start_named(metrics_name)
+      }),
+    )
     |> add_cred_sub(plan, vault_name)
 
   // Fail-to-boot: a child that can't start fails the supervisor, and thus
   // the proxy boot.
-  let assert Ok(started) = static_supervisor.start(sup) as
-    "pig_proxy: failed to start supervisor tree — a supervised actor would not start"
+  let assert Ok(started) = static_supervisor.start(sup)
+    as "pig_proxy: failed to start supervisor tree — a supervised actor would not start"
   // Fail-fast: if the tree later dies (restart intensity exceeded), take the
   // proxy down so an external supervisor restarts the whole process.
   let _ = process.link(started.pid)
@@ -188,20 +194,14 @@ fn cred_plan(cfg: ProxyConfig) -> Option(CredPlan) {
 /// `rest_for_one`: a vault restart takes refresh down with it (refresh
 /// re-resolves the vault name on restart), so rotation never targets a dead
 /// vault. refresh crashing restarts only refresh.
-fn cred_sub_child(
-  plan: CredPlan,
-  vault_name: process.Name(vault.VaultMsg),
-) {
+fn cred_sub_child(plan: CredPlan, vault_name: process.Name(vault.VaultMsg)) {
   supervision.supervisor(fn() { cred_sub_start(plan, vault_name) })
 }
 
 fn cred_sub_start(
   plan: CredPlan,
   vault_name: process.Name(vault.VaultMsg),
-) -> Result(
-  actor.Started(static_supervisor.Supervisor),
-  actor.StartError,
-) {
+) -> Result(actor.Started(static_supervisor.Supervisor), actor.StartError) {
   let sub =
     static_supervisor.new(static_supervisor.RestForOne)
     |> static_supervisor.add(vault_worker(plan, vault_name))
@@ -212,10 +212,7 @@ fn cred_sub_start(
 /// The vault worker. On each (re)start it reloads the persisted access token
 /// (Full) or uses the static seed (Seeded), so a restart picks up the latest
 /// rotated credential.
-fn vault_worker(
-  plan: CredPlan,
-  vault_name: process.Name(vault.VaultMsg),
-) {
+fn vault_worker(plan: CredPlan, vault_name: process.Name(vault.VaultMsg)) {
   supervision.worker(fn() { vault.start_named(vault_initial(plan), vault_name) })
 }
 
@@ -229,29 +226,31 @@ fn add_refresh_worker(
   case plan {
     Full(target_id:, path:) ->
       builder
-      |> static_supervisor.add(supervision.worker(fn() {
-        case codex_credentials.load(path) {
-          Ok(creds) ->
-            codex_refresh.start_started(
-              vault_name,
-              target_id,
-              path,
-              creds,
-              codex_refresh.default_check_interval_ms,
-              codex_refresh.default_refresh_buffer_ms,
-            )
-          Error(reason) -> {
-            logging.log(
-              logging.Error,
-              "pig_proxy: could not reload Codex credentials from "
-                <> path
-                <> ": "
-                <> reason,
-            )
-            Error(actor.InitFailed("could not reload Codex credentials"))
+      |> static_supervisor.add(
+        supervision.worker(fn() {
+          case codex_credentials.load(path) {
+            Ok(creds) ->
+              codex_refresh.start_started(
+                vault_name,
+                target_id,
+                path,
+                creds,
+                codex_refresh.default_check_interval_ms,
+                codex_refresh.default_refresh_buffer_ms,
+              )
+            Error(reason) -> {
+              logging.log(
+                logging.Error,
+                "pig_proxy: could not reload Codex credentials from "
+                  <> path
+                  <> ": "
+                  <> reason,
+              )
+              Error(actor.InitFailed("could not reload Codex credentials"))
+            }
           }
-        }
-      }))
+        }),
+      )
     Seeded(..) -> builder
   }
 }
