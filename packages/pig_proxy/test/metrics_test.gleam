@@ -56,7 +56,8 @@ pub fn percentile_p50_of_ten_elements_test() {
 
 pub fn percentile_p95_of_ten_elements_test() {
   // p=95, index = 95*10/100 = 9 → element at index 9 = 100
-  assert 100 == metrics.percentile([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 95)
+  assert 100
+    == metrics.percentile([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 95)
 }
 
 // ── empty_snapshot ──────────────────────────────────────────────

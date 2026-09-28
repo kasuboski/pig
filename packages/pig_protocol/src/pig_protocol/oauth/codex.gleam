@@ -173,9 +173,7 @@ pub fn parse_token_response(
 /// Parse `code` and `state` out of a local callback's query string (the
 /// part of the request after `?`).
 pub fn parse_callback_query(query: String) -> Result(#(String, String), Nil) {
-  use params <- result.try(
-    uri.parse_query(query) |> result.replace_error(Nil),
-  )
+  use params <- result.try(uri.parse_query(query) |> result.replace_error(Nil))
   use code <- result.try(list.key_find(params, "code"))
   use state <- result.try(list.key_find(params, "state"))
   Ok(#(code, state))
@@ -248,12 +246,13 @@ fn device_usercode_decoder() -> decode.Decoder(DeviceUserCode) {
 }
 
 fn device_interval_decoder() -> decode.Decoder(Int) {
-  let numeric_string = decode.then(decode.string, fn(value) {
-    case int.parse(value) {
-      Ok(interval) -> decode.success(interval)
-      Error(_) -> decode.failure(0, "integer string")
-    }
-  })
+  let numeric_string =
+    decode.then(decode.string, fn(value) {
+      case int.parse(value) {
+        Ok(interval) -> decode.success(interval)
+        Error(_) -> decode.failure(0, "integer string")
+      }
+    })
   let raw = decode.one_of(decode.int, or: [numeric_string])
   decode.then(raw, fn(interval) {
     case interval >= 0 {
@@ -293,13 +292,12 @@ pub fn parse_device_token_success(
 /// if either is present (used to tell `deviceauth_authorization_pending` /
 /// `slow_down` from a real failure).
 pub fn device_error_code(body: String) -> Option(String) {
-  let object_code = decode.map(
-    decode.at(["error", "code"], decode.string),
-    option.Some,
-  )
-  let string_error = decode.field("error", decode.string, fn(error) {
-    decode.success(option.Some(error))
-  })
+  let object_code =
+    decode.map(decode.at(["error", "code"], decode.string), option.Some)
+  let string_error =
+    decode.field("error", decode.string, fn(error) {
+      decode.success(option.Some(error))
+    })
   let decoder =
     decode.one_of(object_code, or: [string_error, decode.success(option.None)])
   result.unwrap(json.parse(from: body, using: decoder), option.None)

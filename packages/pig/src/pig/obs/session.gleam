@@ -26,10 +26,11 @@ import pig/obs/events.{
 import pig/provider
 import pig_protocol/error.{
   type AiError, ApiError, Cancelled, InvalidResponse, RateLimited, Timeout,
+  UnsupportedMessageRole,
 }
 import pig_protocol/message.{
-  type Message, type Thinking, type ToolCall, Assistant, System, Thinking, Tool,
-  ToolCall, User,
+  type Message, type Thinking, type ToolCall, Assistant, Developer, System,
+  Thinking, Tool, ToolCall, User,
 }
 import pig_protocol/stop_reason
 import simplifile
@@ -140,7 +141,7 @@ fn replay_lines(
   lines: List(String),
 ) -> Result(#(List(Message), Option(provider.InferenceSettings)), ReplayError) {
   use settings <- result.try(latest_settings(lines))
-  let last_inference = find_last_inference_completed(lines)
+  let last_inference = find_last_inference(lines)
   case last_inference {
     None -> Ok(#([], settings))
     Some(input_messages_json) -> {
@@ -213,12 +214,12 @@ fn parse_persisted_settings(
   }
 }
 
-/// Find the last InferenceCompleted line.
-fn find_last_inference_completed(lines: List(String)) -> Option(String) {
+/// Use the latest finished request, including failures that retained input.
+fn find_last_inference(lines: List(String)) -> Option(String) {
   lines
   |> list.fold(None, fn(acc, line) {
     case decode_event_type_str(line) {
-      "inference_completed" -> Some(line)
+      "inference_completed" | "inference_failed" -> Some(line)
       _ -> acc
     }
   })
@@ -254,13 +255,17 @@ fn parse_inference_messages(
     dynamic_decode.at(["input_messages"], dynamic_decode.list(decode_message()))
 
   case json.parse(from: line, using: input_decoder) {
-    Ok(input_msgs) -> {
-      let msg_decoder = dynamic_decode.at(["message"], decode_message())
-      case json.parse(from: line, using: msg_decoder) {
-        Ok(response_msg) -> Ok(list.append(input_msgs, [response_msg]))
-        Error(_) -> Error(ParseError("Failed to parse message: " <> line))
+    Ok(input_msgs) ->
+      case decode_event_type_str(line) {
+        "inference_failed" -> Ok(input_msgs)
+        _ -> {
+          let msg_decoder = dynamic_decode.at(["message"], decode_message())
+          case json.parse(from: line, using: msg_decoder) {
+            Ok(response_msg) -> Ok(list.append(input_msgs, [response_msg]))
+            Error(_) -> Error(ParseError("Failed to parse message: " <> line))
+          }
+        }
       }
-    }
     Error(_) -> Error(ParseError("Failed to parse input_messages: " <> line))
   }
 }
@@ -317,6 +322,10 @@ pub fn decode_message() -> dynamic_decode.Decoder(Message) {
     "system" -> {
       use content <- dynamic_decode.field("content", dynamic_decode.string)
       dynamic_decode.success(System(content:))
+    }
+    "developer" -> {
+      use content <- dynamic_decode.field("content", dynamic_decode.string)
+      dynamic_decode.success(Developer(content:))
     }
     "tool" -> {
       use tool_call_id <- dynamic_decode.field(
@@ -713,6 +722,12 @@ fn message_to_json(msg: Message) -> json.Json {
         #("content", json.string(content)),
       ])
     }
+    Developer(content:) -> {
+      json.object([
+        #("role", json.string("developer")),
+        #("content", json.string(content)),
+      ])
+    }
     Assistant(content:, tool_calls:, thinking:, stop_reason:) -> {
       let base_fields = [
         #("role", json.string("assistant")),
@@ -782,6 +797,22 @@ fn error_to_json(error: AiError) -> json.Json {
         #("detail", json.string(detail)),
       ])
     }
+    UnsupportedMessageRole(role:) -> {
+      json.object([
+        #("type", json.string("unsupported_message_role")),
+        #("role", json.string(role_to_string(role))),
+      ])
+    }
+  }
+}
+
+fn role_to_string(role: message.Role) -> String {
+  case role {
+    message.UserRole -> "user"
+    message.DeveloperRole -> "developer"
+    message.SystemRole -> "system"
+    message.AssistantRole -> "assistant"
+    message.ToolRole -> "tool"
   }
 }
 

@@ -15,6 +15,7 @@ import pig/agent/step_result
 import pig/agent/update
 import pig/provider
 import pig/tool
+import pig/turn
 import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/tool_definition
@@ -32,7 +33,12 @@ pub fn main() -> Nil {
 fn initial_state(tools: List(tool.Tool)) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(request: provider.InferenceRequest) {
-    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let provider.InferenceRequest(
+      system_prompt: _,
+      messages:,
+      tools:,
+      settings:,
+    ) = request
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
@@ -47,7 +53,12 @@ fn initial_state_with_max(
 ) -> state.AgentState {
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let provider = fn(request: provider.InferenceRequest) {
-    let provider.InferenceRequest(messages:, tools:, settings:) = request
+    let provider.InferenceRequest(
+      system_prompt: _,
+      messages:,
+      tools:,
+      settings:,
+    ) = request
     let _ = #(messages, tools, settings)
     Ok(provider.from_message(message.Assistant("unused", [], None, None)))
   }
@@ -64,8 +75,8 @@ fn run_scenario(
   user_prompt: String,
   provider_responses: List(message.Message),
 ) -> #(state.AgentState, step_result.StepResult) {
-  // Step 1: Apply UserPrompt
-  let result = update.update(st, msg.UserPrompt(user_prompt))
+  // Step 1: Apply typed User turn
+  let result = update.update(st, msg.StartTurn(turn.User(user_prompt)))
   // Step 2: Extract the CallProvider effect, feed the first response
   let assert step_result.Continue(state: st1, effect: effect.CallProvider(..)) =
     result
@@ -121,7 +132,7 @@ fn fold_responses(
       }
     }
     step_result.Continue(state: new_st, effect: effect.CallProvider(..)) -> {
-      // This shouldn't happen in normal flow after UserPrompt,
+      // This shouldn't happen in normal flow after a StartTurn,
       // but handle it anyway
       case list.first(remaining_responses) {
         Ok(resp) -> {
@@ -202,7 +213,7 @@ pub fn scenario_chained_tool_calls_test() {
 /// Scenario 5: Provider error terminates the loop with Failed.
 pub fn scenario_provider_error_test() {
   let st = initial_state([])
-  let result = update.update(st, msg.UserPrompt("hello"))
+  let result = update.update(st, msg.StartTurn(turn.User("hello")))
   let assert step_result.Continue(state: st1, effect: _) = result
   let result2 =
     update.update(
@@ -224,8 +235,8 @@ pub fn scenario_max_iterations_circuit_breaker_test() {
   let looping = message.Assistant("", [tc], None, None)
   // Start with max_iterations = 2
   let st = initial_state_with_max([echo_tool()], 2)
-  // Step 1: UserPrompt → Continue
-  let result = update.update(st, msg.UserPrompt("loop"))
+  // Step 1: User turn → Continue
+  let result = update.update(st, msg.StartTurn(turn.User("loop")))
   let assert step_result.Continue(state: st1, effect: _) = result
   // Step 2: ProviderResponded with tool calls → Continue with ExecuteTools
   let result2 = update.update(st1, msg.ProviderResponded(Ok(looping)))
@@ -254,7 +265,7 @@ pub fn scenario_tool_error_recovery_test() {
   let final = message.Assistant("recovered!", [], None, None)
   // Use a custom fold for error tool
   let st = initial_state([failing_tool()])
-  let result = update.update(st, msg.UserPrompt("try boom"))
+  let result = update.update(st, msg.StartTurn(turn.User("try boom")))
   let assert step_result.Continue(state: st1, effect: _) = result
   let result2 = update.update(st1, msg.ProviderResponded(Ok(tool_resp)))
   let assert step_result.Continue(

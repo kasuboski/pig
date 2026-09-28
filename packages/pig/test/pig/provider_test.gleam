@@ -14,6 +14,7 @@ pub fn main() -> Nil {
 
 fn request() -> provider.InferenceRequest {
   provider.InferenceRequest(
+    system_prompt: None,
     messages: [message.User("hello")],
     tools: [],
     settings: provider.default_settings(),

@@ -1,7 +1,5 @@
 import gleeunit
-import pig_proxy/codex_credentials.{
-  type CodexCredentials, CodexCredentials,
-}
+import pig_proxy/codex_credentials.{type CodexCredentials, CodexCredentials}
 import simplifile
 
 pub fn main() -> Nil {

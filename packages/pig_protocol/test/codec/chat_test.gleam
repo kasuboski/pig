@@ -222,6 +222,12 @@ pub fn build_request_body_simple_messages_test() {
     parsed == [#("system", "you are helpful"), #("user", "hello")]
 }
 
+pub fn build_request_body_encodes_developer_role_test() {
+  let body =
+    chat.build_request_body([message.Developer("context")], [], "gpt-4o")
+  assert decode_messages(body) == [#("developer", "context")]
+}
+
 pub fn build_request_body_with_thinking_level_test() {
   let body =
     chat.build_request_body_with_thinking(

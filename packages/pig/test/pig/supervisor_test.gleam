@@ -5,6 +5,7 @@
 //// Per TESTING_STRATEGY §Axiom 1: test features, not implementation.
 
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
@@ -20,6 +21,8 @@ import pig/provider
 import pig/session_store
 import pig/session_store/memory
 import pig/supervisor
+import pig/tool
+import pig/turn
 import pig_protocol/message
 import pig_protocol/stop_reason
 import pig_protocol/thinking
@@ -44,6 +47,13 @@ pub fn main() -> Nil {
 
 fn agent_config(config: pig.PigConfig) -> state.AgentConfig {
   pig.build_agent_config(config)
+}
+
+type DeveloperCrashBoundary {
+  AfterDeveloperInput
+  AfterDeveloperToolCall
+  AfterDeveloperToolResult
+  AfterDeveloperCompletion
 }
 
 type CounterMessage {
@@ -564,6 +574,206 @@ pub fn supervised_durable_runtime_restart_reloads_latest_session_test() {
   assert resumed == completed
   assert count(provider_calls) == 1
 
+  supervisor.stop(sup)
+  memory.stop(memory_store)
+}
+
+fn developer_crash_store(
+  handle: memory.MemoryStore,
+  persisted: process.Subject(session_store.SessionCommit),
+  boundary: DeveloperCrashBoundary,
+) -> session_store.SessionStore {
+  let durable = memory.store(handle)
+  let blocker: process.Subject(Nil) = process.new_subject()
+  let session_store.SessionStore(load:, commit:) = durable
+  session_store.SessionStore(load:, commit: fn(next) {
+    case commit(next) {
+      Ok(_) as result ->
+        case developer_crash_boundary(boundary, next) {
+          True -> {
+            process.send(persisted, next)
+            process.receive_forever(blocker)
+            panic as "crashed commit resumed"
+          }
+          False -> result
+        }
+      Error(_) as result -> result
+    }
+  })
+}
+
+fn developer_crash_boundary(
+  boundary: DeveloperCrashBoundary,
+  commit: session_store.SessionCommit,
+) -> Bool {
+  let session_store.SessionCommit(delta:, ..) = commit
+  let assert session_store.MessagesAppended(first:, rest:) = delta
+  case boundary, first, rest {
+    AfterDeveloperInput, message.Developer(_), [] -> True
+    AfterDeveloperToolCall, message.Assistant(tool_calls: [_, ..], ..), [] ->
+      True
+    AfterDeveloperToolResult, message.Tool(..), [] -> True
+    AfterDeveloperCompletion, message.Assistant(tool_calls: [], ..), [] -> True
+    _, _, _ -> False
+  }
+}
+
+/// Crash at each durable Developer boundary, then continue from the committed
+/// transcript without resubmitting the input.
+fn check_developer_crash_recovery(boundary: DeveloperCrashBoundary) {
+  let provider_calls = start_counter()
+  let tool_calls = start_counter()
+  let tool_request =
+    message.Assistant(
+      "",
+      [
+        message.ToolCall(
+          id: "developer-echo",
+          name: "echo",
+          arguments_json: "{\"msg\":\"recovered\"}",
+        ),
+      ],
+      None,
+      None,
+    )
+  let completed =
+    message.Assistant("complete", [], None, Some(stop_reason.Stop))
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    increment(provider_calls)
+    case boundary {
+      AfterDeveloperInput -> Ok(provider.from_message(completed))
+      AfterDeveloperToolCall | AfterDeveloperToolResult ->
+        case request.messages {
+          [message.Developer(_)] -> Ok(provider.from_message(tool_request))
+          _ -> Ok(provider.from_message(completed))
+        }
+      AfterDeveloperCompletion -> Ok(provider.from_message(completed))
+    }
+  }
+  let base_tool = harness.echo_tool()
+  let echo_tool =
+    tool.Tool(definition: base_tool.definition, handler: fn(context, args) {
+      increment(tool_calls)
+      base_tool.handler(context, args)
+    })
+  let assert Ok(handle) = memory.start(session_store.Session(None, [], None))
+  let persisted = process.new_subject()
+  let store = developer_crash_store(handle, persisted, boundary)
+  let config =
+    pig.new(provider.from_buffered(provider_fn))
+    |> pig.with_tool(echo_tool)
+    |> agent_config
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  let assert Ok(runtime_pid) = process.subject_owner(sup.subject)
+  let runtime_monitor = process.monitor(runtime_pid)
+  let caller =
+    process.spawn_unlinked(fn() {
+      let _ =
+        supervisor.run_turn_with_timeout(
+          sup,
+          turn.Developer("Update context"),
+          60_000,
+        )
+      Nil
+    })
+  let caller_monitor = process.monitor(caller)
+  let assert Ok(commit) = process.receive(persisted, 2000)
+  assert developer_crash_boundary(boundary, commit)
+  process.kill(runtime_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(runtime_monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+  let caller_selector =
+    process.new_selector()
+    |> process.select_specific_monitor(caller_monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(caller_selector, 2000)
+
+  let restarted = process.new_subject()
+  let _ = process.spawn(fn() { await_subject_owner(sup.subject, restarted) })
+  let assert Ok(restarted_pid) = process.receive(restarted, 5000)
+  assert restarted_pid != runtime_pid
+  let assert Ok(response) = supervisor.run_continue_with_timeout(sup, 5000)
+  assert response == completed
+  let assert Ok(snapshot) = store.load()
+  assert list.first(snapshot.messages)
+    == Ok(message.Developer("Update context"))
+  assert list.count(snapshot.messages, fn(msg) {
+      msg == message.Developer("Update context")
+    })
+    == 1
+  assert count(provider_calls)
+    == case boundary {
+      AfterDeveloperInput -> 1
+      AfterDeveloperToolCall | AfterDeveloperToolResult -> 2
+      AfterDeveloperCompletion -> 1
+    }
+  assert count(tool_calls)
+    == case boundary {
+      AfterDeveloperToolCall | AfterDeveloperToolResult -> 1
+      _ -> 0
+    }
+  supervisor.stop(sup)
+  memory.stop(handle)
+}
+
+pub fn developer_input_commit_crash_recovers_test() {
+  check_developer_crash_recovery(AfterDeveloperInput)
+}
+
+pub fn developer_tool_call_commit_crash_recovers_test() {
+  check_developer_crash_recovery(AfterDeveloperToolCall)
+}
+
+pub fn developer_tool_result_commit_crash_recovers_test() {
+  check_developer_crash_recovery(AfterDeveloperToolResult)
+}
+
+pub fn developer_completed_assistant_commit_crash_recovers_test() {
+  check_developer_crash_recovery(AfterDeveloperCompletion)
+}
+
+/// Completed Developer history survives a supervised runtime restart without
+/// rerunning inference on continuation.
+pub fn supervised_developer_turn_survives_restart_test() {
+  let provider_calls = start_counter()
+  let completed = message.Assistant("done", [], None, Some(stop_reason.Stop))
+  let assert Ok(memory_store) =
+    memory.start(session_store.Session(None, [], None))
+  let store = memory.store(memory_store)
+  let provider_fn = fn(request: provider.InferenceRequest) {
+    increment(provider_calls)
+    assert request.messages == [message.Developer("Update context")]
+    Ok(provider.from_message(completed))
+  }
+  let config = pig.new(provider.from_buffered(provider_fn)) |> agent_config
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_session_store(config, [], store)
+  let assert Ok(response) =
+    supervisor.run_turn(sup, turn.Developer("Update context"))
+  assert response == completed
+
+  let assert Ok(original_pid) = process.subject_owner(sup.subject)
+  let monitor = process.monitor(original_pid)
+  process.kill(original_pid)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+  let assert Ok(process.ProcessDown(..)) =
+    process.selector_receive(selector, 2000)
+  let restarted = process.new_subject()
+  let _ = process.spawn(fn() { await_subject_owner(sup.subject, restarted) })
+  let assert Ok(restarted_pid) = process.receive(restarted, 5000)
+  assert restarted_pid != original_pid
+
+  let assert Ok(resumed) = supervisor.run_continue_with_timeout(sup, 5000)
+  assert resumed == completed
+  assert count(provider_calls) == 1
+  let assert Ok(loaded) = store.load()
+  assert loaded.messages == [message.Developer("Update context"), completed]
   supervisor.stop(sup)
   memory.stop(memory_store)
 }

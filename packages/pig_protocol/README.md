@@ -52,8 +52,13 @@ pub fn parse_response(body: String) {
 The Responses API has the same pure request/response shape through
 `pig_protocol/codec/responses`.
 
-`pig` providers receive one `InferenceRequest` containing messages, tools, and
-agent-owned settings. An explicit `Off` thinking level disables reasoning;
+`pig` providers receive one `InferenceRequest` containing a separate optional
+`system_prompt`, conversation `messages`, tools, and agent-owned settings. The
+system prompt is standing configuration, not a conversation message. Messages
+may include `Developer` entries for application-originated turns; codecs must
+preserve that role, and adapters that cannot represent it should return an
+explicit unsupported-role error rather than dropping or relabeling it. An
+explicit `Off` thinking level disables reasoning;
 an unset level leaves the provider default in control. Settings survive durable
 restoration and can be changed mid-session. They are not per-run overrides, and
 providers do not clamp levels or advertise model capabilities. Inference start

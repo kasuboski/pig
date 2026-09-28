@@ -25,9 +25,11 @@ pub type InferenceSettings {
   InferenceSettings(thinking: ThinkingSetting)
 }
 
-/// The messages, tools, and settings for one provider call.
+/// Standing guidance is separate from conversation history. Messages contain
+/// only conversation turns, not the configured System prompt.
 pub type InferenceRequest {
   InferenceRequest(
+    system_prompt: Option(String),
     messages: List(Message),
     tools: List(ToolDefinition),
     settings: InferenceSettings,

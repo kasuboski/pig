@@ -1,6 +1,6 @@
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/string
@@ -274,7 +274,7 @@ pub fn with_consumer_specs_empty_clears_consumers_test() {
 fn get_content(msg: message.Message) -> String {
   case msg {
     message.User(content) -> content
-    message.System(content) -> content
+    message.System(content) | message.Developer(content) -> content
     message.Assistant(content, _, _, _) -> content
     message.Tool(_, content) -> content
   }
@@ -484,9 +484,8 @@ pub fn with_initial_history_provider_sees_messages_test() {
 
 // Test 17: System messages in initial_history are stripped
 //
-// System messages are managed exclusively by with_system_prompt() and
-// prepended by messages_for_provider(). Including them in history would
-// cause duplication.
+// System messages are managed exclusively by with_system_prompt();
+// provider requests carry that guidance separately from conversation history.
 pub fn with_initial_history_strips_system_messages_test() {
   let seen = process.new_subject()
   let mock_response =
@@ -502,7 +501,7 @@ pub fn with_initial_history_strips_system_messages_test() {
         }
       })
       |> list.length()
-    process.send(seen, system_msgs)
+    process.send(seen, #(system_msgs, request.system_prompt))
     Ok(provider.from_message(mock_response))
   }
   let config =
@@ -518,9 +517,43 @@ pub fn with_initial_history_strips_system_messages_test() {
   let assert Ok(_response) = pig.run(agent, "test")
   pig.stop(agent)
 
-  // Provider should see exactly 1 System message — the one from with_system_prompt
-  let assert Ok(system_count) = process.receive(seen, 2000)
-  assert system_count == 1
+  // Restored System entries are excluded; configured guidance is separate.
+  let assert Ok(#(system_count, standing_prompt)) = process.receive(seen, 2000)
+  assert system_count == 0
+  assert standing_prompt == option.Some("configured prompt")
+}
+
+/// Seeded Developer turns remain conversation history for standalone agents.
+pub fn with_initial_history_preserves_developer_turn_test() {
+  let seen = process.new_subject()
+  let provider_fn = fn(request: InferenceRequest) {
+    process.send(seen, request.messages)
+    Ok(provider.from_message(message.Assistant("done", [], None, None)))
+  }
+  let seeded = [
+    message.Developer("Keep the project constraints in mind"),
+    message.User("Review this"),
+  ]
+  let config =
+    pig.new(provider.from_buffered(provider_fn))
+    |> pig.with_initial_history(seeded)
+  let assert Ok(agent) = pig.start(config)
+  let assert Ok(_) = pig.run(agent, "next")
+  let assert Ok(messages) = process.receive(seen, 2000)
+  assert messages
+    == [
+      message.Developer("Keep the project constraints in mind"),
+      message.User("Review this"),
+      message.User("next"),
+    ]
+  assert pig.history(agent)
+    == [
+      message.Developer("Keep the project constraints in mind"),
+      message.User("Review this"),
+      message.User("next"),
+      message.Assistant("done", [], None, None),
+    ]
+  pig.stop(agent)
 }
 
 // ── Durable Session Store Tests ───────────────────────────────────
@@ -587,6 +620,45 @@ pub fn session_store_load_failure_prevents_provider_use_test() {
   let assert Error(pig.SessionLoad(session_store.Unavailable("offline"))) =
     start_with_session_store(store, provider_fn)
   assert counter_count(provider_calls) == 0
+}
+
+/// A standalone durable load retains Developer and continues from that turn.
+pub fn session_store_load_preserves_developer_turn_test() {
+  let provider_messages = process.new_subject()
+  let final = message.Assistant("continued", [], None, None)
+  let store =
+    session_store.SessionStore(
+      load: fn() {
+        Ok(session_store.Session(
+          Some("developer-head"),
+          [message.Developer("Resume with this context")],
+          None,
+        ))
+      },
+      commit: fn(commit) {
+        Ok(session_store.Session(
+          Some(commit.id),
+          harness.messages_in_commit(commit),
+          None,
+        ))
+      },
+    )
+  let provider_fn = fn(request: InferenceRequest) {
+    process.send(provider_messages, request.messages)
+    Ok(provider.from_message(final))
+  }
+  let assert Ok(agent) = start_with_session_store(store, provider_fn)
+  assert pig.history(agent) == [message.Developer("Resume with this context")]
+  let assert Ok(response) = pig.run_continue(agent)
+  assert response == final
+  let assert Ok(messages) = process.receive(provider_messages, 2000)
+  assert messages == [message.Developer("Resume with this context")]
+  assert pig.history(agent)
+    == [
+      message.Developer("Resume with this context"),
+      final,
+    ]
+  pig.stop(agent)
 }
 
 // Test 20: a loaded terminal assistant is retained and returned without inference.

@@ -86,24 +86,14 @@ pub fn system_prompt_not_in_history_test() {
   assert state.history(s) == [message.User("hello")]
 }
 
-/// messages_for_provider prepends system prompt before history.
-pub fn messages_for_provider_injects_system_prompt_test() {
+/// Conversation history excludes configured standing guidance.
+pub fn conversation_history_excludes_system_prompt_test() {
   let s =
     new_state_with_prompt([], "you are helpful")
     |> state.add_message(message.User("hello"))
-  assert state.messages_for_provider(s)
-    == [
-      message.System("you are helpful"),
-      message.User("hello"),
-    ]
-}
-
-/// Without system prompt, messages_for_provider returns raw history.
-pub fn messages_for_provider_returns_history_when_no_prompt_test() {
-  let s =
-    new_state([])
-    |> state.add_message(message.User("hello"))
-  assert state.messages_for_provider(s) == [message.User("hello")]
+    |> state.add_message(message.Developer("focus on security"))
+  assert state.history(s)
+    == [message.User("hello"), message.Developer("focus on security")]
 }
 
 // ── Tool Registry Contract ───────────────────────────────────────

@@ -3,19 +3,20 @@
 //// Messages drive the state machine. They represent both user inputs
 //// and runtime responses fed back into the core:
 ////
-////   - `UserPrompt`       — a new prompt to process
+////   - `StartTurn`        — a new User or Developer input
 ////   - `ProviderResponded` — the LLM's response (or error)
 ////   - `ToolResults`       — tool execution outcomes
 
 import gleam/json.{type Json}
+import pig/tool.{type ToolError}
+import pig/turn.{type Input}
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
-import pig/tool.{type ToolError}
 
 /// Messages that drive the agent state machine.
 pub type AgentMsg {
-  /// A new user prompt. Starts or continues the conversation.
-  UserPrompt(String)
+  /// A new typed turn. Starts or continues the conversation.
+  StartTurn(Input)
 
   /// The LLM provider's response, delivered by the runtime after
   /// executing a `CallProvider` effect.

@@ -23,9 +23,9 @@ pub fn supervised_named_actor_restarts_under_same_name_test() {
   let name = process.new_name("circuit_supervision_test")
   let sup =
     static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(supervision.worker(fn() {
-      circuit_actor.start_named(1, 1_000_000, name)
-    }))
+    |> static_supervisor.add(
+      supervision.worker(fn() { circuit_actor.start_named(1, 1_000_000, name) }),
+    )
 
   let assert Ok(_) = static_supervisor.start(sup)
 
@@ -52,9 +52,11 @@ pub fn supervised_vault_restarts_under_same_name_test() {
   let vault_name = process.new_name("vault_supervision_test")
   let sup =
     static_supervisor.new(static_supervisor.RestForOne)
-    |> static_supervisor.add(supervision.worker(fn() {
-      vault.start_named(vault.initial_credentials([]), vault_name)
-    }))
+    |> static_supervisor.add(
+      supervision.worker(fn() {
+        vault.start_named(vault.initial_credentials([]), vault_name)
+      }),
+    )
 
   let assert Ok(_) = static_supervisor.start(sup)
 

@@ -14,6 +14,7 @@ pub type Thinking {
 /// Unified message type for all conversation participants.
 pub type Message {
   User(content: String)
+  Developer(content: String)
   System(content: String)
   Assistant(
     content: String,
@@ -27,6 +28,7 @@ pub type Message {
 /// The role of a message participant.
 pub type Role {
   UserRole
+  DeveloperRole
   AssistantRole
   SystemRole
   ToolRole
@@ -36,6 +38,7 @@ pub type Role {
 pub fn role(msg: Message) -> Role {
   case msg {
     User(_) -> UserRole
+    Developer(_) -> DeveloperRole
     System(_) -> SystemRole
     Assistant(_, _, _, _) -> AssistantRole
     Tool(_, _) -> ToolRole

@@ -11,10 +11,11 @@ pub fn main() -> Nil {
 // ── Setup ───────────────────────────────────────────────────────
 
 fn setup() -> process.Subject(vault.VaultMsg) {
-  let creds = vault.initial_credentials([
-    #("openai", vault.ApiKey("sk-key")),
-    #("codex", vault.CodexToken("jwt-token")),
-  ])
+  let creds =
+    vault.initial_credentials([
+      #("openai", vault.ApiKey("sk-key")),
+      #("codex", vault.CodexToken("jwt-token")),
+    ])
   let assert Ok(v) = vault.start(creds)
   v
 }

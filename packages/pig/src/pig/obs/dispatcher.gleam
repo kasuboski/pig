@@ -24,6 +24,7 @@ import pig/obs/events.{
 import pig/provider
 import pig_protocol/error.{
   type AiError, ApiError, InvalidResponse, RateLimited, Timeout,
+  UnsupportedMessageRole,
 }
 import pig_protocol/stop_reason
 
@@ -389,6 +390,7 @@ fn error_type_to_string(error: AiError) -> String {
     Timeout -> "timeout"
     error.Cancelled -> "cancelled"
     InvalidResponse(..) -> "invalid_response"
+    UnsupportedMessageRole(..) -> "unsupported_message_role"
   }
 }
 

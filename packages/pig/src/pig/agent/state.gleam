@@ -150,8 +150,8 @@ pub fn history(state: AgentState) -> List(Message) {
 
 /// Remove System messages from conversation history.
 ///
-/// System messages are owned by `AgentConfig.system_prompt` and are prepended
-/// by `messages_for_provider`, so restored or seeded copies must be discarded.
+/// System messages are configuration-owned standing guidance. Developer
+/// messages are durable conversation turns and are retained.
 pub fn strip_system_messages(messages: List(Message)) -> List(Message) {
   list.filter(messages, fn(message) {
     case message {
@@ -176,14 +176,9 @@ pub fn tool_definitions(state: AgentState) -> List(ToolDefinition) {
   tool.list_definitions(state.config.tools)
 }
 
-/// Get messages for a provider call.
-///
-/// Prepends the system prompt as a `System` message if one is configured.
+/// Get conversation messages for a provider call, excluding standing guidance.
 pub fn messages_for_provider(state: AgentState) -> List(Message) {
-  case state.config.system_prompt {
-    option.Some(prompt) -> [message.System(content: prompt), ..state.history]
-    option.None -> state.history
-  }
+  state.history
 }
 
 /// Build an `AiError` for exceeding max iterations.

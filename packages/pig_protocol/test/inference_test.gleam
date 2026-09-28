@@ -1,10 +1,10 @@
 import gleam/option.{type Option, None, Some}
-import pig_protocol/message.{type Message, Assistant}
 import pig_protocol/inference.{
   type InferenceMetadata, type InferenceResult, default_metadata, from_message,
   with_input_tokens, with_output_tokens, with_response_id, with_response_model,
   with_stop_reason,
 }
+import pig_protocol/message.{type Message, Assistant}
 import pig_protocol/stop_reason
 
 /// Check that from_message preserves the original message

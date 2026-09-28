@@ -127,7 +127,10 @@ pub fn account_id_from_jwt(token: String) -> Result(String, AiError) {
         InvalidResponse("JWT is missing chatgpt_account_id claim")
       })
     }
-    _ -> Error(InvalidResponse("JWT access token must have three dot-separated parts"))
+    _ ->
+      Error(InvalidResponse(
+        "JWT access token must have three dot-separated parts",
+      ))
   }
 }
 

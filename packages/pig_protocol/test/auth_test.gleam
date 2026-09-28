@@ -40,17 +40,24 @@ pub fn standard_chat_url_test() {
 
 pub fn codex_responses_url_test() {
   let mode = auth.CodexOAuth(fake_jwt("x"), "https://chatgpt.com/backend-api")
-  assert auth.responses_url(mode) == "https://chatgpt.com/backend-api/codex/responses"
+  assert auth.responses_url(mode)
+    == "https://chatgpt.com/backend-api/codex/responses"
 }
 
 pub fn codex_responses_url_with_trailing_slash_test() {
   let mode = auth.CodexOAuth(fake_jwt("x"), "https://chatgpt.com/backend-api/")
-  assert auth.responses_url(mode) == "https://chatgpt.com/backend-api/codex/responses"
+  assert auth.responses_url(mode)
+    == "https://chatgpt.com/backend-api/codex/responses"
 }
 
 pub fn codex_responses_url_already_normalized_test() {
-  let mode = auth.CodexOAuth(fake_jwt("x"), "https://chatgpt.com/backend-api/codex/responses")
-  assert auth.responses_url(mode) == "https://chatgpt.com/backend-api/codex/responses"
+  let mode =
+    auth.CodexOAuth(
+      fake_jwt("x"),
+      "https://chatgpt.com/backend-api/codex/responses",
+    )
+  assert auth.responses_url(mode)
+    == "https://chatgpt.com/backend-api/codex/responses"
 }
 
 // ── Header generation ───────────────────────────────────────────
@@ -87,7 +94,8 @@ pub fn codex_invalid_jwt_returns_error_test() {
 }
 
 pub fn codex_jwt_missing_account_id_returns_error_test() {
-  let token = token_with_payload(json.object([#("sub", json.string("user-123"))]))
+  let token =
+    token_with_payload(json.object([#("sub", json.string("user-123"))]))
   let mode = auth.CodexOAuth(token, "https://chatgpt.com/backend-api")
   let assert Error(InvalidResponse(_)) = auth.headers(mode, False)
 }

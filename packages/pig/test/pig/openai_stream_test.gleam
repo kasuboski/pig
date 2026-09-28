@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/option.{None}
 import gleeunit
 import pig/openai
 import pig/provider
@@ -16,6 +17,7 @@ pub fn main() -> Nil {
 
 fn request() -> provider.InferenceRequest {
   provider.InferenceRequest(
+    system_prompt: None,
     messages: [message.User("hello")],
     tools: [],
     settings: provider.default_settings(),

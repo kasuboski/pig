@@ -25,6 +25,7 @@ import pig_protocol/tool_definition.{type ToolDefinition}
 /// Messages are mapped to the Responses `input` format:
 /// - `User` -> `input` message with `input_text` content.
 /// - `System` -> ignored; pass system prompt via `instructions`.
+/// - `Developer` -> `input` message with `input_text` content.
 /// - `Assistant` -> `input` assistant message with `output_text` content.
 /// - `Tool` -> `function_call_output` item.
 /// Pure function — no IO.
@@ -182,6 +183,22 @@ fn input_item_to_json(msg: Message) -> List(json.Json) {
     ]
 
     message.System(_) -> []
+
+    message.Developer(content:) -> [
+      json.object([
+        #("type", json.string("message")),
+        #("role", json.string("developer")),
+        #(
+          "content",
+          json.preprocessed_array([
+            json.object([
+              #("type", json.string("input_text")),
+              #("text", json.string(content)),
+            ]),
+          ]),
+        ),
+      ]),
+    ]
 
     // The Responses API requires each `function_call_output` to be preceded by
     // a matching `function_call` item, so assistant tool calls must be

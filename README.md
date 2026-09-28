@@ -43,8 +43,13 @@ pub fn main() {
 }
 ```
 
-See [`packages/pig/README.md`](packages/pig/README.md) for features, tool usage,
-timeouts, and development instructions.
+Use `pig.run` for ordinary User prompts or `pig.run_turn` with
+`pig/turn.Developer(...)` for application-originated steering/context. The
+configured `system_prompt` remains standing guidance, separate from those
+conversation turns. Turns are serialized (a concurrent turn returns Busy); use
+`run_continue` explicitly to resume committed history after restart. See
+[`packages/pig/README.md`](packages/pig/README.md) for durability limits,
+provider requirements, tools, timeouts, and development instructions.
 
 ## Repository structure
 

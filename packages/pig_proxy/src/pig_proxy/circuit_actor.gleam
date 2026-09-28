@@ -54,7 +54,8 @@ fn handle_message(state: CircuitActorState, msg: CircuitMsg) {
       let current = current_state(state.circuits, target_id)
       // Transition an open circuit to half-open if its cool-down has
       // elapsed, then decide admission from the resulting state.
-      let transitioned = circuit.maybe_half_open(current, now, state.cooldown_ms)
+      let transitioned =
+        circuit.maybe_half_open(current, now, state.cooldown_ms)
       let admit = circuit.should_attempt(transitioned, now, state.cooldown_ms)
       let circuits = dict.insert(state.circuits, target_id, transitioned)
       process.send(reply_to, admit)
@@ -65,19 +66,23 @@ fn handle_message(state: CircuitActorState, msg: CircuitMsg) {
       let now = telemetry.system_time()
       let current = current_state(state.circuits, target_id)
       let next = circuit.record_failure(current, state.threshold, now)
-      actor.continue(CircuitActorState(
-        ..state,
-        circuits: dict.insert(state.circuits, target_id, next),
-      ))
+      actor.continue(
+        CircuitActorState(
+          ..state,
+          circuits: dict.insert(state.circuits, target_id, next),
+        ),
+      )
     }
 
     RecordSuccess(target_id) -> {
       let current = current_state(state.circuits, target_id)
       let next = circuit.record_success(current)
-      actor.continue(CircuitActorState(
-        ..state,
-        circuits: dict.insert(state.circuits, target_id, next),
-      ))
+      actor.continue(
+        CircuitActorState(
+          ..state,
+          circuits: dict.insert(state.circuits, target_id, next),
+        ),
+      )
     }
 
     GetStatus(reply_to) -> {

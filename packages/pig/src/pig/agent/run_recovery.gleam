@@ -83,7 +83,8 @@ fn from_last_message(last_message: Message) -> RecoveryAction {
   case last_message {
     message.Assistant(tool_calls:, stop_reason:, ..) ->
       from_assistant(last_message, tool_calls, stop_reason)
-    message.User(_) | message.Tool(_, _) -> StartInference
+    message.User(_) | message.Developer(_) | message.Tool(_, _) ->
+      StartInference
     message.System(_) ->
       Fail(run_error.Runtime("unexpected system message at end of history"))
   }

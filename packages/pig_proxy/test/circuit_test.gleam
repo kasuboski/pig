@@ -79,7 +79,8 @@ pub fn is_open_after_cooldown_returns_false_test() {
 // ── should_attempt ──────────────────────────────────────────────
 
 pub fn should_attempt_closed_returns_true_test() {
-  assert True == circuit.should_attempt(circuit.Closed(failure_count: 0), 100, 1000)
+  assert True
+    == circuit.should_attempt(circuit.Closed(failure_count: 0), 100, 1000)
 }
 
 pub fn should_attempt_open_within_cooldown_returns_false_test() {
@@ -124,9 +125,8 @@ pub fn failure_count_closed_test() {
 }
 
 pub fn failure_count_open_test() {
-  assert 5 == circuit.failure_count(
-    circuit.Open(opened_at_ms: 100, failure_count: 5),
-  )
+  assert 5
+    == circuit.failure_count(circuit.Open(opened_at_ms: 100, failure_count: 5))
 }
 
 pub fn failure_count_half_open_test() {
@@ -144,7 +144,6 @@ pub fn is_half_open_false_for_closed_test() {
 }
 
 pub fn is_half_open_false_for_open_test() {
-  assert False == circuit.is_half_open(
-    circuit.Open(opened_at_ms: 100, failure_count: 5),
-  )
+  assert False
+    == circuit.is_half_open(circuit.Open(opened_at_ms: 100, failure_count: 5))
 }
