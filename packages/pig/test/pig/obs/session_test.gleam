@@ -117,6 +117,7 @@ pub fn format_session_started_single_line_test() {
   assert string.contains(json_str, "\n") == False
 }
 
+/// Developer messages survive JSON encoding and decoding of inference events.
 pub fn developer_message_json_roundtrip_test() {
   let encoded =
     json.object([

@@ -133,6 +133,7 @@ pub fn replay_missing_authoritative_settings_is_parse_error_test() {
   let assert Error(session.ParseError(_)) = session.replay_with_settings(path)
 }
 
+/// Replay retains the Developer input from the latest failed inference.
 pub fn replay_latest_failed_inference_retains_developer_input_test() {
   use path <- with_temp_file("latest_failed_inference")
   write_jsonl(path, [

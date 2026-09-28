@@ -49,7 +49,7 @@ The core operates on three types:
 
 *   **`AgentMsg`:** `StartTurn(turn.Input)`, `ProviderResponded(Result(Message, AiError))`, `ToolResults(List(#(ToolCall, Result(Json, ToolError))))`.
 *   **`Effect(msg)`:** `CallProvider(messages, tools, on_response)` and `ExecuteTools(calls, on_results)`. Effects are declarations of intent — the core says "call this provider" or "execute these tools" but never does it. Inference settings remain runtime-owned.
-*   **`StepResult(msg):** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
+*   **`StepResult(msg)`:** `Done(state, message)`, `Continue(state, effects)`, `Failed(state, error)`.
 
 **Runtime interpreter (`pig/agent/runtime.gleam`):** An OTP actor that holds the provider function, tool registry, hooks list, and dispatcher subject. The runtime loop:
 

@@ -736,8 +736,8 @@ pub fn developer_completed_assistant_commit_crash_recovers_test() {
   check_developer_crash_recovery(AfterDeveloperCompletion)
 }
 
-/// A supervised durable restart restores persisted inference settings ahead of
-/// the configured value.
+/// Completed Developer history survives a supervised runtime restart without
+/// rerunning inference on continuation.
 pub fn supervised_developer_turn_survives_restart_test() {
   let provider_calls = start_counter()
   let completed = message.Assistant("done", [], None, Some(stop_reason.Stop))
@@ -778,6 +778,8 @@ pub fn supervised_developer_turn_survives_restart_test() {
   memory.stop(memory_store)
 }
 
+/// A supervised durable restart restores persisted inference settings ahead of
+/// the configured value.
 pub fn supervised_durable_restart_restores_inference_settings_test() {
   let restored = provider.with_thinking_level(thinking.High)
   let configured = provider.with_thinking_level(thinking.Low)

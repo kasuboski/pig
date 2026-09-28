@@ -563,11 +563,12 @@ pub fn call_provider_emits_inference_events_test() {
   process.send(disp, dispatcher.Stop)
 }
 
-/// A Developer turn is rejected before the custom provider is called, while
-/// the committed turn remains in history.
-pub fn unsupported_developer_turn_preserves_history_without_provider_io_test() {
+/// A custom provider rejects Developer with a typed error while the committed
+/// turn remains in history.
+pub fn unsupported_developer_turn_preserves_history_test() {
   let provider_calls = start_counter()
   let provider_fn = fn(request: provider.InferenceRequest) {
+    process.send(provider_calls, Increment)
     case
       list.any(request.messages, fn(message) {
         case message {
@@ -577,12 +578,10 @@ pub fn unsupported_developer_turn_preserves_history_without_provider_io_test() {
       })
     {
       True -> Error(error.UnsupportedMessageRole(message.DeveloperRole))
-      False -> {
-        process.send(provider_calls, Increment)
+      False ->
         Ok(
           provider.from_message(message.Assistant("unexpected", [], None, None)),
         )
-      }
     }
   }
   let #(subject, disp) = start_simple(provider_fn, [])
@@ -590,7 +589,7 @@ pub fn unsupported_developer_turn_preserves_history_without_provider_io_test() {
   let assert Error(run_error.Inference(error.UnsupportedMessageRole(
     message.DeveloperRole,
   ))) = runtime.run_turn(subject, turn.Developer("Focus on safety"), 5000)
-  assert count(provider_calls) == 0
+  assert count(provider_calls) == 1
   assert runtime.history(subject, 1000)
     == [message.Developer("Focus on safety")]
 
