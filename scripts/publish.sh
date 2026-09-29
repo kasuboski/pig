@@ -230,7 +230,7 @@ validate_version() {
 
 validate_publishable_package() {
   local package="$1"
-  local package_dir="$WORKTREE_DIR/packages/$package"
+  local package_dir="$REPO_ROOT/packages/$package"
   local readme="$package_dir/README.md" config="$package_dir/gleam.toml"
 
   [[ -s "$readme" ]] || fail "$package requires a non-empty README.md before it can be published"
@@ -339,7 +339,7 @@ prepare_dependent_package() {
   local package_dir="$WORKTREE_DIR/packages/$package"
   replace_path_dependency "$package_dir/gleam.toml" pig_protocol "$(version_range "$PROTOCOL_VERSION")"
   replace_path_dependency "$package_dir/gleam.toml" pig_transport "$(version_range "$TRANSPORT_VERSION")"
-  # Preflight cached the local packages, so reset before resolving their Hex replacements.
+  # Release-only dependencies differ from the cached local packages.
   (cd "$package_dir" && gleam clean && gleam deps download)
 
   if grep -Eq 'name = "(pig_protocol|pig_transport)".*source = "local"' "$package_dir/manifest.toml"; then
@@ -375,7 +375,7 @@ for command in git gleam mise curl awk grep mktemp; do
 done
 command -v cc >/dev/null 2>&1 || fail "C compiler 'cc' is required to build pig's esqlite dependency; install GCC or Clang"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || fail "run this script from the Pig Git repository"
-[[ "$(git -C "$REPO_ROOT" branch --show-current)" == "main" ]] || fail "switch to main after PR #28 merges"
+[[ "$(git -C "$REPO_ROOT" branch --show-current)" == "main" ]] || fail "switch to main after the release PR merges"
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]] || fail "tracked files on main must be clean"
 step "Fetch origin/main and confirm this checkout is fully up to date."
 git -C "$REPO_ROOT" fetch origin main
@@ -399,7 +399,9 @@ else
   say "pig_proxy will be skipped."
 fi
 confirm "Run the full test and build gates?" || fail "release validation cancelled"
-(cd "$WORKTREE_DIR" && mise run test && mise run build)
+# The detached worktree starts without build artifacts. Reuse main's verified
+# build cache for preflight instead of resolving every example from Hex again.
+(cd "$REPO_ROOT" && mise run test && mise run build)
 validate_publishable_package pig_protocol
 validate_publishable_package pig_transport
 validate_publishable_package pig
