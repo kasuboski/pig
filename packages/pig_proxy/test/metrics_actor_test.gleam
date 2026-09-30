@@ -2,7 +2,9 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleeunit
+import pig_proxy/metric_labels
 import pig_proxy/metrics
+import pig_proxy/model_catalog
 import pig_proxy/telemetry
 
 pub fn main() -> Nil {
@@ -14,9 +16,22 @@ pub fn main() -> Nil {
 /// Start the metrics actor and return the subject plus a cleanup function
 /// that detaches the typed telemetry handler.
 fn setup() -> #(process.Subject(metrics.MetricsMsg), fn() -> Nil) {
+  metric_labels.configure(
+    metric_labels.Identities(
+      model_catalog.empty,
+      ["gpt-4", "claude-3"],
+      ["test"],
+      ["", "openai"],
+    ),
+  )
   telemetry.ensure_started()
   let assert Ok(#(subject, handler_id)) = metrics.start()
-  #(subject, fn() { telemetry.detach_typed(handler_id) })
+  #(subject, fn() {
+    telemetry.detach_typed(handler_id)
+    metric_labels.configure(
+      metric_labels.Identities(model_catalog.empty, [], [], [""]),
+    )
+  })
 }
 
 /// Send a typed event to the actor (async), then synchronize with

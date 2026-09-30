@@ -9,6 +9,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import pig_otel
 
 /// How an upstream target authenticates: a static API key, or
 /// ChatGPT/Codex OAuth whose live token is resolved from the credential
@@ -49,6 +50,7 @@ pub type UpstreamTarget {
 pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
+    tracing: pig_otel.Policy,
     bind: String,
     port: Int,
     /// Per-Target Retry Budget: additional attempts per upstream target
@@ -91,6 +93,7 @@ pub const default_models_refresh_ms = 3_600_000
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
+    tracing: pig_otel.MetadataOnly,
     bind: default_bind,
     port: default_port,
     retries_per_target: default_retries_per_target,
@@ -100,6 +103,15 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
     models_refresh_ms: default_models_refresh_ms,
     codex_seed_token: None,
   )
+}
+
+/// Select metadata-only tracing or disable Pig spans. Both preserve sanitized
+/// explicit propagation; the host owns SDK configuration and lifecycle.
+pub fn with_tracing(
+  config: ProxyConfig,
+  policy: pig_otel.Policy,
+) -> ProxyConfig {
+  ProxyConfig(..config, tracing: policy)
 }
 
 /// Set the HTTP bind address.

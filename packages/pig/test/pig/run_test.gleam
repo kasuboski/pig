@@ -19,6 +19,7 @@ import pig/provider
 import pig/run
 import pig/run_error
 import pig/tool
+import pig_otel
 import pig_protocol/error
 import pig_protocol/inference
 import pig_protocol/message
@@ -44,6 +45,7 @@ fn setup(
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider_instance,
       tools: registry,
       hooks: hooks_list,
@@ -566,6 +568,7 @@ pub fn hooks_session_events_and_telemetry_are_once_without_deltas_test() {
     )
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: multi_round_provider(),
       tools: registry,
       hooks: hooks_list,

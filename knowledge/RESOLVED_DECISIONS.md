@@ -28,7 +28,7 @@ This document captures the key architectural decisions and implementation choice
 
    This ensures session persistence and future OpenTelemetry integration have access to provider response metadata without re-parsing or restructuring.
 
-9. **Agent Identity Fields:** `AgentConfig` carries optional identity fields that populate OTel `gen_ai.agent.*` attributes and session headers:
+9. **Agent Identity Fields:** `AgentConfig` carries optional identity fields for rich session metadata. Direct tracing currently uses the configured agent name; it does not infer every `gen_ai.agent.*` attribute from these fields:
    - `agent_id`: Optional unique identifier
    - `agent_name`: Optional human-readable name
    - `agent_description`: Optional description of agent purpose
@@ -37,106 +37,42 @@ This document captures the key architectural decisions and implementation choice
 
    All fields default to `None` — they are opt-in and not required for basic usage.
 
-10. **Two-Channel Observability:** The library emits two independent, first-class event channels from the same code paths. Neither is a bridge or shim — both are canonical for their respective audiences:
+10. **Observability Channels:** Rich audit events, lightweight operational measurements, and direct execution traces have separate owners:
 
-    - **`SessionEvent`**: Rich, typed events sent directly to registered pig consumers (session writer, terminal printer, future OTel exporter). Carries full message content, tool arguments/results, token counts, and timing.
-    - **`:telemetry`**: Lightweight metrics emitted via `telemetry.execute/3`. Follows the BEAM ecosystem standard, enabling zero-config integration with LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`, AppSignal, and other telemetry consumers. Carries durations, counts, and model names — not message content.
+    - **`SessionEvent`**: Typed events distributed by the dispatcher to session writers, terminal output, and custom audit consumers. These events can contain conversation and tool content.
+    - **`:telemetry`**: Lightweight durations, counts, and metadata projected for BEAM ecosystem handlers. Tool arguments/results are not included; metric consumers must keep labels bounded.
+    - **OpenTelemetry**: Metadata-only spans created and finalized by the live agent/proxy execution owners. The host owns SDK/exporter setup and shutdown. No telemetry-to-span bridge is installed.
 
-    Both channels are always emitted from the same code paths. This design gives pig users immediate observability via standard BEAM tools while providing the rich data needed for pig-specific tooling.
-
-11. **SessionEvent Canonicality:** For all pig-specific observability modules (session writer, terminal printer, future OTel exporter), `SessionEvent` is the single source of truth. All pig observability modules read from `SessionEvent`s. The `:telemetry` channel serves the broader BEAM ecosystem and is not a replacement for `SessionEvent`.
+11. **SessionEvent Canonicality:** `SessionEvent` is the canonical rich audit input, not the source of live OTel spans. The dispatcher projects lightweight telemetry and fans out full audit events. Direct tracing is independent and does not capture prompts/completions, even for non-streaming requests. See [OPENTELEMETRY.md](OPENTELEMETRY.md) for the implemented ownership and privacy contract.
 
 12. **Thinking Levels:** Investigation found that the existing assistant `Thinking` field only stored provider output and `reasoning.encrypted_content` only requested replay data; neither configured reasoning effort. Reasoning effort is represented by the provider-neutral `ThinkingLevel` union (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, `Max`) in agent-owned inference settings. `Provider` is one argument, `InferenceRequest`, carrying messages, tools, and settings. An explicit `Off` differs from an unset setting, which allows the provider default. The setting can change mid-session and is durably restored. OpenAI Chat Completions maps it to `reasoning_effort`; Responses maps it to `reasoning.effort`. Pig does not maintain a model capability catalog or clamp levels, so provider APIs report unsupported values. Inference start/stop and setting changes are observable events.
 
 ---
 
-## Observability Model — Two First-Class Channels + Logging
+## Observability Implementation
 
-The library emits events through two independent channels, each serving a different ecosystem:
+```text
+agent runtime
+  |-- SessionEvent -> dispatcher -> rich audit consumers
+  |                         `----> lightweight :telemetry handlers
+  `-- owned OTel spans -> official API -> host SDK/exporter
 
-| | `SessionEvent` (pig consumers) | `:telemetry` (BEAM ecosystem) | `:logger` (`logging`) |
-|---|---|---|---|
-| **Audience** | pig-specific consumers | BEAM ecosystem tools (LiveDashboard, Telemetry.Metrics, `opentelemetry_telemetry`, AppSignal) | Library developers (internal debugging) |
-| **Content** | Full message content, metadata, tool args/results, token counts | Lightweight metrics (counts, durations, token counts, model name) | Freeform debug text |
-| **Examples** | `InferenceCompleted(message, input_messages, token_counts)` | `[:pig, :inference, :stop]` with `%{duration_ms: 150}` | `[debug] pig/ai/http: POST /v1/chat/completions -> 429, retrying` |
-| **Transport** | Gleam actor messages (fan-out to registered consumers) | `telemetry.execute/3` (broadcast) | Erlang `:logger` |
-| **Consumers** | `pig/obs/session`, `pig/obs/terminal`, future `pig/obs/otel` | Any `:telemetry` handler in the BEAM ecosystem | Console, dev-time log files |
-| **Visibility** | User-facing, on when consumers are registered | Always emitted — zero-config for BEAM users | Off by default |
-| **Why it exists** | OTel GenAI semantics need full message bodies; pig-specific tooling needs full content | BEAM standard — Phoenix, Ecto, Oban all emit `:telemetry`. Users with existing dashboards get pig metrics for free. | Internal diagnostics only |
-
-### Golden Rule: Two First-Class Channels, Zero Duplication
-
-- `SessionEvent` carries full content (messages, tool args/results, token counts, timing). All pig-specific consumers read from it.
-- `:telemetry` carries lightweight metrics (durations, counts, model name). BEAM ecosystem tools consume it natively.
-- Both are always emitted from the same code paths. Neither is optional or a shim.
-- `:logger` (via the `logging` package) is for internal developer diagnostics only: HTTP transport debugging, configuration validation warnings.
-- Never duplicate data across channels. If `SessionEvent` covers it, don't also log it.
-
----
-
-## OTel GenAI Semantic Conventions Coverage
-
-The enriched types (`InferenceResult`, `AgentConfig` identity fields) and `SessionEvent` ensure we capture everything needed for future `pig/obs/otel` implementation. Since OTel needs full message bodies (`gen_ai.input.messages`, `gen_ai.output.messages`), the OTel exporter will read from `SessionEvent`s — the same canonical source as the session writer.
-
-| OTel Attribute | Source | Available After |
-|---------------|--------|----------------|
-| `gen_ai.operation.name` | Hardcoded `"chat"` | Already |
-| `gen_ai.provider.name` | `AgentConfig.provider_name` | Task 9.0d |
-| `gen_ai.request.model` | `AgentConfig.model` | Already |
-| `gen_ai.response.id` | `InferenceMetadata.response_id` → `SessionEvent` | Task 9.0a |
-| `gen_ai.response.model` | `InferenceMetadata.response_model` → `SessionEvent` | Task 9.0a |
-| `gen_ai.response.finish_reasons` | `InferenceMetadata.finish_reason` → `SessionEvent` | Task 9.0a |
-| `gen_ai.usage.input_tokens` | `InferenceMetadata.input_tokens` → `SessionEvent` | Task 9.0a |
-| `gen_ai.usage.output_tokens` | `InferenceMetadata.output_tokens` → `SessionEvent` | Task 9.0a |
-| `gen_ai.input.messages` | `SessionEvent.InferenceCompleted.input_messages` | Task 9.1 |
-| `gen_ai.output.messages` | `SessionEvent.InferenceCompleted.message` | Task 9.1 |
-| `gen_ai.system_instructions` | `SessionEvent.SessionStarted.system_prompt` | Task 9.1 |
-| `gen_ai.agent.id` | `AgentConfig.agent_id` → `SessionEvent` | Task 9.0d |
-| `gen_ai.agent.name` | `AgentConfig.agent_name` → `SessionEvent` | Task 9.0d |
-| `gen_ai.agent.description` | `AgentConfig.agent_description` → `SessionEvent` | Task 9.0d |
-| `gen_ai.agent.version` | `AgentConfig.agent_version` → `SessionEvent` | Task 9.0d |
-| `server.address` | Parse from `OpenAIConfig.base_url` | Already |
-| `server.port` | Parse from `OpenAIConfig.base_url` | Already |
-| `error.type` | `AiError` variant + detail → `SessionEvent.InferenceFailed` | Task 9.0a |
-
-**Deferred (not needed for v1 session persistence):**
-- `gen_ai.request.max_tokens`, `gen_ai.request.top_p`, `gen_ai.request.temperature` — request parameters not currently exposed. Add when building OTel exporter.
-
----
-
-## Event Distribution Architecture
-
-The agent emits two types of event for each significant action — a rich `SessionEvent` and a lightweight `:telemetry` event — from the same code paths.
-
-### SessionEvent Channel (pig consumers)
-
-```
-pig/agent/core.gleam
-  ↓ emits SessionEvent (fan-out to all registered consumers)
-  ↓
-  ├── pig/obs/session  (JSONL writer — full content)
-  ├── pig/obs/terminal (pretty printer — lightweight fields)
-  └── future pig/obs/otel (OTel GenAI semantics — full messages + spans)
+proxy execution owners
+  |-- scoped metric emitter -> owning runtime's metrics
+  `-- owned HTTP/GenAI spans -> official API -> host SDK/exporter
 ```
 
-### :telemetry Channel (BEAM ecosystem)
+The pure agent state machine, protocol messages, and generic HTTP transport carry
+no OTel policy or persistent trace handles. A process boundary requires explicit
+context handoff; asynchronous audit delivery cannot supply the live operation's
+terminal ownership. Normal audit fan-out is fire-and-forget; consumer registration
+and graceful shutdown use acknowledged boundaries.
 
-```
-pig/obs/events.gleam
-  ↓ emits [:pig, inference, :stop] etc. via telemetry.execute/3
-  ↓
-  └── ANY BEAM TELEMETRY CONSUMER (LiveDashboard, Telemetry.Metrics,
-      opentelemetry_telemetry, AppSignal, custom handlers)
-```
+Use `:logger` only for internal diagnostics that telemetry does not already cover.
+No raw tool arguments/results are projected into lightweight telemetry. Rich audit
+consumers remain content-bearing and require their own storage/privacy policy.
+Metric labels are bounded independently of span metadata.
 
-### Consumer Registration
-
-- The agent's `AgentConfig` holds a `List(Subject(SessionEvent))` of registered consumers.
-- `pig.with_session_writer(config, path)` creates a session writer actor and registers its `Subject`.
-- `pig.with_terminal_output(config)` creates a terminal printer actor and registers its `Subject`.
-- On each event, the agent iterates the list and sends to each consumer. A crashed consumer is silently skipped (it's supervised separately).
-- `:telemetry` events are always emitted — no registration needed (standard BEAM behavior).
-
-### Non-Blocking Delivery
-
-The agent never blocks on event delivery — all sends are fire-and-forget (`actor.send`, not `actor.call`). This ensures that observability infrastructure issues never slow down or crash the agent execution loop.
+The shared mappings and lifecycle boundaries are documented in
+[OPENTELEMETRY.md](OPENTELEMETRY.md). Reproducible API-only, SDK recording, and
+OTLP delivery checks are in [OPENTELEMETRY_VALIDATION.md](OPENTELEMETRY_VALIDATION.md).

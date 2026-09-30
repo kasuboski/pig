@@ -214,9 +214,37 @@ the input. Use `None` when no standing prompt is configured.
 - **Parallel tool execution** — independent tool calls run concurrently.
 - **Skills and hooks** — compose reusable capabilities and lifecycle policy.
 - **Durable history with `SessionStore`** — preload and continue checkpointed conversations.
-- **Observability** — structured `:telemetry`, terminal output, and JSONL sessions.
+- **Observability** — structured `:telemetry`, terminal output, JSONL sessions, and direct metadata-only OpenTelemetry spans.
 - **Workspace tools** — optional SQLite-backed key/value and virtual-file storage.
 - **Supervision** — child specifications for OTP supervision trees.
+
+### Direct Tracing
+
+Run, inference, and tool spans are enabled by default with `pig_otel.MetadataOnly`.
+No prompts, completions, reasoning, tool arguments/results, credentials, or raw
+provider errors are captured, including for buffered runs. Rich audit events remain separately content-bearing. To disable Pig
+spans without disabling sanitized parent propagation:
+
+```gleam
+import pig_otel
+
+let config = pig.with_tracing(config, pig_otel.Disabled)
+```
+
+The host starts/configures the official SDK and exporter before starting work;
+Pig itself depends only on the API. Tracers refresh at accepted runs, so intentional
+SDK restart is supported between completed operations, not during one. Owned and
+supervised/continuation entrypoints capture the caller parent at their common
+pre-send seams. Stop cancels work and finalizes spans; it is not successful draining.
+Finish Pig cleanup before host SDK flush/shutdown. Overlapping host HTTP
+instrumentation must be disabled for proxy-owned sends.
+
+See the [architecture](../../knowledge/OPENTELEMETRY.md) and
+[local validation runbook](../pig_otel/examples/local_validation/README.md).
+The [validation runbook](../../knowledge/OPENTELEMETRY_VALIDATION.md) covers
+API-only, official SDK recording, and actual OTLP delivery checks. The test gate
+accepts only the documented third-party Mist/Gramps deprecations; project warnings
+remain errors.
 
 Shared messages, errors, stop reasons, and provider codecs live in
 [`pig_protocol`](https://hex.pm/packages/pig_protocol).

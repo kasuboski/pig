@@ -1,0 +1,15 @@
+name = "pig_otel_sdk_recording"
+version = "0.1.0"
+target = "erlang"
+licences = ["Apache-2.0"]
+description = "Isolated official-SDK recording acceptance host for pig_otel."
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+pig_otel = { path = "../.." }
+pig_protocol = { path = "../../../pig_protocol" }
+otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+opentelemetry = "== 1.7.0"

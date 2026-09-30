@@ -7,6 +7,8 @@
 
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
+import otel/context
+import pig_otel
 import pig_protocol/error.{type AiError}
 import pig_protocol/inference.{type InferenceDelta}
 import pig_protocol/message.{type Message}
@@ -48,7 +50,35 @@ pub opaque type Provider {
     start: fn(InferenceRequest, fn(InferenceEvent) -> Nil) -> Nil,
     default_thinking_level: Option(thinking.ThinkingLevel),
     update_timeout: fn(Int) -> Provider,
+    identity: Identity,
   )
+}
+
+/// Provider constructor facts, separate from agent metadata.
+pub type Identity {
+  Unknown
+  Known(api: pig_otel.Api, name: String, model: String)
+}
+
+/// Retain known constructor identity without inspecting custom callback closures.
+@internal
+pub fn with_identity(provider: Provider, identity: Identity) -> Provider {
+  Provider(..provider, identity:)
+}
+
+/// Return only facts supplied by the provider constructor.
+@internal
+pub fn identity(provider: Provider) -> Identity {
+  provider.identity
+}
+
+/// Resolve request defaults at the same boundary used for execution.
+@internal
+pub fn resolve_request(
+  provider: Provider,
+  request: InferenceRequest,
+) -> InferenceRequest {
+  apply_default_thinking(request, provider.default_thinking_level)
 }
 
 /// An opaque, cancellable inference handle.
@@ -137,9 +167,12 @@ pub type InferenceMetadata =
 pub fn from_streaming(
   start: fn(InferenceRequest, fn(InferenceEvent) -> Nil) -> Nil,
 ) -> Provider {
-  Provider(start:, default_thinking_level: None, update_timeout: fn(_timeout) {
-    from_streaming(start)
-  })
+  Provider(
+    start:,
+    default_thinking_level: None,
+    identity: Unknown,
+    update_timeout: fn(_timeout) { from_streaming(start) },
+  )
 }
 
 /// Build a provider with a provider-specific timeout update.
@@ -147,7 +180,12 @@ pub fn from_streaming_with_timeout(
   start: fn(InferenceRequest, fn(InferenceEvent) -> Nil) -> Nil,
   update_timeout: fn(Int) -> Provider,
 ) -> Provider {
-  Provider(start:, default_thinking_level: None, update_timeout:)
+  Provider(
+    start:,
+    default_thinking_level: None,
+    update_timeout:,
+    identity: Unknown,
+  )
 }
 
 /// Set the provider fallback thinking level. Request-level settings still win.
@@ -160,9 +198,10 @@ pub fn with_default_thinking_level(
 
 /// Apply a provider-specific HTTP timeout when the provider supports it.
 pub fn with_timeout(provider: Provider, timeout_ms: Int) -> Provider {
-  let Provider(default_thinking_level:, update_timeout:, ..) = provider
+  let Provider(default_thinking_level:, update_timeout:, identity:, ..) =
+    provider
   let updated = update_timeout(timeout_ms)
-  Provider(..updated, default_thinking_level:)
+  Provider(..updated, default_thinking_level:, identity:)
 }
 
 /// Build a provider from the existing buffered provider shape.
@@ -174,8 +213,18 @@ pub fn from_buffered(
 
 /// Start inference and return immediately with an opaque handle.
 pub fn start(provider: Provider, request: InferenceRequest) -> Inference {
-  let Provider(start:, default_thinking_level:, ..) = provider
-  let request = apply_default_thinking(request, default_thinking_level)
+  start_with_context(provider, request, context.current())
+}
+
+/// Start with an explicit parent installed in the actual provider callback process.
+@internal
+pub fn start_with_context(
+  provider: Provider,
+  request: InferenceRequest,
+  parent: context.Context,
+) -> Inference {
+  let Provider(start:, ..) = provider
+  let request = resolve_request(provider, request)
   let events = process.new_subject()
   let terminal = process.new_subject()
   let ready = process.new_subject()
@@ -187,8 +236,10 @@ pub fn start(provider: Provider, request: InferenceRequest) -> Inference {
       process.send(ready, commands)
       let source =
         process.spawn_unlinked(fn() {
-          start(request, fn(event) {
-            process.send(source_events, Source(event))
+          context.with_context(parent, fn() {
+            start(request, fn(event) {
+              process.send(source_events, Source(event))
+            })
           })
           process.send(source_events, SourceEnded)
           hold_until_released()

@@ -20,6 +20,7 @@ import pig/run as agent_run
 import pig/run_error.{type CancelReason, type RunError, type RunStartError}
 import pig/session_store.{type SessionError, type SessionStore, SessionStore}
 import pig/turn.{type Input}
+import pig_otel
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -51,7 +52,26 @@ pub fn start_supervised(
   agent_config: state.AgentConfig,
   consumer_specs: List(consumer_spec.ConsumerSpec),
 ) -> Result(SupervisedAgent, StartError) {
-  start_with_session(agent_config, consumer_specs, [], runtime.SessionDisabled)
+  start_supervised_with_tracing(
+    agent_config,
+    consumer_specs,
+    pig_otel.MetadataOnly,
+  )
+}
+
+/// Start a supervised agent with an explicit tracing policy.
+pub fn start_supervised_with_tracing(
+  agent_config: state.AgentConfig,
+  consumer_specs: List(consumer_spec.ConsumerSpec),
+  tracing: pig_otel.Policy,
+) -> Result(SupervisedAgent, StartError) {
+  start_with_session(
+    agent_config,
+    consumer_specs,
+    [],
+    runtime.SessionDisabled,
+    tracing,
+  )
 }
 
 /// Preflight a durable session, then start a supervised agent.
@@ -64,16 +84,32 @@ pub fn start_supervised_with_session_store(
   consumer_specs: List(consumer_spec.ConsumerSpec),
   store: SessionStore,
 ) -> Result(SupervisedAgent, StartError) {
+  start_supervised_with_session_store_and_tracing(
+    agent_config,
+    consumer_specs,
+    store,
+    pig_otel.MetadataOnly,
+  )
+}
+
+/// Start a durable supervised agent with an explicit tracing policy.
+pub fn start_supervised_with_session_store_and_tracing(
+  agent_config: state.AgentConfig,
+  consumer_specs: List(consumer_spec.ConsumerSpec),
+  store: SessionStore,
+  tracing: pig_otel.Policy,
+) -> Result(SupervisedAgent, StartError) {
   let SessionStore(load:, ..) = store
   case load() {
     Error(error) -> Error(SessionLoad(error))
     Ok(_) ->
       start_with_runtime(consumer_specs, fn(dispatcher_name, name) {
-        runtime.supervised_with_session_store(
+        runtime.supervised_with_session_store_and_tracing(
           agent_config,
           dispatcher_name,
           name,
           store,
+          tracing,
         )
       })
   }
@@ -84,14 +120,16 @@ fn start_with_session(
   consumer_specs: List(consumer_spec.ConsumerSpec),
   initial_history: List(Message),
   session: runtime.SessionState,
+  tracing: pig_otel.Policy,
 ) -> Result(SupervisedAgent, StartError) {
   start_with_runtime(consumer_specs, fn(dispatcher_name, name) {
-    runtime.supervised(
+    runtime.supervised_with_tracing(
       agent_config,
       dispatcher_name,
       name,
       initial_history,
       session,
+      tracing,
     )
   })
 }

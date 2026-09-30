@@ -11,7 +11,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import otel/context
 import pig/provider
+import pig_otel
 import pig_protocol/auth
 import pig_protocol/codec/chat
 import pig_protocol/codec/chat_stream
@@ -169,6 +171,14 @@ fn build_provider(config: OpenAIConfig) -> provider.Provider {
       build_provider(OpenAIConfig(..config, http_timeout_ms: timeout_ms))
     },
   )
+  |> provider.with_identity(provider.Known(
+    api: case config.api {
+      ChatCompletions -> pig_otel.ChatCompletions
+      Responses -> pig_otel.Responses
+    },
+    name: "openai",
+    model: config.model,
+  ))
 }
 
 /// Build the JSON request body for a streaming Chat Completions request.
@@ -247,7 +257,7 @@ fn do_stream(
         pig_transport.Request(
           method: "POST",
           url:,
-          headers:,
+          headers: pig_otel.outbound(context.current(), headers),
           body:,
           timeout_ms: config.http_timeout_ms,
         )

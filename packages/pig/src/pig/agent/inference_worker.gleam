@@ -5,6 +5,7 @@
 //// blocking the runtime actor.
 
 import gleam/erlang/process
+import otel/context
 import pig/provider
 import pig_protocol/error
 
@@ -32,6 +33,7 @@ type CoordinatorMessage {
 pub fn start(
   provider_instance: provider.Provider,
   request: provider.InferenceRequest,
+  parent: context.Context,
   notify: fn(provider.InferenceEvent) -> Nil,
 ) -> Worker {
   let owner = process.self()
@@ -43,7 +45,8 @@ pub fn start(
       process.send(ready, commands)
       let relay =
         process.spawn_unlinked(fn() {
-          let inference = provider.start(provider_instance, request)
+          let inference =
+            provider.start_with_context(provider_instance, request, parent)
           relay_provider(inference, relay_messages)
         })
       coordinator(

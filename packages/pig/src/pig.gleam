@@ -30,6 +30,7 @@ import pig/skill
 import pig/skill/librarian
 import pig/tool
 import pig/turn.{type Input}
+import pig_otel
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -41,6 +42,7 @@ pub opaque type PigConfig {
     skills: List(skill.Skill),
     consumer_specs: List(ConsumerSpec),
     hooks: List(Hooks),
+    tracing: pig_otel.Policy,
     initial_history: List(Message),
     session_store: option.Option(SessionStore),
   )
@@ -97,9 +99,16 @@ pub fn new(provider: Provider) -> PigConfig {
     skills: [],
     consumer_specs: [],
     hooks: [],
+    tracing: pig_otel.MetadataOnly,
     initial_history: [],
     session_store: option.None,
   )
+}
+
+/// Select metadata-only tracing (default) or disable Pig spans.
+/// Both policies propagate the explicit caller context with baggage stripped.
+pub fn with_tracing(config: PigConfig, policy: pig_otel.Policy) -> PigConfig {
+  PigConfig(..config, tracing: policy)
 }
 
 /// Register a tool in the config.
@@ -443,6 +452,7 @@ fn start_with_session(
                   provider: final_config.provider,
                   tools: final_config.tools,
                   hooks: config.hooks,
+                  tracing: config.tracing,
                   dispatcher: dispatcher_subject,
                   model: final_config.model,
                   max_iterations: final_config.max_iterations,

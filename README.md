@@ -12,6 +12,7 @@ processes for isolated, resilient agent execution.
 | [`pig_protocol`](packages/pig_protocol) | Shared message types and OpenAI-compatible codecs | [README](packages/pig_protocol/README.md) |
 | [`pig_transport`](packages/pig_transport) | Cancellable buffered and streaming HTTP transport primitives | [README](packages/pig_transport/README.md) |
 | [`pig_proxy`](packages/pig_proxy) | OpenAI-compatible proxy with routing, retries, metrics, and telemetry | [README](packages/pig_proxy/README.md) |
+| [`pig_otel`](packages/pig_otel) | Shared metadata-only tracing semantics and propagation | [README](packages/pig_otel/README.md) |
 
 ## Quick start
 
@@ -51,13 +52,35 @@ conversation turns. Turns are serialized (a concurrent turn returns Busy); use
 [`packages/pig/README.md`](packages/pig/README.md) for durability limits,
 provider requirements, tools, timeouts, and development instructions.
 
+## OpenTelemetry
+
+Pig and both proxy inference routes trace runs/inference/tools and HTTP
+server/logical/attempt lifetimes, including streaming. Metadata-only is the
+default; `pig.with_tracing(config, pig_otel.Disabled)` and
+`pig_proxy/config.with_tracing(config, pig_otel.Disabled)` disable Pig spans
+while preserving sanitized parent propagation. The host owns SDK/exporter setup
+and shutdown; production library dependencies contain only the OTel API.
+
+Conversation content is not captured, including for non-streaming requests.
+See the [implementation guide](knowledge/OPENTELEMETRY.md),
+[validation runbook](knowledge/OPENTELEMETRY_VALIDATION.md), and
+[local host example](packages/pig_otel/examples/local_validation/README.md).
+The local suite needs no model credentials and accepts only the documented
+third-party Mist/Gramps deprecations; project warnings remain errors:
+
+```sh
+mise run test-integration-otel
+```
+
 ## Repository structure
 
 ```text
 packages/
   pig/           Core agent library and examples
   pig_protocol/  Shared protocol types and codecs
+  pig_transport/ Cancellable generic HTTP primitives
   pig_proxy/     Standalone proxy service
+  pig_otel/      Metadata-only tracing semantics and local host validation
 knowledge/       Architecture notes, specifications, and testing strategy
 ```
 
@@ -83,8 +106,11 @@ gleam test
 ### Monorepo package dependencies
 
 The source checkout uses local path dependencies between Pig packages so an
-atomic cross-package change can build before any package is published. After a
-release is merged, run the interactive publication wizard from an up-to-date
+atomic cross-package change can build before any package is published. The tracing
+integration also consumes a commit-pinned upstream Git binding; the existing Hex
+publication wizard does not handle this dependency graph. Publishing `pig_otel`
+and making the Git binding available through Hex require a separate release step.
+For the existing published package workflow, run the wizard from an up-to-date
 `main` branch:
 
 ```sh

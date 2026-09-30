@@ -1,0 +1,4 @@
+/build/
+/host/_build/
+/host/.rebar3/
+/erl_crash.dump

@@ -1,0 +1,1 @@
+{"id":"fixture_response","object":"response","model":"fixture_model","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"PRIVATE_COMPLETION"}]}],"usage":{"input_tokens":5,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}

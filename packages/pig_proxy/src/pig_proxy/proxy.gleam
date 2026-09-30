@@ -15,15 +15,19 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None}
 import gleam/string
 import logging
 import mist
+import otel/context
+import pig_otel
 import pig_protocol/auth
 import pig_protocol/sse
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/hackney
 import pig_proxy/telemetry
+import pig_proxy/trace_metadata
+import pig_proxy/tracing
 import pig_transport as transport
 
 /// State held by the streaming chunked loop: accumulated token usage, the
@@ -31,8 +35,9 @@ import pig_transport as transport
 /// cancelled if the client disconnects.
 type StreamState {
   StreamState(
-    usage: Usage,
-    decoder: sse.Decoder,
+    decoder: trace_metadata.Framer,
+    metadata: trace_metadata.Observed,
+    api: pig_otel.Api,
     handle: transport.StreamHandle,
   )
 }
@@ -68,7 +73,9 @@ fn is_strip_header(key: String) -> Bool {
 pub fn scrub_headers(
   headers: List(#(String, String)),
 ) -> List(#(String, String)) {
-  list.filter(headers, fn(h) { !is_strip_header(h.0) })
+  headers
+  |> pig_otel.scrub_propagation
+  |> list.filter(fn(h) { !is_strip_header(h.0) })
 }
 
 /// Inject the upstream API key as a Bearer token.
@@ -259,11 +266,19 @@ fn cached_tokens_details_decoder() -> decode.Decoder(Option(Int)) {
 /// or a Responses API chunk (`response.usage.input_tokens`). Non-usage
 /// chunks (content deltas, pings, `[DONE]`) fail both and are ignored.
 fn usage_decoder() -> decode.Decoder(Usage) {
-  decode.one_of(chat_usage_decoder(), or: [responses_usage_decoder()])
+  decode.one_of(chat_usage_decoder(), or: [
+    responses_usage_decoder(),
+    buffered_responses_usage_decoder(),
+  ])
 }
 
 fn chat_usage_decoder() -> decode.Decoder(Usage) {
   use usage <- decode.field("usage", usage_fields_decoder())
+  decode.success(usage)
+}
+
+fn buffered_responses_usage_decoder() -> decode.Decoder(Usage) {
+  use usage <- decode.field("usage", responses_usage_fields_decoder())
   decode.success(usage)
 }
 
@@ -275,9 +290,17 @@ fn responses_usage_decoder() -> decode.Decoder(Usage) {
 
 /// Parse token usage from a non-streaming JSON response body.
 pub fn parse_usage(body: String) -> Usage {
-  case json.parse(from: body, using: usage_decoder()) {
-    Ok(usage) -> usage
-    Error(_) -> Usage(None, None, None)
+  let observed = trace_metadata.buffered(pig_otel.ChatCompletions, body)
+  let responses = trace_metadata.buffered(pig_otel.Responses, body)
+  let combined = trace_metadata.merge(observed, responses)
+  let current = metadata_usage(combined)
+  case current.prompt, current.completion {
+    None, None ->
+      case json.parse(body, usage_decoder()) {
+        Ok(usage) -> usage
+        Error(_) -> current
+      }
+    _, _ -> current
   }
 }
 
@@ -286,71 +309,27 @@ pub fn parse_usage(body: String) -> Usage {
 /// Network chunks must be framed by `pig_protocol/sse.Decoder` before this
 /// function is called, so incomplete UTF-8 or event data is never parsed.
 pub fn parse_usage_from_sse(frame: String) -> Usage {
-  let data = sse.frame_data(frame)
-  case json.parse(from: data, using: usage_decoder()) {
-    Ok(usage) -> usage
-    Error(_) -> Usage(None, None, None)
-  }
+  parse_usage(sse.frame_data(frame))
 }
 
-/// Merge usage extracted from a single chunk into the running stream state.
-/// Only overwrites a field when the chunk provides a concrete token count,
-/// so non-usage chunks (content deltas, pings, [DONE]) do not erase prior
-/// usage.
-fn merge_usage(existing: Usage, chunk: Usage) -> Usage {
+/// Metrics and traces use bounded framing, independently of span sampling.
+fn push_usage(state: StreamState, chunk: BitArray) -> StreamState {
+  let #(decoder, metadata) =
+    trace_metadata.push(state.api, state.decoder, state.metadata, chunk)
+  StreamState(..state, decoder:, metadata:)
+}
+
+fn metadata_usage(observed: trace_metadata.Observed) -> Usage {
+  let metadata = observed.metadata
   Usage(
-    prompt: case chunk.prompt {
-      Some(tokens) -> Some(tokens)
-      None -> existing.prompt
-    },
-    completion: case chunk.completion {
-      Some(tokens) -> Some(tokens)
-      None -> existing.completion
-    },
-    cached: case chunk.cached {
-      Some(tokens) -> Some(tokens)
-      None -> existing.cached
-    },
+    metadata.input_tokens,
+    metadata.output_tokens,
+    metadata.cached_input_tokens,
   )
 }
 
-/// Parse usage from a complete SSE event string and merge it into the
-/// running stream state. Events without a usage object leave state intact.
-fn merge_usage_from_event(existing: Usage, frame: String) -> Usage {
-  merge_usage(existing, parse_usage_from_sse(frame))
-}
-
-/// Feed one raw network chunk through the byte-safe SSE decoder.
-fn push_usage(state: StreamState, chunk: BitArray) -> StreamState {
-  case sse.push(state.decoder, chunk) {
-    Ok(#(decoder, frames)) -> {
-      let usage = list.fold(frames, state.usage, merge_usage_from_event)
-      StreamState(..state, decoder:, usage:)
-    }
-    Error(sse.InvalidUtf8) -> {
-      // Forwarding has already succeeded; discard only the unusable decoder
-      // state so malformed bytes cannot crash or poison the relay.
-      logging.log(
-        logging.Warning,
-        "proxy: invalid UTF-8 in SSE frame; skipping usage extraction",
-      )
-      StreamState(..state, decoder: sse.new())
-    }
-  }
-}
-
-/// Finish the decoder at upstream EOF and use any complete trailing frame.
 fn finish_usage(state: StreamState) -> Usage {
-  case sse.finish(state.decoder) {
-    Ok(frames) -> list.fold(frames, state.usage, merge_usage_from_event)
-    Error(sse.InvalidUtf8) -> {
-      logging.log(
-        logging.Warning,
-        "proxy: invalid UTF-8 in trailing SSE frame; skipping usage extraction",
-      )
-      state.usage
-    }
-  }
+  metadata_usage(trace_metadata.finish(state.api, state.decoder, state.metadata))
 }
 
 /// Ensure a request body asks for streaming usage.
@@ -382,6 +361,8 @@ pub fn stream_response(
   model: String,
   status: Int,
   start_time: Int,
+  owner: tracing.Owner,
+  emitter: telemetry.Emitter,
 ) -> response.Response(mist.ResponseData) {
   logging.log(
     logging.Debug,
@@ -398,96 +379,173 @@ pub fn stream_response(
     |> response.set_header("cache-control", "no-cache")
     |> response.set_header("connection", "keep-alive")
 
-  mist.chunked(
-    req,
-    initial_response,
-    init: fn(subj) {
-      // Tell the relay to start forwarding the body to this loop.
-      transport.start(handle, subj)
-      StreamState(usage: Usage(None, None, None), decoder: sse.new(), handle:)
-    },
-    loop: fn(state, message, conn) {
-      case message {
-        transport.Chunk(data) -> {
-          case mist.send_chunk(conn, data) {
-            Ok(_) -> {
-              telemetry.emit(telemetry.StreamChunk(
-                target_id:,
-                provider:,
-                model:,
-                chunk_bytes: bit_array.byte_size(data),
-              ))
-
-              let next_state = push_usage(state, data)
-              mist.chunk_continue(next_state)
+  // Downstream callbacks belong to the still-live server boundary, even
+  // when upstream EOF has already ended the logical inference.
+  let assert tracing.Current(ctx) = tracing.call(owner, tracing.ServerContext)
+  let api = case request.path_segments(req) {
+    ["v1", "responses"] -> pig_otel.Responses
+    _ -> pig_otel.ChatCompletions
+  }
+  let rendered =
+    mist.chunked(
+      req,
+      initial_response,
+      init: fn(subj) {
+        context.with_context(ctx, fn() {
+          let _ = tracing.call(owner, tracing.Bind(subj))
+          StreamState(
+            decoder: trace_metadata.new_framer(),
+            metadata: trace_metadata.empty(),
+            api:,
+            handle:,
+          )
+        })
+      },
+      loop: fn(state, message, conn) {
+        context.with_context(ctx, fn() {
+          case message {
+            tracing.Receipt -> {
+              let _ = tracing.call(owner, tracing.HandoffReceipt)
+              mist.chunk_continue(state)
             }
-            Error(_) -> {
-              let reason = "client disconnected during stream"
-              // Telemetry records the disconnect; this log covers the
-              // transport action that telemetry does not describe.
-              logging.log(logging.Debug, "proxy: cancelling upstream stream")
-              transport.cancel(state.handle)
-              telemetry.emit(telemetry.RequestError(
-                target_id:,
-                provider:,
-                model:,
-                error_type: reason,
-              ))
+            tracing.Body(transport.Chunk(data)) -> {
+              case mist.send_chunk(conn, data) {
+                Ok(_) -> {
+                  tracing.sent(owner)
+                  telemetry.emit_scoped(
+                    emitter,
+                    telemetry.StreamChunk(
+                      target_id:,
+                      provider:,
+                      model:,
+                      chunk_bytes: bit_array.byte_size(data),
+                    ),
+                  )
+
+                  let next_state = push_usage(state, data)
+                  mist.chunk_continue(next_state)
+                }
+                Error(_) -> {
+                  let reason = "client disconnected during stream"
+                  // Telemetry records the disconnect; this log covers the
+                  // transport action that telemetry does not describe.
+                  logging.log(
+                    logging.Debug,
+                    "proxy: cancelling upstream stream",
+                  )
+                  transport.cancel(state.handle)
+                  let _ =
+                    tracing.call(
+                      owner,
+                      tracing.Downstream(pig_otel.Failed("downstream_error")),
+                    )
+                  telemetry.emit_scoped(
+                    emitter,
+                    telemetry.RequestError(
+                      target_id:,
+                      provider:,
+                      model:,
+                      error_type: reason,
+                    ),
+                  )
+                  mist.chunk_stop()
+                }
+              }
+            }
+            tracing.Body(transport.Done) -> {
+              let final_usage = finish_usage(state)
+              let duration = telemetry.system_time() - start_time
+              telemetry.emit_scoped(
+                emitter,
+                telemetry.RequestStop(
+                  target_id:,
+                  provider:,
+                  model:,
+                  status:,
+                  duration_ms: duration,
+                  input_tokens: final_usage.prompt,
+                  output_tokens: final_usage.completion,
+                  cached_input_tokens: final_usage.cached,
+                ),
+              )
+              let _ =
+                tracing.call(owner, tracing.Downstream(pig_otel.Succeeded))
+              mist.chunk_stop()
+            }
+            tracing.Body(transport.StreamError(reason)) -> {
+              telemetry.emit_scoped(
+                emitter,
+                telemetry.RequestError(
+                  target_id:,
+                  provider:,
+                  model:,
+                  error_type: reason,
+                ),
+              )
+              // Send an SSE error event so the client can detect the error
+              // even though the HTTP status is already committed (required by
+              // SSE once the first byte has flowed).
+              let sse_error =
+                "event: error\ndata: {\"error\":{\"message\":\""
+                <> escape_json_string(reason)
+                <> "\"}}\n\n"
+              let error_data =
+                bytes_tree.to_bit_array(bytes_tree.from_string(sse_error))
+              let _ = mist.send_chunk(conn, error_data)
+              let _ =
+                tracing.call(
+                  owner,
+                  tracing.Downstream(pig_otel.Failed("transport_error")),
+                )
+              mist.chunk_stop_abnormal(reason)
+            }
+            tracing.Body(transport.Committed(..))
+            | tracing.Body(transport.Rejected(..))
+            | tracing.Body(transport.Failed(..)) -> {
+              let _ =
+                tracing.call(
+                  owner,
+                  tracing.Downstream(pig_otel.Failed("transport_error")),
+                )
+              mist.chunk_stop()
+            }
+            tracing.Body(transport.Cancelled) -> {
+              let reason = "stream cancelled"
+              telemetry.emit_scoped(
+                emitter,
+                telemetry.RequestError(
+                  target_id:,
+                  provider:,
+                  model:,
+                  error_type: reason,
+                ),
+              )
+              let _ =
+                tracing.call(
+                  owner,
+                  tracing.Downstream(pig_otel.Cancelled("cancelled")),
+                )
               mist.chunk_stop()
             }
           }
-        }
-        transport.Done -> {
-          logging.log(logging.Debug, "proxy: stream complete")
-          let final_usage = finish_usage(state)
-          let duration = telemetry.system_time() - start_time
-          telemetry.emit(telemetry.RequestStop(
-            target_id:,
-            provider:,
-            model:,
-            status:,
-            duration_ms: duration,
-            input_tokens: final_usage.prompt,
-            output_tokens: final_usage.completion,
-            cached_input_tokens: final_usage.cached,
-          ))
-          mist.chunk_stop()
-        }
-        transport.StreamError(reason) -> {
-          telemetry.emit(telemetry.RequestError(
-            target_id:,
-            provider:,
-            model:,
-            error_type: reason,
-          ))
-          // Send an SSE error event so the client can detect the error
-          // even though the HTTP status is already committed (required by
-          // SSE once the first byte has flowed).
-          let sse_error =
-            "event: error\ndata: {\"error\":{\"message\":\""
-            <> escape_json_string(reason)
-            <> "\"}}\n\n"
-          let error_data =
-            bytes_tree.to_bit_array(bytes_tree.from_string(sse_error))
-          let _ = mist.send_chunk(conn, error_data)
-          mist.chunk_stop_abnormal(reason)
-        }
-        transport.Committed(..)
-        | transport.Rejected(..)
-        | transport.Failed(..) -> mist.chunk_stop()
-        transport.Cancelled -> {
-          let reason = "stream cancelled"
-          telemetry.emit(telemetry.RequestError(
-            target_id:,
-            provider:,
-            model:,
-            error_type: reason,
-          ))
-          mist.chunk_stop()
-        }
-      }
-    },
-  )
+        })
+      },
+    )
+  case rendered.body {
+    mist.Chunked -> {
+      let _ = tracing.call(owner, tracing.Accepted)
+      Nil
+    }
+    _ -> {
+      let _ =
+        tracing.call(
+          owner,
+          tracing.Downstream(pig_otel.Failed("downstream_error")),
+        )
+      Nil
+    }
+  }
+  rendered
 }
 
 // ── Helpers ─────────────────────────────────────────────────────

@@ -1,0 +1,9 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"r","model":"m"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"PRIVATE_COMPLETION"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"r","model":"m","status":"completed","usage":{"input_tokens":9,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}
+

@@ -1,0 +1,1 @@
+{"id":"r","model":"m","choices":[{"finish_reason":"stop","message":{"content":"PRIVATE_COMPLETION"}}],"usage":{"prompt_tokens":9,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}

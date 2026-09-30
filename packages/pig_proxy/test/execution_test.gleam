@@ -61,6 +61,7 @@ fn exec_with(
     transport: transport_value,
     circuit:,
     vault: None,
+    trace: None,
     retries_per_target: 1,
     upstream_timeout_ms: 1000,
     sleep: fn(_ms) { Nil },

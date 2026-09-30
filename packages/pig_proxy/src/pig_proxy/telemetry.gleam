@@ -19,6 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import pig_proxy/metric_labels
 
 // ── FFI Bindings ────────────────────────────────────────────────
 
@@ -52,6 +53,28 @@ fn handlers_call(handler: fn(ProxyEvent) -> Nil, event: ProxyEvent) -> Nil
 
 /// Opaque handler ID returned by `attach_typed`.
 pub type HandlerId
+
+/// Immutable runtime-specific metric policy and destination. Audit handlers
+/// remain global, while each runtime's metrics consume only its own events.
+pub opaque type Emitter {
+  Emitter(identities: metric_labels.Identities, metrics: fn(ProxyEvent) -> Nil)
+}
+
+/// Build an emitter without installing any process-global label policy.
+pub fn emitter(
+  identities: metric_labels.Identities,
+  metrics: fn(ProxyEvent) -> Nil,
+) -> Emitter {
+  Emitter(identities:, metrics:)
+}
+
+/// Send original audit facts globally and a bounded projection to this runtime.
+pub fn emit_scoped(emitter: Emitter, event: ProxyEvent) -> Nil {
+  list.each(handlers_get(), fn(entry) { handlers_call(entry.1, event) })
+  let bounded = normalize_with(event, emitter.identities)
+  handlers_call(emitter.metrics, bounded)
+  emit_external(bounded)
+}
 
 // ── Event Union Type ────────────────────────────────────────────
 
@@ -158,7 +181,7 @@ pub fn emit(event: ProxyEvent) -> Nil {
     let #(_, handler) = entry
     handlers_call(handler, event)
   })
-  emit_external(event)
+  emit_external(normalize(event))
 }
 
 /// Encode the typed event to measurements/metadata and emit it to the
@@ -276,5 +299,58 @@ fn option_to_string(opt: Option(Int)) -> String {
   case opt {
     Some(n) -> int.to_string(n)
     None -> ""
+  }
+}
+
+/// Normalize only metric/export projections, not typed audit consumers.
+pub fn normalize(event: ProxyEvent) -> ProxyEvent {
+  normalize_with(event, metric_labels.identities())
+}
+
+/// Pure projection against the selected runtime's trusted identities/catalog.
+pub fn normalize_with(
+  event: ProxyEvent,
+  ids: metric_labels.Identities,
+) -> ProxyEvent {
+  let catalog = ids.catalog()
+  case event {
+    RequestStart(model: value, streaming:) ->
+      RequestStart(metric_labels.model(value, "", ids, catalog), streaming)
+    RequestStop(target_id:, provider:, model: value, ..) -> {
+      let provider = metric_labels.label(provider, ids.providers)
+      RequestStop(
+        ..event,
+        target_id: metric_labels.label(target_id, ids.targets),
+        provider:,
+        model: metric_labels.model(value, provider, ids, catalog),
+      )
+    }
+    RequestError(target_id:, provider:, model: value, ..) -> {
+      let provider = metric_labels.label(provider, ids.providers)
+      RequestError(
+        ..event,
+        target_id: metric_labels.label(target_id, ids.targets),
+        provider:,
+        model: metric_labels.model(value, provider, ids, catalog),
+      )
+    }
+    StreamChunk(target_id:, provider:, model: value, ..) -> {
+      let provider = metric_labels.label(provider, ids.providers)
+      StreamChunk(
+        ..event,
+        target_id: metric_labels.label(target_id, ids.targets),
+        provider:,
+        model: metric_labels.model(value, provider, ids, catalog),
+      )
+    }
+    CircuitStateChange(target_id:, provider:, model: value, ..) -> {
+      let provider = metric_labels.label(provider, ids.providers)
+      CircuitStateChange(
+        ..event,
+        target_id: metric_labels.label(target_id, ids.targets),
+        provider:,
+        model: metric_labels.model(value, provider, ids, catalog),
+      )
+    }
   }
 }

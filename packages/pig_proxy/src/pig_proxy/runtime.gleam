@@ -42,10 +42,12 @@ import pig_proxy/circuit_actor
 import pig_proxy/codex_credentials
 import pig_proxy/codex_refresh
 import pig_proxy/config.{type ProxyConfig}
+import pig_proxy/metric_labels
 import pig_proxy/metrics
 import pig_proxy/model_catalog
 import pig_proxy/server
 import pig_proxy/telemetry
+import pig_proxy/tracing
 import pig_proxy/vault
 
 /// Bring up the proxy runtime for `cfg` and return the `ServerState` ready
@@ -59,11 +61,13 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   let catalog_name = process.new_name("catalog")
   let metrics_name = process.new_name("metrics")
   let vault_name = process.new_name("vault")
+  let owners_name = process.new_name("request_owners")
 
   let plan = cred_plan(cfg)
 
   let sup =
     static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(tracing.supervisor(owners_name))
     |> static_supervisor.add(
       supervision.worker(fn() {
         circuit_actor.start_named(
@@ -98,17 +102,55 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   // Fail-fast: if the tree later dies (restart intensity exceeded), take the
   // proxy down so an external supervisor restarts the whole process.
   let _ = process.link(started.pid)
-  let _ = metrics.attach_named(metrics_name)
+  let emitter =
+    metrics.emitter(
+      metrics_name,
+      metric_labels.Identities(
+        catalog: fn() { model_catalog.cached(catalog_name) },
+        models: list.flat_map(cfg.targets, fn(target) { target.fallbacks }),
+        targets: list.map(cfg.targets, fn(target) { target.id }),
+        providers: [
+          "",
+          ..list.filter_map(cfg.targets, fn(target) {
+            case target.provider {
+              Some(provider) -> Ok(provider)
+              None -> Error(Nil)
+            }
+          })
+        ],
+      ),
+    )
 
   server.ServerState(
+    supervisor: Some(started.pid),
+    emitter:,
     config: cfg,
     routes: [],
     circuit: circuit_name,
     catalog: catalog_name,
     metrics: metrics_name,
     vault: vault_name_for(plan, vault_name),
+    owners: owners_name,
   )
 }
+
+/// Stop a managed runtime's entire supervision tree synchronously.
+///
+/// The host must stop HTTP ingress before calling this and flush its SDK only
+/// after it returns. Trace owners run bounded cancellation cleanup; this is
+/// neither a successful request drain nor a guarantee that physical IO drained.
+/// No SDK lifecycle calls are made here. Already stopped roots are safe to stop
+/// again. For externally supervised states (`supervisor: None`), this is a
+/// no-op: the host must stop its own tree and await cleanup instead.
+pub fn stop(state: server.ServerState) -> Nil {
+  case state.supervisor {
+    Some(pid) -> stop_supervised(pid)
+    None -> Nil
+  }
+}
+
+@external(erlang, "pig_proxy_runtime_ffi", "stop_supervised")
+fn stop_supervised(pid: process.Pid) -> Nil
 
 /// Conditionally add the credential sub-supervisor. No-op (no vault) when
 /// no Codex target is configured or no credentials are available.

@@ -53,6 +53,7 @@ const refresh_timeout_ms = 30_000
 type CatalogState {
   CatalogState(
     catalog: Catalog,
+    cache_key: Option(process.Name(CatalogMsg)),
     url: String,
     refresh_ms: Int,
     subject: process.Subject(CatalogMsg),
@@ -68,7 +69,7 @@ pub fn start(
   refresh_ms: Int,
 ) -> Result(process.Subject(CatalogMsg), actor.StartError) {
   let result =
-    actor.new_with_initialiser(5000, initialise(url, refresh_ms))
+    actor.new_with_initialiser(5000, initialise(url, refresh_ms, None))
     |> actor.on_message(handle_message)
     |> actor.start
 
@@ -86,11 +87,19 @@ pub fn start_named(
   refresh_ms: Int,
   name: process.Name(CatalogMsg),
 ) -> Result(actor.Started(process.Subject(CatalogMsg)), actor.StartError) {
-  actor.new_with_initialiser(5000, initialise(url, refresh_ms))
+  actor.new_with_initialiser(5000, initialise(url, refresh_ms, Some(name)))
   |> actor.on_message(handle_message)
   |> actor.named(name)
   |> actor.start
 }
+
+/// Non-blocking snapshot scoped to one runtime's stable catalog name.
+/// Reads do not call the actor or copy the catalog through a mailbox.
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "cached")
+pub fn cached(name: process.Name(CatalogMsg)) -> Catalog
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "publish")
+fn publish(name: process.Name(CatalogMsg), catalog: Catalog) -> Nil
 
 /// Synchronously read the current catalog snapshot.
 pub fn snapshot(subject: process.Subject(CatalogMsg)) -> Catalog {
@@ -154,12 +163,17 @@ pub fn parse(json: String) -> Result(Catalog, json.DecodeError) {
 fn initialise(
   url: String,
   refresh_ms: Int,
+  cache_key: Option(process.Name(CatalogMsg)),
 ) -> fn(process.Subject(CatalogMsg)) ->
   Result(
     actor.Initialised(CatalogState, CatalogMsg, process.Subject(CatalogMsg)),
     String,
   ) {
   fn(subject) {
+    case cache_key {
+      Some(name) -> publish(name, empty())
+      None -> Nil
+    }
     // Schedule the first refresh immediately so the catalog populates
     // without waiting for the full refresh interval.
     let _ = process.send_after(subject, 0, Refresh)
@@ -169,6 +183,7 @@ fn initialise(
       url:,
       refresh_ms:,
       subject:,
+      cache_key:,
     ))
     |> actor.returning(subject)
     |> Ok
@@ -192,7 +207,13 @@ fn handle_message(
 
     RefreshComplete(result) -> {
       let new_catalog = case result {
-        Ok(catalog) -> catalog
+        Ok(catalog) -> {
+          case state.cache_key {
+            Some(name) -> publish(name, catalog)
+            None -> Nil
+          }
+          catalog
+        }
         Error(reason) -> {
           logging.log(logging.Warning, "model_catalog: " <> reason)
           state.catalog

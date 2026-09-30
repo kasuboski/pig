@@ -37,7 +37,7 @@ A unified type system for messages and a common interface for model providers.
     *   `ToolDefinition`: The JSON Schema representation of a tool.
     *   `InferenceResult`: Wraps a `Message` with `InferenceMetadata` (response ID, model, finish reason, token counts).
     *   `ThinkingLevel`: Provider-neutral reasoning effort (`Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`, or `Max`).
-*   **Interface:** A provider is `fn(InferenceRequest) -> Result(InferenceResult, AiError)`. `InferenceRequest` carries a separate optional `system_prompt`, conversation messages, tools, and agent-owned inference settings. Messages never contain the configured standing prompt; adapters map it to the upstream API's system/instructions field. Providers may also have a default for requests without an explicit agent setting. OpenAI Chat Completions maps thinking level to `reasoning_effort`; Responses maps it to `reasoning.effort`. Adapters that cannot represent a message role return `UnsupportedMessageRole` rather than silently dropping or relabeling it.
+*   **Interface:** An opaque provider starts cancellable streaming inference, emitting deltas and exactly one terminal result. Buffered callbacks adapt through `provider.from_buffered`; they are not the public provider type. `InferenceRequest` carries a separate optional `system_prompt`, conversation messages, tools, and agent-owned inference settings. Messages never contain the configured standing prompt; adapters map it to the upstream API's system/instructions field. Providers may also have a default for requests without an explicit agent setting. OpenAI Chat Completions maps thinking level to `reasoning_effort`; Responses maps it to `reasoning.effort`. Adapters that cannot represent a message role return `UnsupportedMessageRole` rather than silently dropping or relabeling it.
 
 ### 3.2 `pig/agent`: Sans-IO State Machine + Runtime
 
@@ -79,8 +79,8 @@ Hooks intercept agent lifecycle events and return actions that control behavior.
 ### 3.6 `pig/obs`: Telemetry & Persistence
 The observability system uses a dispatcher-actor pattern.
 *   **Dispatcher:** A single actor that receives `SessionEvent` values, always projects lightweight `:telemetry` events, then fans out the full event to registered consumers.
-*   **Consumers:** Pluggable actors that process events — session writer (JSONL), terminal printer, and future OTel exporter.
-*   **Optional by Construction:** When no dispatcher is configured, all emission is a silent no-op. The agent never crashes due to missing telemetry.
+*   **Consumers:** Pluggable actors process rich audit events (JSONL, terminal output, custom consumers). Direct OpenTelemetry spans belong to live runtime/proxy lifecycle owners, not the asynchronous dispatcher; see [OPENTELEMETRY.md](OPENTELEMETRY.md).
+*   **Optional by Construction:** An absent dispatcher makes audit/telemetry emission a no-op. Direct tracing is independent: metadata-only by default, with Disabled and harmless API-only/unsampled behavior; the host owns SDK/exporter startup.
 
 ---
 
@@ -198,7 +198,7 @@ Library users extend behavior through:
 2.  **Hooks:** Composable lifecycle hooks that can block tools, replace messages, or transform results. Applied by the runtime as middleware on effects.
 3.  **Skill Markdown:** Refining the agent's behavior and domain knowledge by editing Markdown files without touching code.
 4.  **Workspace:** SQLite-backed persistence for file I/O and key-value storage.
-5.  **Custom Consumers:** Registering actors that receive `SessionEvent` values — enables OTel exporters, custom analytics, or alternative session stores.
+5.  **Custom Consumers:** Registering actors that receive `SessionEvent` values enables rich audit processing and custom analytics. Durable storage is a separate `SessionStore` contract; live OTel spans are owned directly by execution lifecycles.
 
 ---
 
@@ -208,5 +208,5 @@ Library users extend behavior through:
 *   **Explicit over Magic:** No auto-discovery of files; the user explicitly points the library to skill directories.
 *   **Async Persistence:** Logging and saving sessions must never block the LLM inference or tool execution. Fire-and-forget `process.send` throughout.
 *   **Normalized Messaging:** Regardless of provider, the user only ever interacts with the `pig/ai.Message` type.
-*   **Optional Observability:** No dispatcher configured means zero overhead. Observability never crashes the agent.
+*   **Optional Observability:** Dispatcher-based audit/telemetry and direct metadata-only tracing are separate. Disabled does not acquire a tracer or create Pig spans; no-SDK, unsampled, and ordinary exporter failure preserve business behavior. This is not arbitrary VM-failure isolation.
 *   **Sans-IO Core:** The agent logic is a pure function `(state, msg) -> StepResult(msg)`. All IO lives in the runtime interpreter. The core has no imports for HTTP, process spawning, telemetry, or hooks.

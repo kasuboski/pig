@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleeunit
@@ -129,11 +130,11 @@ pub fn dispatcher_emits_tool_start_telemetry_test() {
   send_and_confirm(disp, event, consumer)
 
   let captured = listener.get_events(handle)
-  let assert [events.ToolStart(tool_name:, tool_call_id:, arguments_json:)] =
-    captured
+  let assert [events.ToolStart(tool_name:, tool_call_id:)] = captured
   assert tool_name == "calculator"
   assert tool_call_id == "call_123"
-  assert arguments_json == "{\"expr\":\"2+2\"}"
+  let assert [raw] = listener.get_raw_events(handle)
+  assert dict.get(raw.metadata, "arguments_json") == Error(Nil)
 
   cleanup()
 }

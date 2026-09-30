@@ -344,7 +344,6 @@ fn emit_telemetry(event: SessionEvent) {
         dict.from_list([
           #("tool_name", tool_call.name),
           #("tool_call_id", tool_call.id),
-          #("arguments_json", tool_call.arguments_json),
         ])
       execute_telemetry(tool_start_name(), measurements, metadata)
     }

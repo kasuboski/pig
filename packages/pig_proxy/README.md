@@ -357,6 +357,41 @@ A request for `"model": "smart-model"` resolves to `openai` first;
 `routes.filter_by_capability` further narrows the chain by whether the request
 needs tool calls or strict JSON schema support.
 
+## OpenTelemetry
+
+Both POST inference routes have direct metadata-only server, logical GenAI, and
+physical HTTP attempt spans in buffered and streaming mode. Neither mode captures
+conversation messages, responses, reasoning, or tool content. The embedded library
+does not start an SDK/exporter. The host must configure the official composite
+Trace Context/Baggage propagator and disable overlapping HTTP auto-instrumentation
+for proxy-owned sends. Baggage is stripped; duplicate propagation headers are
+scrubbed before explicit-context injection.
+
+`config.with_tracing(cfg, pig_otel.Disabled)` creates no Pig spans or tracer lookup,
+but preserves sanitized explicit-parent propagation. Health/metrics/unmatched
+routes and pre-handler HTTP rejection are not traced. Body-read rejection on the
+two inference routes is traced.
+
+Temporary supervised owners hold stream spans across request retirement. The
+physical attempt ends on upstream terminal, the logical span ends after incremental
+metadata finalization, and the server span ends on downstream application terminal.
+Buffered server completion is response construction. Streaming server completion
+excludes Mist's private terminating-chunk write; neither claims wire-delivered
+completion. Stop HTTP ingress, call `pig_proxy/runtime.stop(state)` for states
+returned by `runtime.start`, then flush/stop the host SDK. This acknowledges
+supervised cancellation cleanup, not successful completion or physical connection
+drain. Manually assembled states with `supervisor: None` remain host-managed.
+Owner hard kill/VM death cannot guarantee span delivery.
+
+Metric emitters explicitly carry each runtime's trusted identity policy and named
+catalog snapshot, independently of tracing, with unknown sentinels for untrusted
+labels. Rich typed audit events retain their original facts.
+
+The [local host runbook](../pig_otel/examples/local_validation/README.md) needs no
+model credentials. See the [validation runbook](../../knowledge/OPENTELEMETRY_VALIDATION.md)
+for official SDK recording, actual OTLP delivery, and the narrowly accepted
+third-party Mist/Gramps warning policy.
+
 ## Observability
 
 Every request emits typed `:telemetry` events (`pig_proxy/telemetry`):
