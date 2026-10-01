@@ -3,9 +3,11 @@
 This example is a host, not a production Pig dependency. The root build discovers
 its `gleam.toml` normally. Network integration modules live in `test/integration/`
 and compile with ordinary tests; only their execution requires
-`PIG_RUN_OTEL_INTEGRATION=1`. Pure verifier unit tests are never gated. This is a
-release gate, not a declaration that all tracing lifecycles are accepted: subset
-checks do not replace the full buffered/streaming matrix.
+`PIG_RUN_OTEL_INTEGRATION=1`. Pure verifier unit tests are never gated. This is
+intended as a release gate for tracing and opt-in proxy content contracts;
+unsupported cases remain documented separately. The clean SDK/OTLP content gate
+has passed; the runbook records its scope and the distinction between receiver
+acknowledgement and broader delivery guarantees.
 
 The test gate accepts the nine known Mist/Gramps Header deprecations, which remain
 visible in compiler logs. It rejects project-source and unexpected warnings,
@@ -25,14 +27,13 @@ The clean build needs a C compiler for Pig's SQLite NIF. On Nix systems without
 nix shell nixpkgs#gcc -c mise exec -- scripts/validate_otel.sh
 ```
 
-The script copies package sources into an isolated temporary worktree (no built
-artifacts), fingerprints inputs before building, resolves the real HTTPS binding
-revision through Pig dependencies,
+The script copies all package and script inputs into an isolated temporary
+worktree (no built artifacts), fingerprints that complete copy before building,
+resolves the real HTTPS binding revision through Pig dependencies,
 builds the host exporter, builds/checks the normal example/test target, runs
-ungated unit tests, then explicitly enables integration tests. It removes the
-worktree on success or failure; `PIG_OTEL_KEEP_WORKDIR=1` retains it for diagnosis.
-Evidence defaults to `/tmp/pig-otel-evidence/local-validation`; change it with
-`PIG_OTEL_EVIDENCE_DIR`.
+ungated unit tests, then explicitly enables integration tests. It removes the worktree on success or failure by default;
+`PIG_OTEL_KEEP_WORKDIR=1` retains it for diagnosis. `PIG_OTEL_EVIDENCE_DIR` can
+select an evidence directory when diagnostic artifacts are needed.
 
 ## Host Compatibility
 
@@ -51,39 +52,42 @@ Evidence defaults to `/tmp/pig-otel-evidence/local-validation`; change it with
 
 ## What Is Checked
 
-A single business harness runs real public Pig buffered and streamed agent runs
-with a scripted local provider and tool. It also starts the actual proxy server,
-a loopback upstream and an HTTP client, exercising both `/v1/chat/completions` and
-`/v1/responses` in buffered and streaming mode. No paid API, key, collector or
-external provider is used.
+The host runs public Pig operations and real proxy requests against a loopback
+upstream for both `/v1/chat/completions` and `/v1/responses`, buffered and
+streaming. It requires no paid API, credentials, external provider or external
+collector.
 
-The recording host uses the **official simple processor and official ETS
-exporter**. The delivery host uses the **official batch processor and OTLP
-HTTP/protobuf exporter**. The loopback receiver uses the official protobuf
-module, returns a valid HTTP acknowledgement, and provides a decoded complete-set
-snapshot. A batch `force_flush` return is never treated as delivery: receiver ACK
-must occur before SDK shutdown.
+Official SDK recording cases separate metadata-only privacy and explicit
+conversation capture. The final clean gate passed with 19 enabled integration
+checks and 4 ungated verifier checks (23 passed with integration enabled); a
+separate invocation verifies the ungated suite. With the integration flag off,
+the unit invocation reports 23 passed, including 19 integration no-ops, not 23
+true unit tests. The shared-SDK runtime suite passed 5 tests. Positive buffered and streaming capture produced 12
+actual consumer spans across both routes, verified through SDK recording and
+OTLP receiver acknowledgement. Other cases cover tool linkage, bounded/redacted
+values, malformed streamed JSON, source overflow, retry after a failed 503
+attempt, capture configured without an SDK or with sampling off, `Disabled`
+precedence, and interruption with truthful omitted/incomplete content and
+failed/cancelled outcomes. A deliberately small SDK value limit demonstrates
+that host truncation can invalidate otherwise valid JSON. Three fresh-VM
+interrupted-run repeats each recorded six spans across both routes; a full-span
+privacy sentinel scan and pure regression checks passed. A deterministic graceful
+owners-supervisor teardown barrier prevents the interrupted-fixture snapshot
+race. See the [validation runbook](../../../../knowledge/OPENTELEMETRY_VALIDATION.md) for the
+scope and caveats.
 
-Both paths use the same machine-checkable normalized-span verifier: exactly 20
-unique consumer spans, `pig/0.6.0` vs `pig_proxy/0.2.0` scopes with actual consumer
-markers, no invented schema, parent/trace IDs, kinds, ordered end timestamps,
-terminal metadata/status, usage including cached subsets, real callback current
-context, tool sibling hierarchy, fresh run IDs and outbound attempt traceparent.
-Each operation exports exactly once. Fixture content/credentials/baggage sentinels
-must be absent from spans/events/links. The upstream asserts one fresh traceparent,
-no baggage (including mixed-case duplicate ingress baggage), and correct configured
-auth (without printing credentials). Streaming fixtures hold final usage/EOF until
-an actual downstream first-chunk ACK; recording snapshots must show zero ended
-spans for that request at the ACK, and all three exported lifetimes must contain
-that timestamp. Responses and Chat fixtures use their actual distinct JSON/SSE
-shapes in `test_data/`. A separate real provider-failure case checks Error status,
-bounded categories, missing usage and privacy through recording and actual OTLP.
+Production forwards the effective API request payload unchanged; verified
+forwarding does not apply production normalization. Input projection is bounded synchronous work before
+send, buffered output projection is bounded synchronous work before return, and
+SSE projection occurs incrementally on the stream observation path. This adds
+bounded overhead, not zero latency; SSE capture does not wait for the entire
+stream before forwarding it.
 
-The official SDK additionally checks 18 streaming route/death-boundary cases
-(54 spans), two EOF-before-handoff usage cases (6 spans), and four managed/external
-runtime-stop cases (12 spans). Dormant registered owners create zero spans.
-Managed active-stream shutdown also exports six Cancelled spans through actual
-OTLP, after runtime.stop acknowledgement and before SDK shutdown.
+The delivery path uses the official batch processor and OTLP HTTP/protobuf
+exporter. The loopback receiver decodes official protobuf and acknowledges the
+expected span set before SDK shutdown. The integration matrix includes positive
+opt-in content and separate metadata-only privacy cases. These checks do not
+promise delivery for arbitrary exporters, sampling configurations, or backends.
 
 Startup explicitly starts exporter dependencies (including inets) and consumer
 dependency applications (including Mist's clock) **before** SDK setup and
@@ -93,8 +97,7 @@ bare Erlang and the public test entrypoint after explicit bootstrap.
 
 ## Honest Limits
 
-Disabled policy, no-SDK, always-off sampling and a refused loopback exporter endpoint verify
-unchanged successful business results, **not successful export**. Ordinary exporter
+Disabled policy, no-SDK, always-off sampling and a refused loopback exporter endpoint verify unchanged business results, **not successful export**. Ordinary exporter
 failure is not arbitrary VM/resource/custom-processor failure isolation. Consumer
 terminal acknowledgements and HTTP application completion are not proof that
 physical connections drained or every byte reached the remote client. SDK restarts
@@ -106,5 +109,5 @@ The dedicated SDK race entry runs the genuine OTP consumer harness with official
 recording, without replacing the SDK with the harness's call spy. Additional
 consumer unit/OTP gates remain separate and are not inferred from HTTP success.
 Synthetic normalized values in unit tests validate the verifier, never Pig
-instrumentation. Rich audit data and VM crash reports are outside the
-metadata-only OTel privacy claim.
+instrumentation. Rich audit data and VM crash reports are outside the OTel
+conversation-capture privacy contract.

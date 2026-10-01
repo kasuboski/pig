@@ -1,0 +1,16 @@
+{
+  "pig.content.input.status": "filtered",
+  "pig.content.input.reason": "redacted_or_excluded",
+  "gen_ai.input.messages": [
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "c",
+          "response": "Found [REDACTED]"
+        }
+      ]
+    }
+  ]
+}

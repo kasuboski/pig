@@ -1,0 +1,1 @@
+{"input":[{"type":"function_call","call_id":"c","name":"f","arguments":"[{\"COOKIE\":\"SECRET\"},[true,2,\"PRIVATE\"]]"},{"type":"function_call_output","call_id":"c","output":"[{\"access_token\":\"SECRET\"},[\"PRIVATE\",42]]"}]}

@@ -12,7 +12,8 @@ import otel/trace
 import pig_protocol/inference.{type InferenceMetadata}
 import pig_protocol/stop_reason
 
-/// The MVP captures metadata only; content capture is not supported.
+/// Shared span policy and the direct Pig runtime policy. Proxy conversation
+/// capture is a separate explicit policy in `pig_proxy/config`.
 pub type Policy {
   MetadataOnly
   Disabled
@@ -79,6 +80,15 @@ pub fn disabled() -> Backend {
   NoTracing
 }
 
+/// Whether tracer acquisition succeeded for this operation. An enabled no-op
+/// tracer is available; this does not reveal SDK recording or sampling state.
+pub fn tracing_available(backend: Backend) -> Bool {
+  case backend {
+    Enabled(_) -> True
+    NoTracing -> False
+  }
+}
+
 /// Start without installing process-current context. The caller owns completion.
 pub fn start(backend: Backend, parent: Context, operation: Operation) -> Span {
   case backend {
@@ -100,8 +110,9 @@ pub fn context(span: Span) -> Context {
   }
 }
 
-/// Add known metadata while live. This is an adapter, not a content encoder or
-/// sanitizer: callers must never supply content, secrets, or raw exceptions.
+/// Add owned attributes while live. This adapter does not encode or sanitize
+/// content: optional conversation attributes must come from an explicitly enabled,
+/// bounded projection/redaction boundary. Never supply raw bodies or exceptions.
 pub fn annotate(span: Span, attributes: List(Attribute)) -> Nil {
   case span {
     ParentOnly(_) -> Nil

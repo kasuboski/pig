@@ -36,8 +36,7 @@ trap 'exit 143' TERM
   scripts/check_otel_warnings.awk scripts/test_otel_warning_gate.sh mise.toml) | (cd "$work" && tar -xf -)
 (
   cd "$work"
-  rg --files --hidden -g '!build' -g '!_build' -g '!.git' packages scripts mise.toml \
-    | rg '\.(gleam|erl|toml|lock|json|sse|sh|awk)$|/rebar\.config$' \
+  rg --files --hidden --no-ignore -g '!build' -g '!_build' -g '!.git' packages scripts mise.toml \
     | LC_ALL=C sort | while IFS= read -r file; do sha256sum "$file"; done
 ) > "$evidence/source.sha256"
 sha256sum --check "$evidence/source.sha256" > "$evidence/source-copy-check.log"

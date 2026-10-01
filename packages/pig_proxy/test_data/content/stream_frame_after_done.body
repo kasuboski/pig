@@ -1,0 +1,6 @@
+data: {"choices":[{"index":0,"delta":{"content":"safe"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+data: {"choices":[{"index":1,"delta":{"content":"PRIVATE"},"finish_reason":"stop"}]}
+

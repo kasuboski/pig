@@ -12,7 +12,7 @@ processes for isolated, resilient agent execution.
 | [`pig_protocol`](packages/pig_protocol) | Shared message types and OpenAI-compatible codecs | [README](packages/pig_protocol/README.md) |
 | [`pig_transport`](packages/pig_transport) | Cancellable buffered and streaming HTTP transport primitives | [README](packages/pig_transport/README.md) |
 | [`pig_proxy`](packages/pig_proxy) | OpenAI-compatible proxy with routing, retries, metrics, and telemetry | [README](packages/pig_proxy/README.md) |
-| [`pig_otel`](packages/pig_otel) | Shared metadata-only tracing semantics and propagation | [README](packages/pig_otel/README.md) |
+| [`pig_otel`](packages/pig_otel) | Shared tracing semantics and propagation | [README](packages/pig_otel/README.md) |
 
 ## Quick start
 
@@ -61,8 +61,11 @@ default; `pig.with_tracing(config, pig_otel.Disabled)` and
 while preserving sanitized parent propagation. The host owns SDK/exporter setup
 and shutdown; production library dependencies contain only the OTel API.
 
-Conversation content is not captured, including for non-streaming requests.
-See the [implementation guide](knowledge/OPENTELEMETRY.md),
+Direct Pig tracing and proxy metadata-only tracing do not capture content.
+`pig_proxy` also provides explicitly configured, bounded structured capture for
+eligible proxy conversations; this does not enable capture in direct Pig runs.
+See the [tracing guide](knowledge/OPENTELEMETRY.md),
+[capture guide](knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md),
 [validation runbook](knowledge/OPENTELEMETRY_VALIDATION.md), and
 [local host example](packages/pig_otel/examples/local_validation/README.md).
 The local suite needs no model credentials and accepts only the documented

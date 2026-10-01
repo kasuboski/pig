@@ -1,0 +1,76 @@
+{
+  "pig.content.input.status": "filtered",
+  "pig.content.input.reason": "redacted_or_excluded",
+  "gen_ai.input.messages": [
+    {
+      "role": "system",
+      "parts": [
+        {
+          "type": "text",
+          "content": "guidance"
+        }
+      ]
+    },
+    {
+      "role": "developer",
+      "parts": [
+        {
+          "type": "text",
+          "content": "rules"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "hello [REDACTED]"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call-1",
+          "name": "search",
+          "arguments": {
+            "nested": [
+              {
+                "Access_Token": "[REDACTED]",
+                "safe": "[REDACTED]",
+                "metadata": "{\"Password\":\"[REDACTED]\",\"n\":1}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call-1",
+          "response": {
+            "credential": "[REDACTED]",
+            "items": [
+              {
+                "cookie": "[REDACTED]",
+                "ok": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "gen_ai.tool.definitions": [
+    {
+      "type": "function",
+      "name": "search"
+    }
+  ]
+}

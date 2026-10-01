@@ -23,4 +23,20 @@ check(<<"privacy">>) ->
     lists:foreach(fun({Value, Expected}) ->
         Expected = pig_otel_validation_verify:safe_metadata(Value)
     end, Cases),
+    nil;
+check(<<"content_span_name_privacy">>) ->
+    Base = #{scope => <<"pig_proxy">>, version => <<"0.2.0">>, schema => <<>>,
+             trace_id => <<"0123456789abcdef0123456789abcdef">>,
+             span_id => <<"0123456789abcdef">>, start => 1, 'end' => 1,
+             status => unset, events => [], links => [],
+             attributes => #{<<"pig.outcome">> => <<"succeeded">>}},
+    ok = pig_otel_validation_verify:content_private_values(
+        [Base#{name => <<"CAPTURE_ALLOWED_SPAN">>}]),
+    rejected = try
+        pig_otel_validation_verify:content_private_values(
+            [Base#{name => <<"PRIVATE_SPAN_NAME">>}]),
+        accepted
+    catch
+        error:_ -> rejected
+    end,
     nil.

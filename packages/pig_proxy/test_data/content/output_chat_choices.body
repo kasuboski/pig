@@ -1,0 +1,1 @@
+{"choices":[{"index":3,"message":{"role":"assistant","content":"first","reasoning":"SECRET"},"finish_reason":"stop"},{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"type":"function","id":"c","function":{"name":"tool","arguments":"{\"password\":\"SECRET\",\"n\":2}"}}]},"finish_reason":"tool_calls"}]}

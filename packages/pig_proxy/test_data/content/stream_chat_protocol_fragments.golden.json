@@ -1,0 +1,1 @@
+{"gen_ai.output.messages":[{"finish_reason":"tool_call","parts":[{"content":"Hello ","type":"text"},{"arguments":{"city":"Berlin"},"id":"call_001","name":"weather","type":"tool_call"},{"arguments":{"x":2},"id":"call_2","name":"calculator","type":"tool_call"}],"role":"assistant"}],"pig.content.output.reason":"redacted_or_excluded","pig.content.output.status":"filtered"}

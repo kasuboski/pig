@@ -1,0 +1,2 @@
+data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","id":"item1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello"},{"type":"image","url":"SECRET"}]},{"type":"reasoning","encrypted_content":"SECRET"},{"type":"function_call","id":"item2","call_id":"c2","name":"f","arguments":"{\"auth\":\"SECRET\"}","status":"completed"}]}}
+

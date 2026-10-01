@@ -1,0 +1,1 @@
+{"input":[{"call_id":"call_media","output":[{"text":"{\"api_key\":\"SECRET\",\"safe\":\"PRIVATE\"}","type":"input_text"}],"type":"function_call_output"}]}

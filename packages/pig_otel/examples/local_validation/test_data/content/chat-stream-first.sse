@@ -1,0 +1,2 @@
+data: {"id":"response-chat-content","object":"chat.completion.chunk","model":"fixture_model","choices":[{"index":0,"delta":{"role":"assistant","content":"CAPTURE_ALLOWED_CHAT_"},"finish_reason":null},{"index":1,"delta":{"tool_calls":[{"index":0,"id":"call-chat-content","type":"function","function":{"name":"CAPTURE_ALLOWED_TOOL_NAME","arguments":"{\"safe\":\"CAPTURE_ALLOWED_CHAT_ARGUMENT\","}}]},"finish_reason":null}]}
+

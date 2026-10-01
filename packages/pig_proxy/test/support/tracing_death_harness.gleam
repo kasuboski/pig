@@ -6,6 +6,7 @@ import gleam/otp/factory_supervisor as factory
 import gleeunit/should
 import otel/context
 import pig_otel
+import pig_proxy/config
 import pig_proxy/execution
 import pig_proxy/tracing
 import pig_transport as transport
@@ -233,7 +234,7 @@ pub fn check_dormant_registration() -> Nil {
       let boot =
         tracing.Registration(
           process.self(),
-          pig_otel.MetadataOnly,
+          config.MetadataOnly,
           context.current(),
           "/v1/responses",
         )

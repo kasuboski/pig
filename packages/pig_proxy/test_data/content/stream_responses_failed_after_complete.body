@@ -1,0 +1,4 @@
+data: {"type":"response.completed","response":{"status":"completed","error":null,"output":[{"id":"item0","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"FINAL"}]}]}}
+
+data: {"type":"response.failed","response":{"error":"SECRET"}}
+

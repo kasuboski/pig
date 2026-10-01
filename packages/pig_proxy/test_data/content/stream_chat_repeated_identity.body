@@ -1,0 +1,16 @@
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"{}","name":"we"},"id":"c","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"wea"},"id":"call_","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"ther"},"id":"001","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"weather"},"id":"call_001","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"wea"},"id":"call_","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":""},"id":"","index":0}]},"index":0}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}
+
+data: [DONE]
+

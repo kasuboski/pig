@@ -1,0 +1,1 @@
+{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"safe"},{"type":"audio","data":"SECRET"},{"type":"reasoning","text":"SECRET"},{"type":"unknown","payload":{"token":"SECRET"}}]},"finish_reason":"length"}]}

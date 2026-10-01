@@ -1,0 +1,7 @@
+{
+  "api": "chat",
+  "direction": "input",
+  "literals": [
+    "PRIVATE"
+  ]
+}

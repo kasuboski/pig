@@ -359,17 +359,25 @@ needs tool calls or strict JSON schema support.
 
 ## OpenTelemetry
 
-Both POST inference routes have direct metadata-only server, logical GenAI, and
-physical HTTP attempt spans in buffered and streaming mode. Neither mode captures
-conversation messages, responses, reasoning, or tool content. The embedded library
-does not start an SDK/exporter. The host must configure the official composite
+Both POST inference routes have server, logical GenAI, and physical HTTP attempt
+spans in buffered and streaming mode. Metadata-only is the default. An explicit
+`config.with_conversation_capture(cfg, content.defaults())` opts eligible proxy
+requests into bounded structured capture on the logical span; see the
+[conversation capture guide](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md)
+for projected content, limits, synchronous capture overhead, and privacy
+requirements. Capture is not raw-body recording, does not enable capture in
+direct `pig.run` or `pig_otel.Policy`, and does not alter upstream/downstream
+request bodies or translate Responses requests to Chat Completions. The embedded
+library does not start an SDK/exporter. The host must configure the official composite
 Trace Context/Baggage propagator and disable overlapping HTTP auto-instrumentation
 for proxy-owned sends. Baggage is stripped; duplicate propagation headers are
 scrubbed before explicit-context injection.
 
 `config.with_tracing(cfg, pig_otel.Disabled)` creates no Pig spans or tracer lookup,
-but preserves sanitized explicit-parent propagation. Health/metrics/unmatched
-routes and pre-handler HTTP rejection are not traced. Body-read rejection on the
+but preserves sanitized explicit-parent propagation and clears any prior capture
+selection. Builder order is significant; the last tracing builder wins.
+Health/metrics/unmatched routes and pre-handler HTTP rejection are not traced.
+Body-read rejection on the
 two inference routes is traced.
 
 Temporary supervised owners hold stream spans across request retirement. The

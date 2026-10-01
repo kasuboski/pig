@@ -1,0 +1,34 @@
+{
+  "pig.content.output.status": "filtered",
+  "pig.content.output.reason": "redacted_or_excluded",
+  "gen_ai.output.messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "content": "héllo [REDACTED]"
+        },
+        {
+          "type": "tool_call",
+          "id": "c",
+          "name": "f",
+          "arguments": {
+            "token": "[REDACTED]"
+          }
+        }
+      ],
+      "finish_reason": "tool_call"
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "content": "second"
+        }
+      ],
+      "finish_reason": "stop"
+    }
+  ]
+}

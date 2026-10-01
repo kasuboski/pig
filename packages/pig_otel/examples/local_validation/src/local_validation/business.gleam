@@ -18,6 +18,7 @@ import pig_protocol/message
 import pig_protocol/stop_reason
 import pig_protocol/tool_definition
 import pig_proxy/config
+import pig_proxy/content
 import pig_proxy/metric_labels
 import pig_proxy/model_catalog
 import pig_proxy/server
@@ -53,6 +54,58 @@ pub fn exercise_failure() -> Nil {
 pub fn exercise_proxy_sync() -> Nil {
   check_proxy_sync(fn(port, upstream) {
     start_proxy(port, upstream, pig_otel.MetadataOnly)
+  })
+}
+
+/// Exercise both real routes with explicit logical conversation capture.
+pub fn exercise_proxy_content() -> Nil {
+  check_proxy_content(fn(port, upstream) {
+    start_proxy_content(port, upstream, content.defaults(), 0, None)
+  })
+}
+
+/// Small capture limits must omit content without changing upstream HTTP.
+pub fn exercise_proxy_content_interrupt() -> Nil {
+  check_proxy_content_interrupt(fn(port, upstream) {
+    start_proxy_content(port, upstream, content.defaults(), 0, None)
+  })
+}
+
+pub fn exercise_proxy_content_malformed() -> Nil {
+  check_proxy_content_malformed(fn(port, upstream) {
+    start_proxy_content(port, upstream, content.defaults(), 0, None)
+  })
+}
+
+pub fn exercise_proxy_content_retry() -> Nil {
+  check_proxy_content_retry(fn(port, upstream) {
+    start_proxy_content(port, upstream, content.defaults(), 1, None)
+  })
+}
+
+/// Last builder wins even when an earlier builder requested conversation capture.
+pub fn exercise_proxy_content_disabled() -> Nil {
+  check_proxy_content(fn(port, upstream) {
+    start_proxy_content(
+      port,
+      upstream,
+      content.defaults(),
+      0,
+      Some(pig_otel.Disabled),
+    )
+  })
+}
+
+pub fn exercise_proxy_content_no_sdk() -> Nil {
+  check_proxy_content(fn(port, upstream) {
+    start_proxy_content(port, upstream, content.defaults(), 0, None)
+  })
+}
+
+pub fn exercise_proxy_content_overflow() -> Nil {
+  let assert Ok(options) = content.with_limits(content.defaults(), 32, 16)
+  check_proxy_content_overflow(fn(port, upstream) {
+    start_proxy_content(port, upstream, options, 0, None)
   })
 }
 
@@ -149,18 +202,45 @@ fn answer(request: provider.InferenceRequest) -> provider.InferenceResult {
   inference.InferenceResult(message: msg, metadata:)
 }
 
+fn start_proxy_content(
+  port: Int,
+  upstream: String,
+  options: content.Options,
+  retries: Int,
+  last_policy: option.Option(pig_otel.Policy),
+) -> Nil {
+  let configured =
+    config.new([config.openai_target("fixture", upstream, "PRIVATE_API_KEY")])
+    |> config.with_conversation_capture(options)
+    |> config.with_port(port)
+    |> config.with_bind("127.0.0.1")
+    |> config.with_retries_per_target(retries)
+  let cfg = case last_policy {
+    None -> configured
+    Some(policy) -> config.with_tracing(configured, policy)
+  }
+  start_proxy_with_config(port, cfg)
+}
+
 fn start_proxy(port: Int, upstream: String, policy: pig_otel.Policy) -> Nil {
-  let owners = process.new_name("validation_owners")
-  let assert Ok(_) =
-    static_supervisor.new(static_supervisor.OneForOne)
-    |> static_supervisor.add(tracing.supervisor(owners))
-    |> static_supervisor.start
   let cfg =
     config.new([config.openai_target("fixture", upstream, "PRIVATE_API_KEY")])
     |> config.with_tracing(policy)
     |> config.with_port(port)
     |> config.with_bind("127.0.0.1")
     |> config.with_retries_per_target(0)
+  start_proxy_with_config(port, cfg)
+}
+
+fn start_proxy_with_config(_port: Int, cfg: config.ProxyConfig) -> Nil {
+  let owners = process.new_name("validation_owners")
+  let assert Ok(started) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(tracing.supervisor(owners))
+    |> static_supervisor.start
+  // The fixture owns this external root and stops it before its starter exits.
+  process.unlink(started.pid)
+  host.register_proxy_owners(started.pid)
   server.start(server.ServerState(
     supervisor: None,
     config: cfg,
@@ -182,6 +262,21 @@ fn start_proxy(port: Int, upstream: String, policy: pig_otel.Policy) -> Nil {
 
 @external(erlang, "pig_otel_validation_http", "check_proxy_sync")
 fn check_proxy_sync(start: fn(Int, String) -> Nil) -> Nil
+
+@external(erlang, "pig_otel_validation_http", "check_proxy_content")
+fn check_proxy_content(start: fn(Int, String) -> Nil) -> Nil
+
+@external(erlang, "pig_otel_validation_http", "check_proxy_content_interrupt")
+fn check_proxy_content_interrupt(start: fn(Int, String) -> Nil) -> Nil
+
+@external(erlang, "pig_otel_validation_http", "check_proxy_content_malformed")
+fn check_proxy_content_malformed(start: fn(Int, String) -> Nil) -> Nil
+
+@external(erlang, "pig_otel_validation_http", "check_proxy_content_retry")
+fn check_proxy_content_retry(start: fn(Int, String) -> Nil) -> Nil
+
+@external(erlang, "pig_otel_validation_http", "check_proxy_content_overflow")
+fn check_proxy_content_overflow(start: fn(Int, String) -> Nil) -> Nil
 
 @external(erlang, "pig_otel_validation_http", "check_proxy")
 fn check_proxy(start: fn(Int, String) -> Nil) -> Nil

@@ -112,7 +112,12 @@ fn proxy_request(
   path: String,
 ) -> response.Response(mist.ResponseData) {
   let owner =
-    tracing.register(state.owners, state.config.tracing, req.headers, path)
+    tracing.register_with_policy(
+      state.owners,
+      state.config.tracing,
+      req.headers,
+      path,
+    )
   let assert tracing.Current(server_context) =
     tracing.call(owner, tracing.ServerContext)
   use <- context.with_context(server_context)
@@ -188,7 +193,7 @@ fn proxy_request(
             let outcome = execution.orchestrate(exec, request, chain)
             emit_outcome_telemetry(outcome, model, state.emitter)
             let rendered = render_outcome(outcome)
-            finish_buffered(owner, api, outcome)
+            finish_buffered(owner, api, outcome, False)
             rendered
           }
         }
@@ -372,7 +377,7 @@ fn execute_stream(
         "/v1/responses" -> pig_otel.Responses
         _ -> pig_otel.ChatCompletions
       }
-      finish_buffered(owner, api, outcome)
+      finish_buffered(owner, api, outcome, True)
       rendered
     }
   }
@@ -382,13 +387,26 @@ fn finish_buffered(
   owner: tracing.Owner,
   api: pig_otel.Api,
   outcome: execution.Outcome,
+  requested_streaming: Bool,
 ) -> Nil {
   let #(terminal, metadata, status) = case outcome {
-    execution.Committed(status:, body:, ..) -> #(
-      tracing.http_outcome(status),
-      trace_metadata.buffered(api, bit_array_to_string(body)),
-      status,
-    )
+    execution.Committed(status:, headers:, body:, ..) -> {
+      let _ =
+        tracing.call(
+          owner,
+          tracing.SelectedBufferedResponse(
+            requested_streaming,
+            status,
+            headers,
+            body,
+          ),
+        )
+      #(
+        tracing.http_outcome(status),
+        trace_metadata.buffered(api, bit_array_to_string(body)),
+        status,
+      )
+    }
     execution.Exhausted(..) -> #(
       pig_otel.Failed("transport_error"),
       trace_metadata.empty(),

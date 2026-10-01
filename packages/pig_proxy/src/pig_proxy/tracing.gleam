@@ -5,13 +5,18 @@
 
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
+import otel/attribute.{type Attribute}
 import otel/context.{type Context}
 import pig_otel
+import pig_proxy/config
+import pig_proxy/content
 import pig_proxy/trace_metadata
 import pig_transport as transport
 
@@ -23,7 +28,7 @@ pub type Owner
 pub type Registration {
   Registration(
     caller: process.Pid,
-    policy: pig_otel.Policy,
+    policy: config.Tracing,
     parent: Context,
     route: String,
   )
@@ -32,6 +37,12 @@ pub type Registration {
 /// The factory name carried by server runtime state.
 pub type Owners =
   process.Name(factory.Message(Registration, Owner))
+
+/// Application-body encoding eligible for content observation, not wire capture.
+pub type BodyEncoding {
+  IdentityEncoding
+  UnsupportedEncoding
+}
 
 /// Chunk loop messages; receipt is distinct from upstream body forwarding.
 pub type ChunkMessage {
@@ -49,6 +60,13 @@ pub type Command {
     adapter: transport.Transport,
     request: transport.Request,
     head: process.Subject(transport.Event),
+  )
+  InputSent(body: BitArray, encoding: BodyEncoding)
+  SelectedBufferedResponse(
+    requested_streaming: Bool,
+    status: Int,
+    headers: List(#(String, String)),
+    body: BitArray,
   )
   SyncTerminal(response: transport.Response)
   AbortAttempt
@@ -94,6 +112,12 @@ type Handoff {
   HandedOff(process.Subject(ChunkMessage))
 }
 
+type OutputContent {
+  NoOutput
+  Watching(content.Stream)
+  Observed(content.Capture)
+}
+
 /// State belongs solely to the supervised owner process.
 pub opaque type State {
   State(
@@ -121,6 +145,8 @@ pub opaque type State {
     attempt_start_time: Int,
     first_chunk: Bool,
     first_send: Bool,
+    input_capture: Option(content.Capture),
+    output_content: OutputContent,
   )
 }
 
@@ -143,6 +169,20 @@ pub fn supervisor(
 pub fn register(
   name: Owners,
   policy: pig_otel.Policy,
+  headers: List(#(String, String)),
+  route: String,
+) -> Owner {
+  let policy = case policy {
+    pig_otel.Disabled -> config.Disabled
+    pig_otel.MetadataOnly -> config.MetadataOnly
+  }
+  register_with_policy(name, policy, headers, route)
+}
+
+/// Register with frozen operation-local tracing and capture policy.
+pub fn register_with_policy(
+  name: Owners,
+  policy: config.Tracing,
   headers: List(#(String, String)),
   route: String,
 ) -> Owner {
@@ -223,6 +263,8 @@ pub fn initialise(registration: Registration) -> State {
     attempt_start_time: now_ms(),
     first_chunk: False,
     first_send: False,
+    input_capture: None,
+    output_content: NoOutput,
   )
 }
 
@@ -263,6 +305,11 @@ pub fn command(state: State, command: Command) -> #(State, Reply) {
     BeginInference(..), _, _, _ if state.logical_closed -> #(state, Ack)
     BeginAttempt(_), _, _, _ if state.logical_closed -> #(state, Ack)
     SyncTerminal(_), _, _, _ if state.upstream != None -> #(state, Ack)
+    InputSent(..), _, _, _ if state.logical_closed -> #(state, Ack)
+    SelectedBufferedResponse(..), _, _, _ if state.logical_closed -> #(
+      state,
+      Ack,
+    )
     _, _, _, _ -> perform_command(state, command)
   }
 }
@@ -277,8 +324,11 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
       #(state, Current(ctx))
     }
     Activate -> {
-      let backend =
-        pig_otel.backend(state.registration.policy, application_marker)
+      let policy = case state.registration.policy {
+        config.Disabled -> pig_otel.Disabled
+        config.MetadataOnly | config.Conversation(_) -> pig_otel.MetadataOnly
+      }
+      let backend = pig_otel.backend(policy, application_marker)
       let span =
         pig_otel.start(
           backend,
@@ -328,10 +378,22 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           attempt_status: 0,
           attempt_start_time: now_ms(),
           first_chunk: False,
+          output_content: NoOutput,
         ),
         Current(pig_otel.context(span)),
       )
     }
+    InputSent(body, encoding) -> #(capture_input(state, body, encoding), Ack)
+    SelectedBufferedResponse(requested_streaming, status, headers, body) -> #(
+      capture_buffered_response(
+        state,
+        requested_streaming,
+        status,
+        headers,
+        body,
+      ),
+      Ack,
+    )
     OpenStream(adapter, request, head) -> {
       let ctx = case state.attempt {
         Some(span) -> pig_otel.context(span)
@@ -342,7 +404,16 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           open_watched(adapter, request, watch_subject(state.count))
         })
       track_head(transport.events(handle), state.count)
-      #(State(..state, handle: Some(handle), head: Some(head)), Opened(handle))
+      let with_input =
+        capture_input(
+          state,
+          bit_array.from_string(request.body),
+          body_encoding(request.headers),
+        )
+      #(
+        State(..with_input, handle: Some(handle), head: Some(head)),
+        Opened(handle),
+      )
     }
     SyncTerminal(response) -> {
       let #(outcome, metadata, status) = case response {
@@ -466,6 +537,127 @@ pub fn handoff_complete(state: State) -> Bool {
   is_handed_off(state.handoff)
 }
 
+fn capture_options(state: State) -> Option(content.Options) {
+  case state.registration.policy {
+    config.Conversation(options) -> Some(options)
+    config.Disabled | config.MetadataOnly -> None
+  }
+}
+
+fn capture_input(
+  state: State,
+  body: BitArray,
+  encoding: BodyEncoding,
+) -> State {
+  case state.input_capture, capture_options(state), state.logical, encoding {
+    None, Some(options), Some(_), IdentityEncoding ->
+      case pig_otel.tracing_available(state.backend) && !state.logical_closed {
+        True ->
+          State(
+            ..state,
+            input_capture: Some(content.input(options, state.api, body)),
+          )
+        False -> state
+      }
+    _, _, _, _ -> state
+  }
+}
+
+fn capture_buffered_response(
+  state: State,
+  requested_streaming: Bool,
+  status: Int,
+  headers: List(#(String, String)),
+  body: BitArray,
+) -> State {
+  case capture_options(state), state.output_content {
+    Some(options), NoOutput ->
+      case
+        !requested_streaming
+        && pig_otel.tracing_available(state.backend)
+        && status >= 200
+        && status < 300
+        && supported_json(headers)
+        && supported_identity_encoding(headers)
+      {
+        True ->
+          State(
+            ..state,
+            output_content: Observed(content.buffered(options, state.api, body)),
+          )
+        False -> state
+      }
+    _, _ -> state
+  }
+}
+
+fn supported_json(headers: List(#(String, String))) -> Bool {
+  has_header(headers, "content-type")
+  && list.all(headers, fn(header) {
+    string.lowercase(header.0) != "content-type"
+    || media_type_is(header.1, "application/json")
+  })
+}
+
+fn supported_sse(headers: List(#(String, String))) -> Bool {
+  has_header(headers, "content-type")
+  && list.all(headers, fn(header) {
+    string.lowercase(header.0) != "content-type"
+    || media_type_is(header.1, "text/event-stream")
+  })
+}
+
+fn media_type_is(value: String, expected: String) -> Bool {
+  case bit_array.byte_size(bit_array.from_string(value)) <= 256 {
+    True -> {
+      let media_type =
+        value
+        |> string.split(";")
+        |> list.first
+        |> result.unwrap("")
+        |> string.trim
+        |> string.lowercase
+      media_type == expected
+    }
+    False -> False
+  }
+}
+
+/// Classify only encoding headers; the content encoder receives no credentials.
+pub fn body_encoding(headers: List(#(String, String))) -> BodyEncoding {
+  case supported_identity_encoding(headers) {
+    True -> IdentityEncoding
+    False -> UnsupportedEncoding
+  }
+}
+
+fn supported_identity_encoding(headers: List(#(String, String))) -> Bool {
+  list.all(headers, fn(header) {
+    string.lowercase(header.0) != "content-encoding"
+    || {
+      bit_array.byte_size(bit_array.from_string(header.1)) <= 256
+      && string.lowercase(string.trim(header.1)) == "identity"
+    }
+  })
+}
+
+fn has_header(headers: List(#(String, String)), name: String) -> Bool {
+  list.any(headers, fn(header) { string.lowercase(header.0) == name })
+}
+
+fn content_attributes(state: State) -> List(Attribute) {
+  list.flatten([
+    case state.input_capture {
+      Some(capture) -> content.attributes(capture, content.Input)
+      None -> []
+    },
+    case state.output_content {
+      Observed(capture) -> content.attributes(capture, content.Output)
+      NoOutput | Watching(_) -> []
+    },
+  ])
+}
+
 fn annotate_status(span: Option(pig_otel.Span), status: Int) -> Nil {
   case span {
     Some(span) if status > 0 ->
@@ -505,15 +697,26 @@ fn end_attempt(state: State, outcome: pig_otel.Outcome) -> State {
 fn end_logical(state: State, outcome: pig_otel.Outcome) -> State {
   case state.logical {
     Some(span) -> {
+      let #(_, terminal_attributes) = pig_otel.terminal(outcome)
       pig_otel.annotate(
         span,
-        pig_otel.response_attributes(state.metadata.metadata),
+        list.append(
+          pig_otel.response_attributes(state.metadata.metadata),
+          terminal_attributes,
+        ),
       )
+      pig_otel.annotate(span, content_attributes(state))
       pig_otel.finish(span, outcome)
     }
     None -> Nil
   }
-  State(..state, logical: None, logical_closed: True)
+  State(
+    ..state,
+    logical: None,
+    logical_closed: True,
+    input_capture: None,
+    output_content: NoOutput,
+  )
 }
 
 fn maybe_end_logical(state: State) -> State {
@@ -541,6 +744,10 @@ pub fn source(
         transport.SourceChunk(data) -> {
           let #(framer, metadata) =
             trace_metadata.push(state.api, state.framer, state.metadata, data)
+          let output_content = case state.output_content {
+            Watching(stream) -> Watching(content.push(stream, data))
+            value -> value
+          }
           case state.first_chunk, state.attempt {
             False, Some(span) -> {
               pig_otel.annotate(span, [
@@ -553,7 +760,7 @@ pub fn source(
             }
             _, _ -> Nil
           }
-          State(..state, framer:, metadata:, first_chunk: True)
+          State(..state, framer:, metadata:, output_content:, first_chunk: True)
         }
         transport.SourceDone -> {
           case state.first_chunk {
@@ -567,9 +774,21 @@ pub fn source(
             state,
             option.unwrap(state.abort, pig_otel.Failed("transport_error")),
           )
-        transport.SourceHead(status, _) -> {
+        transport.SourceHead(status, headers) -> {
           annotate_status(state.attempt, status)
-          State(..state, attempt_status: status)
+          let eligible =
+            capture_options(state) != None
+            && pig_otel.tracing_available(state.backend)
+            && status >= 200
+            && status < 300
+            && supported_sse(headers)
+            && supported_identity_encoding(headers)
+          let output_content = case eligible, capture_options(state) {
+            True, Some(options) ->
+              Watching(content.new_stream(options, state.api))
+            _, _ -> NoOutput
+          }
+          State(..state, attempt_status: status, output_content:)
         }
         transport.SourceReady(_) -> state
       }
@@ -605,13 +824,26 @@ pub fn observer_exited(state: State, generation: Int) -> State {
   }
 }
 
+fn finalize_stream_content(state: State, outcome: pig_otel.Outcome) -> State {
+  case state.output_content {
+    Watching(stream) -> {
+      let complete =
+        outcome == pig_otel.Succeeded
+        && !state.metadata.failed
+        && state.abort == None
+        && state.downstream == None
+      State(..state, output_content: Observed(content.finish(stream, complete)))
+    }
+    NoOutput | Observed(_) -> state
+  }
+}
+
 fn upstream_terminal(state: State, outcome: pig_otel.Outcome) -> State {
   let next = end_attempt(state, outcome)
   let metadata = trace_metadata.finish(next.api, next.framer, next.metadata)
-  let next =
-    maybe_end_logical(
-      State(..next, metadata:, framer: trace_metadata.new_framer()),
-    )
+  let next = State(..next, metadata:, framer: trace_metadata.new_framer())
+  let next = finalize_stream_content(next, outcome)
+  let next = maybe_end_logical(next)
   case next.pending_terminal {
     Some(event) -> upstream(State(..next, pending_terminal: None), event)
     None -> next

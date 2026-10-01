@@ -1,0 +1,9 @@
+{
+  "api": "responses",
+  "direction": "input",
+  "literals": [
+    "a",
+    "ab",
+    "REDACTED"
+  ]
+}

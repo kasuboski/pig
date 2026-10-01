@@ -1,0 +1,31 @@
+{
+  "pig.content.output.status": "filtered",
+  "pig.content.output.reason": "redacted_or_excluded",
+  "gen_ai.output.messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "content": "first"
+        }
+      ],
+      "finish_reason": "stop"
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "c",
+          "name": "tool",
+          "arguments": {
+            "password": "[REDACTED]",
+            "n": 2
+          }
+        }
+      ],
+      "finish_reason": "tool_call"
+    }
+  ]
+}

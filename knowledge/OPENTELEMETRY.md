@@ -27,16 +27,20 @@ These are integration pins, not claims of latest versions.
 
 ## Capture and privacy
 
-Only `MetadataOnly` (default) and `Disabled` are supported. Neither captures
-conversation content; there is no global content opt-in. Never pass prompts,
-completion/reasoning, tool definitions/arguments/results, request/response bodies,
-credentials, raw exception text, arbitrary baggage, or raw URLs as span data.
-Metadata adapters accept known safe metadata, not arbitrary data requiring
-sanitization. Error categories are bounded; failures set Error status without a
-description or exception event. Unknown counts/settings remain absent, not
-invented. Rich session/audit events and developer logs are separate channels and
-may have different content characteristics; metadata-only tracing does not
-sanitize them.
+`pig_otel.Policy` and direct `pig` tracing support `MetadataOnly` (default) and
+`Disabled`; neither captures conversation content. `pig_proxy` separately offers
+explicit, bounded structured conversation capture for eligible Chat and Responses
+requests. It is selected per proxy config, is not enabled by environment, and does
+not extend direct Pig capture. See the [capture guide](OPENTELEMETRY_CONTENT_CAPTURE.md)
+for projection, limits and privacy boundaries.
+
+Metadata-only adapters accept known safe metadata, not arbitrary data requiring
+sanitization. Do not pass content, credentials, raw exception text, arbitrary
+baggage, or raw URLs through those adapters. Error categories are bounded;
+failures set Error status without a description or exception event. Unknown
+counts/settings remain absent, not invented. Rich session/audit events and
+developer logs are separate channels and may have different content
+characteristics; metadata-only tracing does not sanitize them.
 
 `Disabled` makes no Pig spans and no tracer lookup, but preserves a supplied
 explicit parent. Proxy header scrubbing applies regardless of policy or SDK.

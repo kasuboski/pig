@@ -1,8 +1,13 @@
 -module(pig_otel_validation_host).
 -export([check_recording/1, check_agent_recording/1, check_proxy_recording/1,
+         check_proxy_content_recording/1, check_proxy_content_otlp/1, check_proxy_content_overflow/1,
+         check_content_limits/1, check_content_malformed/1, check_content_retry/1,
+         check_content_unavailable/1, check_content_disabled/1,
+         check_content_interrupt/1,
          check_otlp/1, check_proxy_otlp/1, check_stream_races/0, check_runtime_shutdown/0,
          check_limitations/1, check_disabled/1, check_failure/1,
-         callback/1, with_caller_parent/2, integration_enabled/0, bootstrap/0]).
+         callback/1, with_caller_parent/2, integration_enabled/0,
+         register_proxy_owners/1, stop_proxy_owners/0, bootstrap/0]).
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
 -define(TABLE, pig_otel_validation_spans).
@@ -16,6 +21,16 @@ bootstrap() ->
     {ok, _} = application:ensure_all_started(pig),
     {ok, _} = application:ensure_all_started(pig_proxy),
     load(pig_otel_local_validation),
+    nil.
+
+register_proxy_owners(Pid) when is_pid(Pid) ->
+    undefined = get(pig_otel_validation_proxy_owners),
+    put(pig_otel_validation_proxy_owners, Pid),
+    nil.
+
+stop_proxy_owners() ->
+    Pid = erase(pig_otel_validation_proxy_owners),
+    ok = gen_server:stop(Pid, shutdown, infinity),
     nil.
 
 integration_enabled() ->
@@ -32,6 +47,69 @@ check_agent_recording(Work) ->
 
 check_proxy_recording(Work) ->
     record(Work, fun pig_otel_validation_verify:check_proxy_sync/2, "proxy-sync-recording.term").
+
+check_proxy_content_recording(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_proxy_content/2, "proxy-content-recording.term").
+
+check_proxy_content_otlp(Work) ->
+    deliver(Work, fun pig_otel_validation_verify:check_proxy_content/2, 12, "proxy-content-otlp.term").
+
+check_content_interrupt(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_proxy_content_interrupt/2,
+           "proxy-content-interrupt-recording.term").
+
+check_content_malformed(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_proxy_content_malformed/2,
+           "proxy-content-malformed-recording.term"),
+    deliver(Work, fun pig_otel_validation_verify:check_proxy_content_malformed/2,
+            6, "proxy-content-malformed-otlp.term").
+
+check_content_retry(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_proxy_content_retry/2,
+           "proxy-content-retry-recording.term"),
+    deliver(Work, fun pig_otel_validation_verify:check_proxy_content_retry/2,
+            16, "proxy-content-retry-otlp.term").
+
+check_content_unavailable(Work) ->
+    lists:foreach(fun(Mode) ->
+        prepare(Mode),
+        try
+            case Mode of
+                no_sdk -> ok;
+                unsampled -> start_sdk({otel_simple_processor,
+                    #{exporter => {otel_exporter_tab, ?TABLE}}}, always_off)
+            end,
+            Work(),
+            [] = ets:tab2list(?TABLE),
+            io:format("PASS capture configured ~p: business unchanged, zero exported spans~n", [Mode])
+        after cleanup() end
+    end, [no_sdk, unsampled]),
+    nil.
+
+check_content_disabled(Work) -> check_disabled(Work).
+
+check_proxy_content_overflow(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_proxy_content_overflow/2,
+           "proxy-content-overflow-recording.term").
+
+check_content_limits(Work) ->
+    prepare(limited),
+    try
+        application:set_env(opentelemetry, attribute_value_length_limit, 48),
+        start_sdk({otel_simple_processor, #{exporter => {otel_exporter_tab, ?TABLE}}}, always_on),
+        Work(),
+        Logical = [recorded(S) || S=#span{kind=client} <- ets:tab2list(?TABLE),
+                                  maps:is_key(<<"openai.api.type">>, otel_attributes:map(S#span.attributes))],
+        4 = length(Logical),
+        lists:foreach(fun(Span) ->
+            Attrs = maps:get(attributes, Span),
+            Value = maps:get(<<"gen_ai.input.messages">>, Attrs),
+            48 = byte_size(Value),
+            invalid_json_after_limit(Value)
+        end, Logical),
+        io:format("PASS official SDK limit truncates content JSON; invalid JSON is not a capture success~n")
+    after cleanup(), application:unset_env(opentelemetry, attribute_value_length_limit) end,
+    nil.
 
 check_stream_races() ->
     prepare(recording),
@@ -204,6 +282,15 @@ verify_usage(Span, Api, Usage) ->
     ok.
 
 attr(Key, Span) -> maps:get(Key, maps:get(attributes, Span)).
+
+invalid_json_after_limit(Value) ->
+    try json:decode(Value) of
+        {error, _} -> ok;
+        _ -> throw(valid_json_after_limit)
+    catch
+        throw:valid_json_after_limit -> error(valid_json_after_limit);
+        _:_ -> ok
+    end.
 
 record(Work, Verify, File) ->
     prepare(recording),

@@ -327,6 +327,22 @@ fn sync_attempt(
 ) -> AttemptResult {
   let ctx = begin_attempt(executor, target.id)
   let req = build_transport_request(executor, request, target, auth, False, ctx)
+  // This is the first actual send seam: skipped circuits never reach it, and
+  // the body is the effective request payload (including route rewrites).
+  case executor.trace {
+    Some(owner) -> {
+      let _ =
+        tracing.call(
+          owner,
+          tracing.InputSent(
+            bit_array.from_string(req.body),
+            tracing.body_encoding(req.headers),
+          ),
+        )
+      Nil
+    }
+    None -> Nil
+  }
   let response =
     context.with_context(ctx, fn() { transport.sync(executor.transport, req) })
   case executor.trace {

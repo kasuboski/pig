@@ -49,32 +49,59 @@ These are general runner interfaces; callers should choose any suitable local
 path. Retained evidence is diagnostic output, not a repository input or substitute
 for rerunning the gates.
 
-## What the integration gate proves
+## What the integration gate exercises
 
-The local-validation host uses an official SDK simple processor/recording path
-and a separate official batch processor with OTLP HTTP/protobuf. The loopback
-receiver decodes official protobuf and acknowledges the complete expected span
-set before SDK shutdown. `force_flush` returning is not accepted as proof of
-remote delivery. Recording-only results and exporter refusal test instrumentation
-and business non-interference, not delivery.
+The local-validation host uses official SDK recording and a separate official
+batch processor with OTLP HTTP/protobuf. Its loopback receiver decodes protobuf
+and acknowledges the expected span set before SDK shutdown; `force_flush` alone
+is not proof of delivery. Recording-only and exporter-refusal cases establish
+instrumentation/business non-interference, not delivery.
 
-The harness runs real public Pig buffered/streamed operations and a real proxy
-server/upstream/client for both `/v1/chat/completions` and `/v1/responses`, in
-buffered and streaming modes. Fixtures live under
-`packages/pig_otel/examples/local_validation/test_data/`; host, receiver and
-verification harness live under that example's `src/` and `test/` trees. The
-shared SDK recording fixture is in `packages/pig_otel/fixtures/sdk_recording/`.
-The verifier checks consumer scope, span identity/parentage, terminal metadata,
-usage, context in callbacks, exactly-once recording and absence of sensitive
-sentinels. Streaming tests hold upstream completion until downstream handoff to
-check all three lifetimes; death/handoff and runtime-stop tests exercise ownership
-and cancellation boundaries. The host explicitly starts exporter and consumer
-dependency applications before SDK setup and tracer acquisition.
+The gate covers public buffered and streamed Pig runs and real proxy requests
+for both `/v1/chat/completions` and `/v1/responses`. The final clean SDK/OTLP gate
+passed with 19 enabled integration checks and 4 ungated verifier checks
+(23 passed with integration enabled); a separate
+invocation verifies the ungated suite. With the integration flag off, the unit
+invocation reports 23 passed, including 19 integration no-ops; those are not 23
+true unit tests. The shared SDK suite passed 5 tests. The final root build/check/test
+gates also passed; the package test runner reported 992 passed.
+Evidence for the final SDK/OTLP gate is under
+`/tmp/pig-otel-evidence/content-capture/final-integration-stable`. This evidence
+is a test run record, not a repository input.
+
+The content checks observed 12 actual consumer spans for the positive buffered
+and streaming cases across both API routes through official SDK recording and
+OTLP receiver acknowledgement. They also covered metadata-only privacy, a
+retry with a failed 503 first attempt (16 actual consumer spans), malformed
+streamed JSON, source overflow, configured capture with no SDK and with sampling
+off, `Disabled` precedence, and a deliberately small SDK string limit that
+truncated otherwise valid content JSON. The latter was treated as invalid JSON,
+not successful capture. Three fresh-VM interrupted-run repeats each recorded six
+actual spans across the two routes, with interrupted output omitted/incomplete
+alongside failed or
+cancelled outcomes. A full-span privacy sentinel scan and pure regression checks
+passed. A deterministic graceful owners-supervisor teardown barrier prevents
+the interrupted-fixture snapshot race. Pure projection/redaction/bounds fixtures
+and lifecycle/builder tests are also included.
+
+Production forwards the effective API request payload unchanged; verified
+forwarding does not apply production normalization.
+
+These counts prove only the exercised fixtures and SDK/OTLP receiver-acknowledged
+span sets. The 19 enabled integration checks do not validate every backend's
+rendering, retention, truncation policy, or physical downstream wire delivery. Streaming
+cases retain the downstream first-body acknowledgement boundary and check body
+preservation. Input projection is bounded but synchronous before send, buffered
+output projection is synchronous before return, and SSE projection runs
+incrementally on the stream observation path. None is a zero-latency guarantee,
+and SSE capture does not wait for the complete stream before forwarding it.
 
 Integration wrappers under `test/integration/` compile normally but execute only
 when the host explicitly sets `PIG_RUN_OTEL_INTEGRATION=1`. Root package unit
-checks do not require SDK or collector configuration. Do not mistake skipped
-network wrappers for the enabled local integration run.
+checks do not require SDK or collector configuration. The maintained content
+contract and out-of-scope guarantees are in
+[OPENTELEMETRY_CONTENT_CAPTURE.md](OPENTELEMETRY_CONTENT_CAPTURE.md). Do not
+mistake skipped network wrappers for the enabled local integration run.
 
 ## Warning policy
 

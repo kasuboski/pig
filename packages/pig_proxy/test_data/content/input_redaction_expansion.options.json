@@ -1,0 +1,8 @@
+{
+  "api": "chat",
+  "direction": "input",
+  "budget": 100,
+  "literals": [
+    "x"
+  ]
+}

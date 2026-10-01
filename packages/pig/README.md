@@ -222,8 +222,10 @@ the input. Use `None` when no standing prompt is configured.
 
 Run, inference, and tool spans are enabled by default with `pig_otel.MetadataOnly`.
 No prompts, completions, reasoning, tool arguments/results, credentials, or raw
-provider errors are captured, including for buffered runs. Rich audit events remain separately content-bearing. To disable Pig
-spans without disabling sanitized parent propagation:
+provider errors are captured by direct Pig spans, including for buffered runs.
+Rich audit events remain separately content-bearing. Explicit structured capture
+is a separate `pig_proxy` option and does not alter direct `pig_otel.Policy`.
+To disable Pig spans without disabling sanitized parent propagation:
 
 ```gleam
 import pig_otel

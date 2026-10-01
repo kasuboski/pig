@@ -1,6 +1,8 @@
 # pig_otel
 
-Shared metadata-only OpenTelemetry semantics and propagation for Pig on the BEAM.
+Shared OpenTelemetry semantics and propagation for Pig on the BEAM. Content
+projection for the proxy is implemented separately in `pig_proxy`; this package
+remains the shared metadata adapter.
 The library depends on `otel_gleam` at remote Git revision
 `0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5` and official API 1.5.0. It does not
 start, configure, flush, or depend on the SDK/exporter in production.
@@ -24,10 +26,13 @@ checks; they perform no IO.
 - `Disabled` creates no spans and performs no tracer lookup, but retains and
   propagates the supplied explicit parent. Lookup failure has the same span
   behavior, emits a fixed internal diagnostic, and never uses a default tracer.
-- `MetadataOnly` has no content encoder and does not honor a global content opt-in.
-  Attribute adapters accept **known metadata only**; they are not sanitizers for
-  arbitrary attributes. Never supply messages, reasoning, tool content, bodies,
+- `MetadataOnly` does not honor a global content opt-in. Attribute adapters
+  accept **known metadata only**; they are not sanitizers for arbitrary
+  attributes. Never supply messages, reasoning, tool content, bodies,
   credentials, baggage, raw URLs, or exception text. Attribute keys must be nonempty.
+- Structured proxy conversation capture is selected through `pig_proxy/config`,
+  not `pig_otel.Policy`; it does not add direct `pig.run` capture. See the
+  [maintained capture contract](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
 - Agent/tool/route/target names are configured identities, not per-request
   content. Request model is the actual known constructor/request model, not agent
   configuration. Unknown provider/model/defaults stay absent. These trace facts

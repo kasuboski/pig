@@ -1,0 +1,15 @@
+{
+  "pig.content.input.status": "captured",
+  "pig.content.input.reason": "complete",
+  "gen_ai.input.messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "hello"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+data: {"choices":[{"index":1,"delta":{"role":"assistant","content":"sec"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"hé"},"finish_reason":null}]}
+
+data: {"choices":[{"index":1,"delta":{"content":"ond"},"finish_reason":"stop"}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"llo PRIVATE","tool_calls":[{"index":0,"id":"c","type":"function","function":{"name":"f","arguments":"{\"to"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ken\":\"SECRET\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"choices":[],"usage":{"completion_tokens":20}}
+
+data: [DONE]
+
+data: {"choices":[],"usage":{"completion_tokens":21}}
+

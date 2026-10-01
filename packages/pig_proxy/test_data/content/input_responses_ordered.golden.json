@@ -1,0 +1,65 @@
+{
+  "pig.content.input.status": "filtered",
+  "pig.content.input.reason": "redacted_or_excluded",
+  "gen_ai.input.messages": [
+    {
+      "role": "developer",
+      "parts": [
+        {
+          "type": "text",
+          "content": "policy"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "call-2",
+          "name": "lookup",
+          "arguments": {
+            "nested": [
+              {
+                "PIN": "[REDACTED]"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "call-2",
+          "response": {
+            "safe": "[REDACTED]"
+          }
+        }
+      ]
+    }
+  ],
+  "gen_ai.system_instructions": [
+    {
+      "type": "text",
+      "content": "Be [REDACTED]"
+    }
+  ],
+  "gen_ai.tool.definitions": [
+    {
+      "type": "function",
+      "name": "lookup"
+    }
+  ]
+}

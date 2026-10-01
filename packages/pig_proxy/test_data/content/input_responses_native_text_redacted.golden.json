@@ -1,0 +1,1 @@
+{"gen_ai.input.messages":[{"parts":[{"id":"call_media","response":[{"content":"{\"api_key\":\"[REDACTED]\",\"safe\":\"[REDACTED]\"}","type":"text"}],"type":"tool_call_response"}],"role":"tool"}],"pig.content.input.reason":"redacted_or_excluded","pig.content.input.status":"filtered"}

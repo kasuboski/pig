@@ -1,0 +1,44 @@
+{
+  "pig.content.input.status": "filtered",
+  "pig.content.input.reason": "redacted_or_excluded",
+  "gen_ai.input.messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool_call",
+          "id": "c",
+          "name": "f",
+          "arguments": [
+            {
+              "COOKIE": "[REDACTED]"
+            },
+            [
+              true,
+              2,
+              "[REDACTED]"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "c",
+          "response": [
+            {
+              "access_token": "[REDACTED]"
+            },
+            [
+              "[REDACTED]",
+              42
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

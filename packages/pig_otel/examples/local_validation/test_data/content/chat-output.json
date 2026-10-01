@@ -1,0 +1,1 @@
+{"gen_ai.output.messages":[{"role":"assistant","parts":[{"type":"text","content":"CAPTURE_ALLOWED_CHAT_OUTPUT"}],"finish_reason":"stop"},{"role":"assistant","parts":[{"type":"tool_call","id":"call-chat-content","name":"CAPTURE_ALLOWED_TOOL_NAME","arguments":{"safe":"CAPTURE_ALLOWED_CHAT_ARGUMENT","password":"[REDACTED]"}}],"finish_reason":"tool_call"}]}

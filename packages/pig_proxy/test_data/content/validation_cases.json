@@ -1,0 +1,30 @@
+[
+  {
+    "valid": true,
+    "attributes": {
+      "gen_ai.input.messages": [{"role":"user","parts":[{"type":"text","content":"safe"}]}],
+      "gen_ai.output.messages": [{"role":"assistant","finish_reason":"tool_call","parts":[{"type":"tool_call","id":"c","name":"f","arguments":{"x":1}}]}],
+      "gen_ai.system_instructions": [{"type":"text","content":"instructions"}],
+      "gen_ai.tool.definitions": [{"type":"function","name":"f"}]
+    },
+    "settings": {"assertions":{"parts":[{"type":"tool_call","id":"c","name":"f","arguments":{"x":1}}],"absent":["PRIVATE"]}}
+  },
+  {"valid":false,"attributes":{"gen_ai.input.messages":{"role":"user","parts":[]}}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":["serialized message"]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":42,"parts":[]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"user","parts":"not an array"}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":42}]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"blob","content":"PRIVATE"}]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"safe","image_url":"PRIVATE"}]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"assistant","parts":[{"type":"tool_call","id":"c","name":"f"}]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"tool","parts":[{"type":"tool_call_response","id":42,"response":"safe"}]}]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"tool","parts":[{"type":"tool_call_response","id":"","response":"safe"}]}]}},
+  {"valid":false,"attributes":{"gen_ai.output.messages":[{"role":"assistant","parts":[]}]}},
+  {"valid":false,"attributes":{"gen_ai.output.messages":[{"role":"assistant","parts":[],"finish_reason":"tool_calls"}]}},
+  {"valid":false,"attributes":{"gen_ai.output.messages":[{"role":"user","parts":[],"finish_reason":"stop"}]}},
+  {"valid":false,"attributes":{"gen_ai.system_instructions":[{"type":"text","content":false}]}},
+  {"valid":false,"attributes":{"gen_ai.tool.definitions":[{"type":"function","name":42}]}},
+  {"valid":false,"attributes":{"gen_ai.unexpected":[]}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"tool","parts":[{"type":"tool_call_response","id":"wrong","response":"safe"}]}]},"settings":{"assertions":{"parts":[{"type":"tool_call_response","id":"call_1","response":"safe"}]}}},
+  {"valid":false,"attributes":{"gen_ai.input.messages":[{"role":"tool","parts":[{"type":"tool_call_response","id":"call_1","response":"PRIVATE"}]}]},"settings":{"assertions":{"absent":["PRIVATE"]}}}
+]
