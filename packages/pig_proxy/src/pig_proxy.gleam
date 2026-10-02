@@ -5,7 +5,7 @@
 ////   - Pipes SSE streaming responses in real time without buffering.
 ////   - Retries transient failures with exponential backoff and jitter.
 ////   - Opens circuit breakers on consecutive upstream failures.
-////   - Routes virtual model slugs to active provider fallback chains.
+////   - Routes exact API/model pairs to one configured upstream target.
 ////   - Emits typed telemetry events and exposes a Prometheus `/metrics` endpoint.
 ////
 //// Start with default config from environment variables:

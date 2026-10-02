@@ -117,14 +117,25 @@ pub fn is_streaming_malformed_json_defaults_false_test() {
   assert proxy.is_streaming(body) == False
 }
 
-pub fn extract_model_present_test() {
-  let body = "{\"model\":\"gpt-4o\",\"stream\":true}"
-  assert proxy.extract_model(body) == "gpt-4o"
+fn check_extract_model(body: String) -> Result(String, proxy.ModelError) {
+  proxy.extract_model(body)
 }
 
-pub fn extract_model_absent_returns_unknown_test() {
-  let body = "{\"stream\":true}"
-  assert proxy.extract_model(body) == "unknown"
+pub fn extract_model_validation_matrix_test() {
+  let cases = [
+    #("{\"model\":\"gpt-4o\"}", Ok("gpt-4o")),
+    #("{\"model\":\" gpt-4o \",\"stream\":true}", Ok(" gpt-4o ")),
+    #("{}", Error(proxy.InvalidModelField)),
+    #("{\"model\":null}", Error(proxy.InvalidModelField)),
+    #("{\"model\":17}", Error(proxy.InvalidModelField)),
+    #("{\"model\":\"  \",}", Error(proxy.InvalidModelField)),
+    #("not json", Error(proxy.InvalidModelField)),
+    #("{\"model\":\"  \"}", Error(proxy.BlankModel)),
+  ]
+  list.each(cases, fn(scenario) {
+    let #(body, expected) = scenario
+    assert expected == check_extract_model(body)
+  })
 }
 
 // ── Config ──────────────────────────────────────────────────────
@@ -165,14 +176,6 @@ pub fn config_find_target_existing_test() {
 pub fn config_find_target_missing_returns_none_test() {
   let cfg = config.new([config.openai_target("openai", "http://x/v1", "k")])
   assert config.find_target(cfg, "nonexistent") == None
-}
-
-pub fn config_with_fallback_test() {
-  let target =
-    config.openai_target("openai", "http://x/v1", "k")
-    |> config.with_fallback("gpt-4-turbo")
-    |> config.with_fallback("llama-3")
-  assert target.fallbacks == ["gpt-4-turbo", "llama-3"]
 }
 
 // ── Target authentication ───────────────────────────────────────

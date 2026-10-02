@@ -10,8 +10,8 @@ ecosystem. `pig_proxy` sits between your agents and an OpenAI-compatible upstrea
   buffering only enough to track token usage across chunk boundaries.
 - Retries transient upstream failures (429/500/502/503/504 and network errors)
   with exponential backoff, jitter, and `Retry-After` support.
-- Resolves virtual model slugs to ordered fallback chains of upstream targets
-  (`pig_proxy/routes`), filtered by tool/JSON-schema capability.
+- Routes exact API/model pairs to one configured upstream target and fails
+  closed for unknown models, API mismatches, and ambiguous default targets.
 - Emits `:telemetry` events for every request and exposes a Prometheus
   `/metrics` endpoint with per-model request, latency, token, and cost metrics
   (cost is computed from a live [models.dev](https://models.dev) catalog).
@@ -282,7 +282,7 @@ Common module options:
 | `services.pig-proxy.upstreamBaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible upstream URL. |
 | `services.pig-proxy.provider` | `null` | Optional models.dev provider key for cost metrics. |
 | `services.pig-proxy.codex` | `false` | Enable persisted ChatGPT/Codex OAuth credentials. |
-| `services.pig-proxy.retriesPerTarget` | `1` | Additional attempts per upstream target before fallback. |
+| `services.pig-proxy.retriesPerTarget` | `1` | Additional attempts to the selected upstream target. |
 | `services.pig-proxy.modelsDevUrl` | `https://models.dev/api.json` | Model and pricing catalog URL. |
 | `services.pig-proxy.modelsRefreshMs` | `3600000` | Catalog refresh interval in milliseconds. |
 | `services.pig-proxy.environmentFile` | `null` | Runtime secrets file outside the Nix store. |
@@ -313,13 +313,14 @@ environment.persistence."/persist".directories = [
 
 ## Programmatic configuration
 
-For multiple upstreams, virtual model routing, or fallback chains, build a
+For multiple upstreams, exact model routing, or API-specific targets, build
 `ProxyConfig` directly instead of using `from_env`, then hand it to
 `runtime.start` (which brings up the supervisor tree and returns the
 `ServerState`) and `server.start`:
 
 ```gleam
 import gleam/erlang/process
+import pig_otel
 import pig_proxy/config
 import pig_proxy/runtime
 import pig_proxy/server
@@ -327,13 +328,16 @@ import pig_proxy/server
 pub fn main() {
   let openai =
     config.openai_target("openai", "https://api.openai.com/v1", "sk-...")
-    |> config.with_fallback("gpt-4o-mini")
 
-  let ollama =
-    config.openai_target("ollama", "http://localhost:11434/v1", "ollama")
+  let codex =
+    config.codex_target("codex", "https://chatgpt.com/backend-api/codex")
 
   let cfg =
-    config.new([openai, ollama])
+    config.new([openai, codex])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, "gpt-4o", "openai"),
+      config.model_route(pig_otel.Responses, "o3", "codex"),
+    ])
     |> config.with_port(8080)
     |> config.with_retries_per_target(1)
 
@@ -343,19 +347,11 @@ pub fn main() {
 }
 ```
 
-Slug-based routing with fallback chains lives in `pig_proxy/routes`:
-
-```gleam
-import pig_proxy/routes
-
-let routes = [
-  routes.route_with_fallbacks("smart-model", "openai", ["ollama"]),
-]
-```
-
-A request for `"model": "smart-model"` resolves to `openai` first;
-`routes.filter_by_capability` further narrows the chain by whether the request
-needs tool calls or strict JSON schema support.
+`config.with_routes` installs exact API/model-to-target routes. Every strict
+route must reference an existing target that supports that API, and an empty
+route table is invalid. Configurations without explicit routes accept requests
+only when exactly one target is configured. Retries may repeat attempts to the
+selected target; the proxy does not advertise cross-provider fallback.
 
 ## OpenTelemetry
 
