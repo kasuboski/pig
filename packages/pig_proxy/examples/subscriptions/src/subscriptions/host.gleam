@@ -9,6 +9,8 @@ import pig_proxy/runtime
 import pig_proxy/server
 import subscriptions/config
 
+/// Run the loopback subscription host until SIGTERM, then stop with a bounded
+/// best-effort final export. Configuration failures exit without listening.
 pub fn main() -> Nil {
   case config.from_env() {
     Error(message) -> {

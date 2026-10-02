@@ -5,6 +5,16 @@
          terminate/2, code_change/3]).
 
 bootstrap() ->
+    %% OS OTEL_* values override app env in the official SDK/exporter. Scrub
+    %% them here too so a direct invocation cannot redirect captured content.
+    lists:foreach(fun(Entry) ->
+        case lists:prefix("OTEL_", Entry) of
+            true ->
+                [Key | _] = string:split(Entry, "="),
+                os:unsetenv(Key);
+            false -> ok
+        end
+    end, os:getenv()),
     {ok, _} = application:ensure_all_started(opentelemetry_exporter),
     {ok, _} = application:ensure_all_started(pig_proxy),
     opentelemetry:set_text_map_propagator(
@@ -16,7 +26,9 @@ bootstrap() ->
     nil.
 
 configure_latitude(Endpoint, Key, Project) ->
-    application:set_env(opentelemetry_exporter, otlp_endpoint, Endpoint),
+    %% A signal-specific endpoint keeps /v1/traces intact; the generic endpoint
+    %% would append that suffix again.
+    application:set_env(opentelemetry_exporter, otlp_traces_endpoint, Endpoint),
     application:set_env(opentelemetry_exporter, otlp_protocol, http_protobuf),
     application:set_env(opentelemetry_exporter, otlp_compression, undefined),
     application:set_env(opentelemetry_exporter, otlp_headers,
@@ -52,7 +64,9 @@ shutdown(Cleanup) ->
     end),
     try
         Cleanup(),
-        flush_sdk(),
+        %% The batch processor's termination callback performs a blocking final
+        %% export. A force_flush cast here would hand off the queue just before
+        %% SDK shutdown kills the export worker, losing the final batch.
         stop_sdk(),
         Watchdog ! complete,
         nil
@@ -60,12 +74,6 @@ shutdown(Cleanup) ->
         %% Never dump a captured settings record or callback stack with credentials.
         io:format(standard_error, "subscriptions host shutdown failed; trace delivery is not guaranteed~n", []),
         erlang:halt(1)
-    end.
-
-flush_sdk() ->
-    case lists:keymember(opentelemetry, 1, application:which_applications()) of
-        true -> _ = otel_tracer_provider:force_flush(), ok;
-        false -> ok
     end.
 
 halt(Status) -> erlang:halt(Status).

@@ -329,6 +329,28 @@ Confirmed from the tag `opentelemetry_exporter/v1.10.0` README and source:
 - **Prompt injection on docs pages** (see Method): agents automating against these docs
   must ignore embedded hidden instructions.
 
+## Local host verification update (2026-10-02)
+
+The subscriptions host's actual loopback wire test exposed two implementation
+footguns that read-only review had missed:
+
+- Set the full `/v1/traces` URL with the exporter's **signal-specific**
+  `otlp_traces_endpoint` application key, not generic `otlp_endpoint`. Exporter
+  1.10.0 appends `/v1/traces` to the generic endpoint's path; using a full traces
+  URL there produced `/v1/traces/v1/traces` on the wire.
+- Do not issue a `force_flush` cast immediately before stopping the SDK. The
+  cast handed off the final queue to an export worker that shutdown then killed;
+  the receiver got zero spans. For this host, stopping the SDK directly uses the
+  batch processor's blocking termination export for the remaining queue. This
+  is still best effort, especially with an export already in flight or timeout.
+
+`mise run test-integration-subscriptions` now verifies decoded protobuf on the
+exact route, Latitude-shaped auth/project headers, no compression, relationships,
+usage, and metadata/conversation privacy assertions. The subscription host defaults
+its bounded conversation policy on at the user's explicit request; the reusable
+library remains metadata-only. This is local receiver-acknowledged evidence, not
+proof of hosted Latitude delivery or live subscription entitlement.
+
 ## Confirmed vs. assumed
 
 Confirmed (first-party docs + pinned source): endpoint/protocol/auth headers; JSON and

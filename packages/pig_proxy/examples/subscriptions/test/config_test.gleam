@@ -38,7 +38,17 @@ pub fn defaults_and_exact_routes_test() {
   should.equal(latitude, None)
   should.equal(proxy.bind, "127.0.0.1")
   should.equal(proxy.port, 8080)
-  let assert pig_otel.MetadataOnly = proxy.tracing
+  let assert pig_otel.Conversation(_) = proxy.tracing
+}
+
+pub fn explicit_metadata_only_override_test() {
+  let assert Ok(settings) =
+    check_config(
+      list.append(valid(), [
+        #("PIG_PROXY_CAPTURE_CONVERSATION", "false"),
+      ]),
+    )
+  let assert pig_otel.MetadataOnly = settings.proxy.tracing
 }
 
 pub fn required_variables_and_trimmed_models_test() {
@@ -128,6 +138,30 @@ pub fn base_overrides_are_exact_test() {
   should.equal(zai.base_url, "http://127.0.0.1:9002")
   should.equal(proxy_config.provider_string(chatgpt), "openai")
   should.equal(proxy_config.provider_string(zai), "zai")
+}
+
+pub fn latitude_endpoint_validation_matrix_test() {
+  list.each(
+    [
+      "https://ingest.latitude.so/invalid",
+      "http://remote.test/v1/traces",
+      "https://user:secret@ingest.latitude.so/v1/traces",
+      "https://ingest.latitude.so/v1/traces?key=secret",
+    ],
+    fn(endpoint) {
+      let assert Error(error) =
+        check_config(
+          list.append(valid(), [
+            #("PIG_LATITUDE_ENABLED", "true"),
+            #("LATITUDE_API_KEY", "secret"),
+            #("LATITUDE_PROJECT", "test-project"),
+            #("PIG_LATITUDE_ENDPOINT", endpoint),
+          ]),
+        )
+      should.equal(string.contains(error, "PIG_LATITUDE_ENDPOINT"), True)
+      should.equal(string.contains(error, "secret"), False)
+    },
+  )
 }
 
 pub fn capture_and_latitude_are_explicit_test() {

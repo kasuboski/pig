@@ -30,7 +30,7 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
   use capture <- result.try(boolean(
     lookup,
     "PIG_PROXY_CAPTURE_CONVERSATION",
-    False,
+    True,
   ))
   use latitude_enabled <- result.try(boolean(
     lookup,

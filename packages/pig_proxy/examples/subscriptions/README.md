@@ -37,15 +37,31 @@ or request rewriting are performed. The host binds only to `127.0.0.1` (port
 8080, optionally `PIG_PROXY_PORT`); there is no inbound authentication, so do
 not expose it to an untrusted network.
 
-Conversation capture is metadata-only by default. Set
-`PIG_PROXY_CAPTURE_CONVERSATION=true` to opt into bounded conversation
-projection. Content can include prompts and model responses; handle traces as
-sensitive data. Latitude export is disabled unless `PIG_LATITUDE_ENABLED=true`.
-When enabled, both `LATITUDE_API_KEY` and `LATITUDE_PROJECT` are required. The
+## Latitude and conversation capture
+
+For this subscription host, **bounded conversation capture is enabled by default**
+(as requested for this setup). Prompts, instructions, and model responses can leave
+this machine when export is enabled; treat traces as sensitive data. Set
+`PIG_PROXY_CAPTURE_CONVERSATION=false` for metadata-only traces. The reusable
+`pig_proxy` library still defaults to metadata-only. Projection is bounded and
+omits unsupported content; it is not raw HTTP-body recording or a general PII
+sanitizer. Review the [capture/privacy contract](../../../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
+
+Latitude export is disabled unless `PIG_LATITUDE_ENABLED=true`. Configure it before
+starting the host:
+
+```sh
+export PIG_LATITUDE_ENABLED=true
+export LATITUDE_API_KEY="..."
+export LATITUDE_PROJECT="your-project-slug"
+mise run run-subscriptions
+```
+
+Both `LATITUDE_API_KEY` and `LATITUDE_PROJECT` are required when enabled. The
 default endpoint is `https://ingest.latitude.so/v1/traces`; override it with
 `PIG_LATITUDE_ENDPOINT` for a local receiver. The host sets OTLP/HTTP protobuf,
 no compression, and the authorization/project headers directly; it deliberately
-does not inherit conflicting `OTEL_*` settings. This config is not evidence of
+clears conflicting `OTEL_*` settings inside bootstrap, even for direct invocation. This config is not evidence of
 cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
 429/503 responses or honor their Retry-After headers. Monitor exporter diagnostics;
 shutdown flush is best effort and does not prove remote persistence.
@@ -55,12 +71,31 @@ Clients must call raw upstream-compatible `/v1/responses` or
 the Codex backend expects `store: false`, `stream: true`, and an `instructions`
 string; send upstream-compatible input items. A Responses-capable client is
 required: no translation to Chat Completions occurs.
-The proxy preserves provider request bodies except its existing stream usage
-handling. Stop gracefully with SIGTERM: ingress is stopped first, then managed
-runtime actors, then the SDK is flushed and stopped. A 30-second host watchdog
+For example, using the exact IDs configured in your model lists:
+
+```sh
+curl --no-buffer http://127.0.0.1:8080/v1/responses \
+  -H 'content-type: application/json' \
+  -d '{"model":"YOUR_CHATGPT_MODEL_ID","store":false,"stream":true,"instructions":"Be concise.","input":[{"role":"user","content":[{"type":"input_text","text":"Say hello"}]}]}'
+
+curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"YOUR_ZAI_MODEL_ID","stream":true,"messages":[{"role":"user","content":"Say hello"}]}'
+```
+
+The proxy preserves provider request bodies except its existing Chat Completions
+stream-usage handling. Unknown or wrong-API model routes return 503 without an
+upstream attempt; missing or malformed models return 400.
+
+Stop gracefully with SIGTERM: ingress is stopped first, then managed runtime
+actors, then the SDK's blocking termination callback attempts the final queued
+export. No asynchronous force_flush cast is issued immediately before SDK stop.
+A 30-second host watchdog
 bounds the complete shutdown; timeout exits nonzero without claiming trace delivery.
 Ctrl-C/SIGINT uses the Erlang VM's default interrupt behavior, not this graceful
-path. The host exits after cleanup; it does not claim physical connection drain.
+path. Other signal events delivered to the replacement handler are ignored;
+SIGQUIT/SIGUSR1 do not retain the default VM handler's diagnostic actions.
+The host exits after cleanup; it does not claim physical connection drain.
 
 ## Verification
 
@@ -85,9 +120,21 @@ tests check route paths, model/body forwarding, provider-specific bearer and
 Codex account headers, Chat-only stream usage injection, rejected requests and
 zero upstream calls for validation/routing failures. SIGTERM must exit zero and
 close the listener; missing and corrupt isolated auth files must fail startup.
-Latitude is pointed at a refused loopback port while business requests continue
-successfully. This acceptance check does not verify OTLP protobuf delivery or
-content-versus-metadata span projections. No real credential file or external
-provider is used. The acceptance suite is compiled with normal tests and prints
-an explicit skip unless
-`PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1` is set.
+A loopback OTLP receiver checks the exact `/v1/traces` path, fake Latitude auth
+and project headers, uncompressed protobuf, and `service.name`. It decodes and
+acknowledges 20 spans per capture mode: 12 from successful requests and 8 from
+rejections. Assertions cover span relationships, provider/model/API, response
+IDs, finish reasons, input/output/cache usage, and credential exclusion. Metadata
+mode exports no conversation; the host's default capture mode includes fixture
+prompts and responses for both APIs in buffered and SSE form. A refused exporter
+endpoint must leave business requests and graceful shutdown working. The gate
+delays the SDK's scheduled batch timer and asserts zero exports before SIGTERM,
+so shutdown must deliver the observed spans. Conflicting OTEL endpoint, header,
+protocol, compression, and console-export settings are injected into the child
+process to verify that they cannot redirect or print captured content.
+
+No real credential file or external provider is used. The acceptance suite is
+compiled with normal tests and prints an explicit skip unless
+`PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1` is set. Receiver acknowledgement proves local
+wire delivery, not Latitude cloud ingestion; check your project's Traces view on
+the first live run.
