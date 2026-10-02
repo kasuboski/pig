@@ -27,11 +27,14 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import logging
+import otel/context
+import pig_otel
 import pig_proxy/circuit_actor
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/proxy
 import pig_proxy/retry
 import pig_proxy/telemetry
+import pig_proxy/tracing
 import pig_proxy/vault
 import pig_transport as transport
 
@@ -108,6 +111,7 @@ pub type Executor {
     transport: transport.Transport,
     circuit: Option(process.Subject(circuit_actor.CircuitMsg)),
     vault: Option(process.Subject(vault.VaultMsg)),
+    trace: Option(tracing.Owner),
     /// Additional attempts per target after the first. Resets per target.
     retries_per_target: Int,
     upstream_timeout_ms: Int,
@@ -125,10 +129,16 @@ pub fn executor(
     transport:,
     circuit:,
     vault: None,
+    trace: None,
     retries_per_target: default_retries_per_target,
     upstream_timeout_ms: default_upstream_timeout_ms,
     sleep: fn(ms) { process.sleep(ms) },
   )
+}
+
+/// Use the registered request owner for all physical attempts.
+pub fn with_tracing(executor: Executor, owner: tracing.Owner) -> Executor {
+  Executor(..executor, trace: Some(owner))
 }
 
 /// Set the credential vault used to resolve live Codex tokens.
@@ -315,8 +325,34 @@ fn sync_attempt(
   target: UpstreamTarget,
   auth: proxy.ResolvedAuth,
 ) -> AttemptResult {
-  let req = build_transport_request(executor, request, target, auth, False)
-  case transport.sync(executor.transport, req) {
+  let ctx = begin_attempt(executor, target.id)
+  let req = build_transport_request(executor, request, target, auth, False, ctx)
+  // This is the first actual send seam: skipped circuits never reach it, and
+  // the body is the effective request payload (including route rewrites).
+  case executor.trace {
+    Some(owner) -> {
+      let _ =
+        tracing.call(
+          owner,
+          tracing.InputSent(
+            bit_array.from_string(req.body),
+            tracing.body_encoding(req.headers),
+          ),
+        )
+      Nil
+    }
+    None -> Nil
+  }
+  let response =
+    context.with_context(ctx, fn() { transport.sync(executor.transport, req) })
+  case executor.trace {
+    Some(owner) -> {
+      let _ = tracing.call(owner, tracing.SyncTerminal(response))
+      Nil
+    }
+    None -> Nil
+  }
+  case response {
     transport.TransportError(reason) -> Transient(reason:, retry_after: None)
     transport.Response(status:, headers:, body:) ->
       case retry.is_retryable_status(status) {
@@ -340,9 +376,27 @@ fn stream_attempt(
   target: UpstreamTarget,
   auth: proxy.ResolvedAuth,
 ) -> AttemptResult {
-  let req = build_transport_request(executor, request, target, auth, True)
-  let handle = transport.open(executor.transport, req)
-  case transport.receive(handle, executor.upstream_timeout_ms) {
+  let ctx = begin_attempt(executor, target.id)
+  let req = build_transport_request(executor, request, target, auth, True, ctx)
+  let original = executor.transport
+  let adapter =
+    transport.Transport(..original, stream: fn(req, sink) {
+      context.with_context(ctx, fn() { original.stream(req, sink) })
+    })
+  let head = process.new_subject()
+  let handle = case executor.trace {
+    Some(owner) -> {
+      let assert tracing.Opened(handle) =
+        tracing.call(owner, tracing.OpenStream(adapter, req, head))
+      handle
+    }
+    None -> transport.open(adapter, req)
+  }
+  let received = case executor.trace {
+    Some(_) -> process.receive(head, executor.upstream_timeout_ms)
+    None -> transport.receive(handle, executor.upstream_timeout_ms)
+  }
+  let attempted = case received {
     Ok(transport.Committed(status:, ..)) -> Stream(status:, run: handle)
     Ok(transport.Rejected(status:, headers:, body:)) ->
       case retry.is_retryable_status(status) {
@@ -376,6 +430,26 @@ fn stream_attempt(
       Transient(reason: "timeout waiting for upstream head", retry_after: None)
     }
   }
+  case attempted, executor.trace {
+    Stream(..), _ -> Nil
+    _, Some(owner) -> {
+      let _ = tracing.call(owner, tracing.AbortAttempt)
+      Nil
+    }
+    _, None -> Nil
+  }
+  attempted
+}
+
+fn begin_attempt(executor: Executor, target: String) -> context.Context {
+  case executor.trace {
+    Some(owner) -> {
+      let assert tracing.Current(ctx) =
+        tracing.call(owner, tracing.BeginAttempt(target))
+      ctx
+    }
+    None -> context.current()
+  }
 }
 
 fn build_transport_request(
@@ -384,15 +458,19 @@ fn build_transport_request(
   target: UpstreamTarget,
   auth: proxy.ResolvedAuth,
   streaming: Bool,
+  ctx: context.Context,
 ) -> transport.Request {
   transport.Request(
     method: request.method,
     url: proxy.resolve_upstream_url(target, request.path),
-    headers: proxy.build_upstream_headers(
-      request.headers,
-      target.base_url,
-      auth,
-      streaming,
+    headers: pig_otel.outbound(
+      ctx,
+      proxy.build_upstream_headers(
+        request.headers,
+        target.base_url,
+        auth,
+        streaming,
+      ),
     ),
     body: request.body,
     timeout_ms: executor.upstream_timeout_ms,

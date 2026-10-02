@@ -1,0 +1,12 @@
+[
+  {"name":"default identity","request_headers":[],"response_headers":[["content-type","application/json"]],"input":true,"output":true},
+  {"name":"explicit identity and MIME parameters","request_headers":[["Content-Encoding"," Identity "]],"response_headers":[["CONTENT-TYPE"," Application/JSON ; charset=utf-8 "],["Content-Encoding","identity"]],"input":true,"output":true},
+  {"name":"gzip request","request_headers":[["content-encoding","gzip"]],"response_headers":[["content-type","application/json"]],"input":false,"output":true},
+  {"name":"br request","request_headers":[["content-encoding","br"]],"response_headers":[["content-type","application/json"]],"input":false,"output":true},
+  {"name":"conflicting request encodings","request_headers":[["content-encoding","identity"],["Content-Encoding","gzip"]],"response_headers":[["content-type","application/json"]],"input":false,"output":true},
+  {"name":"JSON prefix is not JSON","request_headers":[],"response_headers":[["content-type","application/jsonp"]],"input":true,"output":false},
+  {"name":"malformed MIME suffix","request_headers":[],"response_headers":[["content-type","application/json-malicious; charset=utf-8"]],"input":true,"output":false},
+  {"name":"conflicting response MIME","request_headers":[],"response_headers":[["content-type","application/json"],["Content-Type","text/plain"]],"input":true,"output":false},
+  {"name":"compressed response","request_headers":[],"response_headers":[["content-type","application/json"],["content-encoding","gzip"]],"input":true,"output":false},
+  {"name":"missing MIME","request_headers":[],"response_headers":[],"input":true,"output":false}
+]

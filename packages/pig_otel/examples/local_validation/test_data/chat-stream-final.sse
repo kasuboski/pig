@@ -1,0 +1,4 @@
+data: {"id":"fixture_response","model":"fixture_model","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}
+
+data: [DONE]
+

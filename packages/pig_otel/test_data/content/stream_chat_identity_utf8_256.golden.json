@@ -1,0 +1,1 @@
+{"gen_ai.output.messages":[{"finish_reason":"tool_call","parts":[{"arguments":{},"id":"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññ","name":"tool","type":"tool_call"}],"role":"assistant"}],"pig.content.output.reason":"complete","pig.content.output.status":"captured"}

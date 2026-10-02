@@ -36,6 +36,10 @@ description = "Run pig_proxy integration tests (boots the proxy + forwards a cha
 run = "cd packages/pig_proxy && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
 
+[tasks.test-integration-otel]
+description = "Validate local official SDK recording and actual OTLP export (no model credentials)"
+run = "scripts/validate_otel.sh"
+
 [tasks.proxy]
 description = "Run the pig_proxy server (reads OPENAI_COMPAT_* / PIG_PROXY_* env)"
 run = "cd packages/pig_proxy && gleam run"

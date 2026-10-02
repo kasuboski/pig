@@ -1,0 +1,1 @@
+{"input":[{"arguments":"{}","call_id":"call_media","name":"inspect","type":"function_call"},{"call_id":"call_media","output":"[{\"api_key\":\"SECRET\",\"image_url\":\"application reference\",\"type\":\"input_image\"},{\"type\":\"custom\",\"value\":\"PRIVATE\"},[42,true]]","type":"function_call_output"}]}

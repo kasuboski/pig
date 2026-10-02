@@ -15,13 +15,8 @@ ensure_started() ->
 sync_request(Method, Url, Headers, Body, TimeoutMs) ->
     Opts = [{recv_timeout, TimeoutMs}],
     case hackney:request(Method, Url, Headers, Body, Opts) of
-        {ok, StatusCode, RespHeaders, Ref} ->
-            case hackney:body(Ref) of
-                {ok, RespBody} ->
-                    {response, StatusCode, RespHeaders, RespBody};
-                {error, Reason} ->
-                    {transport_error, format_error(Reason)}
-            end;
+        {ok, StatusCode, RespHeaders, RespBody} ->
+            {response, StatusCode, RespHeaders, RespBody};
         {ok, StatusCode, RespHeaders} ->
             {response, StatusCode, RespHeaders, <<>>};
         {error, Reason} ->

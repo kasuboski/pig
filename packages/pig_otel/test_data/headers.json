@@ -1,0 +1,8 @@
+[
+  {"name":"empty", "input":[], "scrubbed":[], "without_baggage":[]},
+  {"name":"unrelated duplicates retain spelling and order", "input":[["x-keep","one"],["X-keep","two"]], "scrubbed":[["x-keep","one"],["X-keep","two"]], "without_baggage":[["x-keep","one"],["X-keep","two"]]},
+  {"name":"mixed-case malformed baggage is dropped without parsing", "input":[["bAgGaGe","private"],["Baggage","malformed;;;"]], "scrubbed":[], "without_baggage":[]},
+  {"name":"all propagation duplicates removed, unrelated headers untouched", "input":[["TraceParent","old"],["traceparent","duplicate"],["TrAcEsTaTe","old"],["tracestate","duplicate"],["Baggage","private"],["baggage","malformed;;;"],["x-keep","one"],["X-keep","two"]], "scrubbed":[["x-keep","one"],["X-keep","two"]], "without_baggage":[["TraceParent","old"],["traceparent","duplicate"],["TrAcEsTaTe","old"],["tracestate","duplicate"],["x-keep","one"],["X-keep","two"]]},
+  {"name":"similar names are not propagation fields", "input":[["x-traceparent","one"],["baggage-extra","two"]], "scrubbed":[["x-traceparent","one"],["baggage-extra","two"]], "without_baggage":[["x-traceparent","one"],["baggage-extra","two"]]},
+  {"name":"credential scrubbing remains the caller responsibility", "input":[["authorization","fixture-credential"],["traceparent","old"]], "scrubbed":[["authorization","fixture-credential"]], "without_baggage":[["authorization","fixture-credential"],["traceparent","old"]]}
+]

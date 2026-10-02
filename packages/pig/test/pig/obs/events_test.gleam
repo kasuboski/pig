@@ -76,11 +76,7 @@ pub fn event_name_matches_inference_stop_test() {
 
 /// Verify event name matches tool start.
 pub fn event_name_matches_tool_start_test() {
-  assert events.event_name(events.ToolStart(
-      tool_name: "x",
-      tool_call_id: "y",
-      arguments_json: "{}",
-    ))
+  assert events.event_name(events.ToolStart(tool_name: "x", tool_call_id: "y"))
     == events.tool_start_name()
 }
 
@@ -165,8 +161,7 @@ pub fn different_variants_not_equal_test() {
       message_count: 1,
       settings: provider.default_settings(),
     )
-  let e2 =
-    events.ToolStart(tool_name: "a", tool_call_id: "1", arguments_json: "{}")
+  let e2 = events.ToolStart(tool_name: "a", tool_call_id: "1")
   assert e1 != e2
 }
 
@@ -197,22 +192,14 @@ pub fn emit_all_variants_test() {
     error_type: "test_error",
     settings: provider.default_settings(),
   ))
-  events.emit(events.ToolStart(
-    tool_name: "read_file",
-    tool_call_id: "call_123",
-    arguments_json: "{}",
-  ))
+  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_123"))
   events.emit(events.ToolStop(
     tool_name: "read_file",
     tool_call_id: "call_123",
     duration_ms: 42,
     result: "{\"files\":[]}",
   ))
-  events.emit(events.ToolException(
-    tool_name: "bash",
-    tool_call_id: "call_456",
-    arguments_json: "{}",
-  ))
+  events.emit(events.ToolException(tool_name: "bash", tool_call_id: "call_456"))
   Nil
 }
 
@@ -314,14 +301,11 @@ pub fn decode_preserves_tool_start_test() {
       metadata: dict.from_list([
         #("tool_name", "bash"),
         #("tool_call_id", "c1"),
-        #("arguments_json", "{\"foo\":\"bar\"}"),
       ]),
     )
-  let assert events.ToolStart(tool_name:, tool_call_id:, arguments_json:) =
-    events.decode(raw)
+  let assert events.ToolStart(tool_name:, tool_call_id:) = events.decode(raw)
   assert tool_name == "bash"
   assert tool_call_id == "c1"
-  assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
 /// Verify decode preserves tool stop.
@@ -353,14 +337,12 @@ pub fn decode_preserves_tool_exception_test() {
       metadata: dict.from_list([
         #("tool_name", "bash"),
         #("tool_call_id", "c1"),
-        #("arguments_json", "{\"foo\":\"bar\"}"),
       ]),
     )
-  let assert events.ToolException(tool_name:, tool_call_id:, arguments_json:) =
+  let assert events.ToolException(tool_name:, tool_call_id:) =
     events.decode(raw)
   assert tool_name == "bash"
   assert tool_call_id == "c1"
-  assert arguments_json == "{\"foo\":\"bar\"}"
 }
 
 /// Verify decode preserves inference exception.
@@ -602,4 +584,19 @@ pub fn to_dispatcher_sends_all_variants_test() {
 
   process.send(disp, dispatcher.Stop)
   Nil
+}
+
+/// Both direct lightweight start/exception paths omit content entirely.
+pub fn lightweight_tool_events_contain_identity_only_test() {
+  let handle =
+    listener.attach_to([events.tool_start_name(), events.tool_exception_name()])
+  events.emit(events.ToolStart("gate", "call-1"))
+  events.emit(events.ToolException("gate", "call-1"))
+  let captured = listener.get_raw_events(handle)
+  listener.detach(handle)
+  assert list.length(captured) == 2
+  assert list.all(captured, fn(raw) {
+    raw.metadata
+    == dict.from_list([#("tool_name", "gate"), #("tool_call_id", "call-1")])
+  })
 }

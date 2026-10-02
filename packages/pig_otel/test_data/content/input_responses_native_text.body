@@ -1,0 +1,1 @@
+{"input":[{"arguments":"{}","call_id":"call_media","name":"inspect","type":"function_call"},{"call_id":"call_media","output":[{"text":"safe result","type":"input_text"}],"type":"function_call_output"}]}

@@ -17,6 +17,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/otp/actor
+import pig_proxy/metric_labels
 import pig_proxy/telemetry
 
 /// A per-model metric snapshot for Prometheus rendering.
@@ -44,6 +45,8 @@ pub type MetricsSnapshot {
 pub type MetricsMsg {
   /// A typed telemetry event forwarded from `telemetry.emit`.
   ProxyEvent(event: telemetry.ProxyEvent)
+  /// Already bounded by the owning runtime's immutable emitter policy.
+  NormalizedEvent(event: telemetry.ProxyEvent)
   /// Request a snapshot of all model metrics.
   GetSnapshot(reply_to: process.Subject(MetricsSnapshot))
 }
@@ -95,7 +98,9 @@ fn fresh_model_metrics() -> ModelMetrics {
 
 fn handle_message(state: MetricsState, msg: MetricsMsg) {
   case msg {
-    ProxyEvent(event:) -> actor.continue(process_event(state, event))
+    ProxyEvent(event:) ->
+      actor.continue(process_event(state, telemetry.normalize(event)))
+    NormalizedEvent(event) -> actor.continue(process_event(state, event))
     GetSnapshot(reply_to) -> {
       let snapshot =
         MetricsSnapshot(
@@ -265,6 +270,20 @@ pub fn attach_named(name: process.Name(MetricsMsg)) -> telemetry.HandlerId {
   telemetry.attach_typed(fn(event) {
     case process.named(name) {
       Ok(_) -> process.send(process.named_subject(name), ProxyEvent(event:))
+      Error(_) -> Nil
+    }
+  })
+}
+
+/// Runtime-local forwarding follows this named actor after supervised restart.
+/// It does not register a global handler or consume another runtime's events.
+pub fn emitter(
+  name: process.Name(MetricsMsg),
+  identities: metric_labels.Identities,
+) -> telemetry.Emitter {
+  telemetry.emitter(identities, fn(event) {
+    case process.named(name) {
+      Ok(_) -> process.send(process.named_subject(name), NormalizedEvent(event))
       Error(_) -> Nil
     }
   })

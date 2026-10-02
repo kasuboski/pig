@@ -38,11 +38,7 @@ pub fn captures_multiple_events_in_order_test() {
     message_count: 3,
     settings: provider.default_settings(),
   ))
-  events.emit(events.ToolStart(
-    tool_name: "read_file",
-    tool_call_id: "call_1",
-    arguments_json: "{}",
-  ))
+  events.emit(events.ToolStart(tool_name: "read_file", tool_call_id: "call_1"))
   events.emit(events.ToolStop(
     tool_name: "read_file",
     tool_call_id: "call_1",
@@ -69,11 +65,7 @@ pub fn captures_multiple_events_in_order_test() {
         message_count: 3,
         settings: provider.default_settings(),
       ),
-      events.ToolStart(
-        tool_name: "read_file",
-        tool_call_id: "call_1",
-        arguments_json: "{}",
-      ),
+      events.ToolStart(tool_name: "read_file", tool_call_id: "call_1"),
       events.ToolStop(
         tool_name: "read_file",
         tool_call_id: "call_1",
@@ -149,11 +141,7 @@ pub fn attach_to_specific_events_test() {
     message_count: 1,
     settings: provider.default_settings(),
   ))
-  events.emit(events.ToolStart(
-    tool_name: "bash",
-    tool_call_id: "c1",
-    arguments_json: "{}",
-  ))
+  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1"))
   events.emit(events.ToolStop(
     tool_name: "bash",
     tool_call_id: "c1",
@@ -165,11 +153,7 @@ pub fn attach_to_specific_events_test() {
   // Only tool events captured, inference event ignored
   assert captured
     == [
-      events.ToolStart(
-        tool_name: "bash",
-        tool_call_id: "c1",
-        arguments_json: "{}",
-      ),
+      events.ToolStart(tool_name: "bash", tool_call_id: "c1"),
       events.ToolStop(
         tool_name: "bash",
         tool_call_id: "c1",
@@ -189,11 +173,7 @@ pub fn multiple_listeners_independent_test() {
     message_count: 1,
     settings: provider.default_settings(),
   ))
-  events.emit(events.ToolStart(
-    tool_name: "bash",
-    tool_call_id: "c1",
-    arguments_json: "{}",
-  ))
+  events.emit(events.ToolStart(tool_name: "bash", tool_call_id: "c1"))
   let e1 = listener.get_events(h1)
   let e2 = listener.get_events(h2)
   listener.detach(h1)
@@ -208,11 +188,7 @@ pub fn multiple_listeners_independent_test() {
     ]
   assert e2
     == [
-      events.ToolStart(
-        tool_name: "bash",
-        tool_call_id: "c1",
-        arguments_json: "{}",
-      ),
+      events.ToolStart(tool_name: "bash", tool_call_id: "c1"),
     ]
 }
 

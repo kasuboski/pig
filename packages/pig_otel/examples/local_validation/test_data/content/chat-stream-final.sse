@@ -1,0 +1,6 @@
+data: {"id":"response-chat-content","object":"chat.completion.chunk","model":"fixture_model","choices":[{"index":0,"delta":{"content":"OUTPUT","reasoning_content":"NEVER_EXPORT_REASONING","raw_error":"NEVER_EXPORT_RAW_ERROR"},"finish_reason":"stop"},{"index":1,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"password\":\"NEVER_EXPORT_NESTED_SECRET\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"id":"response-chat-content","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
+
+data: [DONE]
+

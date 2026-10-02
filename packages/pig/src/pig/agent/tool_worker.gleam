@@ -2,6 +2,7 @@
 
 import gleam/erlang/process
 import gleam/json
+import otel/context
 import pig/tool
 import pig/tool/execution
 import pig_protocol/message.{type ToolCall}
@@ -30,6 +31,7 @@ type CoordinatorMessage {
 pub fn start(
   registry: tool.ToolRegistry,
   call: ToolCall,
+  parent: context.Context,
   notify: fn(Result(json.Json, tool.ToolError), Int) -> Nil,
 ) -> Worker {
   let owner = process.self()
@@ -42,7 +44,10 @@ pub fn start(
       let started_at = now()
       let source =
         process.spawn_unlinked(fn() {
-          let result = execution.execute_tool(registry, call)
+          let result =
+            context.with_context(parent, fn() {
+              execution.execute_tool(registry, call)
+            })
           process.send(source_messages, Finished(result, now() - started_at))
           hold_until_released()
         })

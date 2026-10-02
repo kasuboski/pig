@@ -18,6 +18,8 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import logging
 import mist
+import otel/context
+import pig_otel
 import pig_proxy/circuit_actor
 import pig_proxy/config.{type ProxyConfig}
 import pig_proxy/execution
@@ -28,6 +30,8 @@ import pig_proxy/model_catalog
 import pig_proxy/proxy
 import pig_proxy/routes.{type VirtualRoute}
 import pig_proxy/telemetry
+import pig_proxy/trace_metadata
+import pig_proxy/tracing
 import pig_proxy/vault
 
 /// Maximum request body size (10 MB).
@@ -36,7 +40,12 @@ const max_body_bytes = 10_485_760
 /// Server state captured in the handler closure.
 pub type ServerState {
   ServerState(
+    /// Managed runtime root, stopped by `runtime.stop`. `None` means the host
+    /// owns external supervision and is responsible for lifecycle cleanup.
+    supervisor: Option(process.Pid),
     config: ProxyConfig,
+    emitter: telemetry.Emitter,
+    owners: tracing.Owners,
     routes: List(VirtualRoute),
     /// Per-target circuit breaker, addressed by name (supervised). Resolved
     /// per request so a restarted breaker is reached transparently.
@@ -102,20 +111,51 @@ fn proxy_request(
   state: ServerState,
   path: String,
 ) -> response.Response(mist.ResponseData) {
+  let owner =
+    tracing.register_with_policy(
+      state.owners,
+      state.config.tracing,
+      req.headers,
+      path,
+    )
+  let assert tracing.Current(server_context) =
+    tracing.call(owner, tracing.ServerContext)
+  use <- context.with_context(server_context)
   case mist.read_body(req, max_body_bytes) {
-    Error(_) -> bad_request_response("request body too large or malformed")
+    Error(_) -> {
+      let rendered = bad_request_response("request body too large or malformed")
+      let _ =
+        tracing.call(
+          owner,
+          tracing.LogicalTerminal(
+            pig_otel.Failed("invalid_request"),
+            trace_metadata.empty(),
+            400,
+          ),
+        )
+      let _ =
+        tracing.call(
+          owner,
+          tracing.Downstream(pig_otel.Failed("invalid_request")),
+        )
+      rendered
+    }
     Ok(body_req) -> {
       let body = bit_array_to_string(body_req.body)
       let model = proxy.extract_model(body)
       let streaming = proxy.is_streaming(body)
       let method = method_to_string(req.method)
 
-      telemetry.emit(telemetry.RequestStart(model:, streaming:))
+      telemetry.emit_scoped(
+        state.emitter,
+        telemetry.RequestStart(model:, streaming:),
+      )
 
       let exec =
         execution.executor(hackney.transport(), resolve_named(state.circuit))
         |> maybe_with_vault(state.vault)
         |> execution.with_retries_per_target(state.config.retries_per_target)
+        |> execution.with_tracing(owner)
       let request =
         execution.ProxyRequest(
           method:,
@@ -126,14 +166,38 @@ fn proxy_request(
         )
       let chain = resolve_chain(state, model)
 
-      case streaming {
-        True -> execute_stream(req, exec, request, chain, path, model)
-        False -> {
-          let outcome = execution.orchestrate(exec, request, chain)
-          emit_outcome_telemetry(outcome, model)
-          render_outcome(outcome)
-        }
+      let api = case path {
+        "/v1/responses" -> pig_otel.Responses
+        _ -> pig_otel.ChatCompletions
       }
+      let provider = case chain.targets {
+        [target, ..] -> target.provider
+        [] -> None
+      }
+      let assert tracing.Current(ctx) =
+        tracing.call(owner, tracing.BeginInference(api, provider, model))
+      context.with_context(ctx, fn() {
+        case streaming {
+          True ->
+            execute_stream(
+              req,
+              exec,
+              request,
+              chain,
+              path,
+              model,
+              owner,
+              state.emitter,
+            )
+          False -> {
+            let outcome = execution.orchestrate(exec, request, chain)
+            emit_outcome_telemetry(outcome, model, state.emitter)
+            let rendered = render_outcome(outcome)
+            finish_buffered(owner, api, outcome, False)
+            rendered
+          }
+        }
+      })
     }
   }
 }
@@ -178,7 +242,11 @@ fn resolve_named(name: process.Name(a)) -> Option(process.Subject(a)) {
 
 /// Emit exactly one terminal telemetry event, attributed to the target
 /// that produced the committed outcome (or the last attempted target).
-fn emit_outcome_telemetry(outcome: execution.Outcome, model: String) -> Nil {
+fn emit_outcome_telemetry(
+  outcome: execution.Outcome,
+  model: String,
+  emitter: telemetry.Emitter,
+) -> Nil {
   case outcome {
     execution.Committed(
       target_id:,
@@ -188,30 +256,39 @@ fn emit_outcome_telemetry(outcome: execution.Outcome, model: String) -> Nil {
       duration_ms:,
       ..,
     ) ->
-      telemetry.emit(telemetry.RequestStop(
-        target_id:,
-        provider:,
-        model:,
-        status:,
-        duration_ms:,
-        input_tokens: usage.prompt,
-        output_tokens: usage.completion,
-        cached_input_tokens: usage.cached,
-      ))
+      telemetry.emit_scoped(
+        emitter,
+        telemetry.RequestStop(
+          target_id:,
+          provider:,
+          model:,
+          status:,
+          duration_ms:,
+          input_tokens: usage.prompt,
+          output_tokens: usage.completion,
+          cached_input_tokens: usage.cached,
+        ),
+      )
     execution.Exhausted(target_id:, provider:, reason:, ..) ->
-      telemetry.emit(telemetry.RequestError(
-        target_id: option.unwrap(target_id, ""),
-        provider:,
-        model:,
-        error_type: reason,
-      ))
+      telemetry.emit_scoped(
+        emitter,
+        telemetry.RequestError(
+          target_id: option.unwrap(target_id, ""),
+          provider:,
+          model:,
+          error_type: reason,
+        ),
+      )
     execution.NoTargets(..) ->
-      telemetry.emit(telemetry.RequestError(
-        target_id: "",
-        provider: "",
-        model:,
-        error_type: "no upstream targets available",
-      ))
+      telemetry.emit_scoped(
+        emitter,
+        telemetry.RequestError(
+          target_id: "",
+          provider: "",
+          model:,
+          error_type: "no upstream targets available",
+        ),
+      )
     // A streaming commit is driven onto the connection by `execute_stream`;
     // its terminal telemetry is emitted by the chunked loop. Reaching here
     // would mean a commit was never driven — emit nothing.
@@ -262,6 +339,8 @@ fn execute_stream(
   chain: execution.FallbackChain,
   path: String,
   model: String,
+  owner: tracing.Owner,
+  emitter: telemetry.Emitter,
 ) -> response.Response(mist.ResponseData) {
   // stream_options.include_usage is a Chat Completions feature; the
   // Responses API emits usage in response.completed regardless.
@@ -274,7 +353,9 @@ fn execute_stream(
   let start_time = telemetry.system_time()
   let outcome = execution.orchestrate_stream(exec, stream_request, chain)
   case outcome {
-    execution.CommittedStream(target_id:, provider:, status:, run:) ->
+    execution.CommittedStream(target_id:, provider:, status:, run:) -> {
+      let _ =
+        tracing.call(owner, tracing.SelectStream(target_id, provider, status))
       proxy.stream_response(
         req,
         run,
@@ -283,14 +364,69 @@ fn execute_stream(
         model,
         status,
         start_time,
+        owner,
+        emitter,
       )
+    }
     execution.Committed(..)
     | execution.Exhausted(..)
     | execution.NoTargets(..) -> {
-      emit_outcome_telemetry(outcome, model)
-      render_outcome(outcome)
+      emit_outcome_telemetry(outcome, model, emitter)
+      let rendered = render_outcome(outcome)
+      let api = case path {
+        "/v1/responses" -> pig_otel.Responses
+        _ -> pig_otel.ChatCompletions
+      }
+      finish_buffered(owner, api, outcome, True)
+      rendered
     }
   }
+}
+
+fn finish_buffered(
+  owner: tracing.Owner,
+  api: pig_otel.Api,
+  outcome: execution.Outcome,
+  requested_streaming: Bool,
+) -> Nil {
+  let #(terminal, metadata, status) = case outcome {
+    execution.Committed(status:, headers:, body:, ..) -> {
+      let _ =
+        tracing.call(
+          owner,
+          tracing.SelectedBufferedResponse(
+            requested_streaming,
+            status,
+            headers,
+            body,
+          ),
+        )
+      #(
+        tracing.http_outcome(status),
+        trace_metadata.buffered(api, bit_array_to_string(body)),
+        status,
+      )
+    }
+    execution.Exhausted(..) -> #(
+      pig_otel.Failed("transport_error"),
+      trace_metadata.empty(),
+      502,
+    )
+    execution.NoTargets(..) -> #(
+      pig_otel.Failed("upstream_error"),
+      trace_metadata.empty(),
+      503,
+    )
+    execution.CommittedStream(..) -> #(
+      pig_otel.Failed("callback_error"),
+      trace_metadata.empty(),
+      500,
+    )
+  }
+  let _ =
+    tracing.call(owner, tracing.LogicalTerminal(terminal, metadata, status))
+  let _ = tracing.call(owner, tracing.Downstream(terminal))
+  Nil
 }
 
 // ── Static responses ────────────────────────────────────────────

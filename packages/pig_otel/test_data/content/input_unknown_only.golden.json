@@ -1,0 +1,5 @@
+{
+  "pig.content.input.status": "filtered",
+  "pig.content.input.reason": "redacted_or_excluded",
+  "gen_ai.input.messages": []
+}

@@ -1,0 +1,6 @@
+{
+  "repository": "open-telemetry/semantic-conventions-genai",
+  "revision": "8a3767d6c5d09bc0917722720973c0c44182d960",
+  "source": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/8a3767d6c5d09bc0917722720973c0c44182d960/model/gen-ai/",
+  "scope": "text, tool calls/results, names-only definitions; no reasoning/media"
+}

@@ -12,7 +12,7 @@ gleam_otp = ">= 1.2.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 mist = ">= 6.0.0 and < 7.0.0"
-hackney = ">= 1.18.0 and < 2.0.0"
+hackney = "== 4.8.4"
 envoy = ">= 1.0.0 and < 2.0.0"
 logging = ">= 1.0.0 and < 2.0.0"
 telemetry = ">= 1.0.0 and < 2.0.0"
@@ -20,6 +20,8 @@ simplifile = ">= 2.2.0 and < 3.0.0"
 filepath = ">= 1.0.0 and < 2.0.0"
 pig_protocol = { path = "../pig_protocol" }
 pig_transport = { path = "../pig_transport" }
+pig_otel = { path = "../pig_otel" }
+otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

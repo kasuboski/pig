@@ -1,0 +1,5 @@
+: comment
+event: message
+data: {"choices":
+data: [{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}
+

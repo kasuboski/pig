@@ -4,6 +4,7 @@
 //// tool execution live in cancellable workers, so the actor remains available
 //// for cancellation, history, and settings messages while effects are active.
 
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -12,6 +13,7 @@ import gleam/otp/actor.{type StartError, Started}
 import gleam/otp/supervision
 import gleam/string
 import logging
+import otel/context
 import pig/agent/client_watcher
 import pig/agent/durable_session
 import pig/agent/effect
@@ -22,6 +24,7 @@ import pig/agent/state
 import pig/agent/step_result
 import pig/agent/tool_batch
 import pig/agent/tool_worker
+import pig/agent/tracing
 import pig/agent/update
 import pig/hooks
 import pig/obs/dispatcher
@@ -34,8 +37,12 @@ import pig/session_store
 import pig/tool
 import pig/tool/execution
 import pig/turn.{type Input}
+import pig_otel
+import pig_otel/content
+import pig_otel/content/options
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
+import pig_protocol/stop_reason.{type StopReason}
 import pig_protocol/tool_definition
 
 /// Configuration owned by one runtime actor.
@@ -48,6 +55,7 @@ pub type RuntimeConfig {
     model: String,
     max_iterations: Int,
     inference_settings: InferenceSettings,
+    tracing: pig_otel.Policy,
   )
 }
 
@@ -58,12 +66,14 @@ pub type RuntimeMsg {
     sink: process.Subject(agent_run.RunEvent),
     terminal: process.Subject(agent_run.RunEvent),
     owner: option.Option(process.Pid),
+    parent: context.Context,
     reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
   )
   StartContinue(
     sink: process.Subject(agent_run.RunEvent),
     terminal: process.Subject(agent_run.RunEvent),
     owner: option.Option(process.Pid),
+    parent: context.Context,
     reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
   )
   CancelRun(run_id: String, reason: run_error.CancelReason)
@@ -127,6 +137,8 @@ type ActiveRun {
     phase: RunPhase,
     watcher: option.Option(client_watcher.Watch),
     last_inference: option.Option(provider.InferenceResult),
+    backend: pig_otel.Backend,
+    span: pig_otel.Span,
   )
 }
 
@@ -143,6 +155,8 @@ type InferenceOperation {
     started_at: Int,
     input_messages: List(Message),
     settings: InferenceSettings,
+    span: pig_otel.Span,
+    content_capture: option.Option(#(options.Options, content.Capture)),
   )
 }
 
@@ -181,18 +195,11 @@ pub fn start(
 ) -> Result(process.Subject(RuntimeMsg), StartError) {
   let agent_config =
     state.AgentConfig(
-      provider: config.provider,
+      ..state.config(config.provider),
       inference_settings: config.inference_settings,
       tools: config.tools,
-      system_prompt: option.None,
       max_iterations: config.max_iterations,
       model: config.model,
-      agent_id: option.None,
-      agent_name: option.None,
-      agent_description: option.None,
-      agent_version: option.None,
-      provider_name: option.None,
-      session_path: option.None,
     )
   start_with_state(
     config,
@@ -298,7 +305,14 @@ fn start_turn(
       let monitor = process.monitor(runtime_pid)
       process.send(
         subject,
-        StartTurn(input:, sink:, terminal:, owner:, reply_to:),
+        StartTurn(
+          input:,
+          sink:,
+          terminal:,
+          owner:,
+          parent: context.current(),
+          reply_to:,
+        ),
       )
       await_start_reply(reply_to, monitor)
     }
@@ -316,7 +330,16 @@ fn start_continuation(
     Ok(runtime_pid) -> {
       let reply_to = process.new_subject()
       let monitor = process.monitor(runtime_pid)
-      process.send(subject, StartContinue(sink:, terminal:, owner:, reply_to:))
+      process.send(
+        subject,
+        StartContinue(
+          sink:,
+          terminal:,
+          owner:,
+          parent: context.current(),
+          reply_to:,
+        ),
+      )
       await_start_reply(reply_to, monitor)
     }
   }
@@ -475,6 +498,25 @@ pub fn supervised(
   initial_history: List(Message),
   session: SessionState,
 ) -> supervision.ChildSpecification(Nil) {
+  supervised_with_tracing(
+    agent_config,
+    dispatcher_name,
+    name,
+    initial_history,
+    session,
+    pig_otel.MetadataOnly,
+  )
+}
+
+/// Create a supervised runtime with an explicit tracing policy.
+pub fn supervised_with_tracing(
+  agent_config: state.AgentConfig,
+  dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+  name: process.Name(RuntimeMsg),
+  initial_history: List(Message),
+  session: SessionState,
+  tracing: pig_otel.Policy,
+) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     start_named_runtime(
       agent_config,
@@ -482,6 +524,7 @@ pub fn supervised(
       name,
       initial_history,
       session,
+      tracing,
       agent_config.inference_settings,
     )
   })
@@ -494,6 +537,23 @@ pub fn supervised_with_session_store(
   name: process.Name(RuntimeMsg),
   store: session_store.SessionStore,
 ) -> supervision.ChildSpecification(Nil) {
+  supervised_with_session_store_and_tracing(
+    agent_config,
+    dispatcher_name,
+    name,
+    store,
+    pig_otel.MetadataOnly,
+  )
+}
+
+/// Create a supervised runtime with an explicit tracing policy.
+pub fn supervised_with_session_store_and_tracing(
+  agent_config: state.AgentConfig,
+  dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+  name: process.Name(RuntimeMsg),
+  store: session_store.SessionStore,
+  tracing: pig_otel.Policy,
+) -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     let session_store.SessionStore(load:, ..) = store
     case load() {
@@ -504,6 +564,7 @@ pub fn supervised_with_session_store(
           name,
           state.strip_system_messages(loaded.messages),
           SessionReady(store:, head: loaded.head),
+          tracing,
           case loaded.inference_settings {
             option.Some(settings) -> settings
             option.None -> agent_config.inference_settings
@@ -526,9 +587,10 @@ fn start_named_runtime(
   name: process.Name(RuntimeMsg),
   initial_history: List(Message),
   session: SessionState,
+  tracing: pig_otel.Policy,
   initial_settings: InferenceSettings,
 ) -> Result(actor.Started(Nil), StartError) {
-  let config = supervised_runtime_config(agent_config, dispatcher_name)
+  let config = supervised_runtime_config(agent_config, dispatcher_name, tracing)
   let initial =
     initial_state(
       list.fold(initial_history, state.new(agent_config), state.add_message),
@@ -555,8 +617,10 @@ fn start_named_runtime(
 fn supervised_runtime_config(
   agent_config: state.AgentConfig,
   dispatcher_name: process.Name(dispatcher.DispatcherMessage),
+  tracing: pig_otel.Policy,
 ) -> RuntimeConfig {
   RuntimeConfig(
+    tracing:,
     provider: agent_config.provider,
     tools: agent_config.tools,
     hooks: [],
@@ -583,22 +647,31 @@ fn handle_message(
   runtime_state: RuntimeState,
   message: RuntimeMsg,
 ) -> actor.Next(RuntimeState, RuntimeMsg) {
+  tracing.protect(fn() { handle_message_unprotected(runtime_state, message) })
+}
+
+fn handle_message_unprotected(
+  runtime_state: RuntimeState,
+  message: RuntimeMsg,
+) -> actor.Next(RuntimeState, RuntimeMsg) {
   case message {
-    StartTurn(input, sink, terminal, owner, reply_to) ->
+    StartTurn(input, sink, terminal, owner, parent, reply_to) ->
       actor.continue(handle_start_turn(
         runtime_state,
         input,
         sink,
         terminal,
         owner,
+        parent,
         reply_to,
       ))
-    StartContinue(sink, terminal, owner, reply_to) ->
+    StartContinue(sink, terminal, owner, parent, reply_to) ->
       actor.continue(handle_start_continue(
         runtime_state,
         sink,
         terminal,
         owner,
+        parent,
         reply_to,
       ))
     CancelRun(run_id, reason) ->
@@ -650,6 +723,7 @@ fn handle_start_turn(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
 ) -> RuntimeState {
   case runtime_state.activity {
@@ -673,7 +747,7 @@ fn handle_start_turn(
         }
         _ -> {
           let accepted =
-            accept_run(runtime_state, sink, terminal, owner, reply_to)
+            accept_run(runtime_state, sink, terminal, owner, parent, reply_to)
           let reset = state.AgentState(..accepted.agent_state, iterations: 0)
           advance(
             RuntimeState(..accepted, agent_state: reset),
@@ -689,6 +763,7 @@ fn handle_start_continue(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
 ) -> RuntimeState {
   case runtime_state.activity {
@@ -696,7 +771,15 @@ fn handle_start_continue(
       process.send(reply_to, Error(run_error.Busy))
       runtime_state
     }
-    Idle -> handle_idle_continue(runtime_state, sink, terminal, owner, reply_to)
+    Idle ->
+      handle_idle_continue(
+        runtime_state,
+        sink,
+        terminal,
+        owner,
+        parent,
+        reply_to,
+      )
   }
 }
 
@@ -705,6 +788,7 @@ fn handle_idle_continue(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
 ) -> RuntimeState {
   case runtime_state.session {
@@ -716,10 +800,19 @@ fn handle_idle_continue(
         sink,
         terminal,
         owner,
+        parent,
         reply_to,
         pending,
       )
-    _ -> continue_from_history(runtime_state, sink, terminal, owner, reply_to)
+    _ ->
+      continue_from_history(
+        runtime_state,
+        sink,
+        terminal,
+        owner,
+        parent,
+        reply_to,
+      )
   }
 }
 
@@ -743,10 +836,12 @@ fn continue_pending_session(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
   pending: durable_session.SessionState,
 ) -> RuntimeState {
-  let accepted = accept_run(runtime_state, sink, terminal, owner, reply_to)
+  let accepted =
+    accept_run(runtime_state, sink, terminal, owner, parent, reply_to)
   case retry_pending_commit(pending) {
     Error(#(still_pending, error)) ->
       fail_run(
@@ -766,9 +861,11 @@ fn continue_from_history(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
 ) -> RuntimeState {
-  let accepted = accept_run(runtime_state, sink, terminal, owner, reply_to)
+  let accepted =
+    accept_run(runtime_state, sink, terminal, owner, parent, reply_to)
   let reset = state.AgentState(..accepted.agent_state, iterations: 0)
   resume_from_history(RuntimeState(..accepted, agent_state: reset))
 }
@@ -778,9 +875,20 @@ fn accept_run(
   sink: process.Subject(agent_run.RunEvent),
   terminal: process.Subject(agent_run.RunEvent),
   owner: option.Option(process.Pid),
+  parent: context.Context,
   reply_to: process.Subject(Result(agent_run.Run, run_error.RunStartError)),
 ) -> RuntimeState {
   let run_id = agent_run.fresh_id()
+  let backend = tracing.backend(runtime_state.config.tracing)
+  let span =
+    tracing.start(
+      backend,
+      parent,
+      pig_otel.Run(
+        agent_name: runtime_state.agent_state.config.agent_name,
+        run_id:,
+      ),
+    )
   let mailbox = runtime_mailbox(runtime_state)
   let handle =
     agent_run.new(
@@ -805,6 +913,8 @@ fn accept_run(
       phase: Preparing,
       watcher:,
       last_inference: option.None,
+      backend:,
+      span:,
     )
   process.send(sink, agent_run.RunStarted)
   process.send(reply_to, Ok(handle))
@@ -932,7 +1042,9 @@ fn start_inference(
   let before_event =
     hooks.BeforeInferenceEvent(
       model: runtime_state.config.model,
-      system_prompt: runtime_state.agent_state.config.system_prompt,
+      system_prompt: state.provider_system_prompt(
+        runtime_state.agent_state.config,
+      ),
       messages:,
       settings:,
     )
@@ -985,11 +1097,48 @@ fn start_valid_inference(
   let round = active.round + 1
   let request =
     provider.InferenceRequest(
-      system_prompt: runtime_state.agent_state.config.system_prompt,
+      system_prompt: state.provider_system_prompt(
+        runtime_state.agent_state.config,
+      ),
       messages: final_messages,
       tools:,
       settings:,
     )
+  let request = provider.resolve_request(runtime_state.config.provider, request)
+  let operation = case provider.identity(runtime_state.config.provider) {
+    provider.Unknown ->
+      pig_otel.Inference(pig_otel.Custom, option.None, option.None)
+    provider.Known(api, name, model) ->
+      pig_otel.Inference(api, option.Some(name), option.Some(model))
+  }
+  let span =
+    tracing.start(active.backend, pig_otel.context(active.span), operation)
+  let capture = case
+    runtime_state.config.tracing,
+    pig_otel.tracing_available(active.backend)
+  {
+    pig_otel.Conversation(options), True -> {
+      let capture =
+        content.normalized_input(
+          options,
+          state.system_instructions(runtime_state.agent_state.config),
+          request.messages,
+          request.tools,
+        )
+      option.Some(#(options, capture))
+    }
+    _, _ -> option.None
+  }
+  case request.settings.thinking {
+    provider.UseProviderDefault -> Nil
+    provider.UseThinkingLevel(level) ->
+      pig_otel.annotate(span, [
+        pig_otel.string_attribute(
+          "pig.inference.thinking",
+          provider.settings_to_string(provider.with_thinking_level(level)),
+        ),
+      ])
+  }
   emit.to_dispatcher(
     runtime_state.config.dispatcher,
     events.InferenceStarted(
@@ -1002,16 +1151,23 @@ fn start_valid_inference(
   let mailbox = runtime_mailbox(runtime_state)
   let run_id = active.id
   let worker =
-    inference_worker.start(runtime_state.config.provider, request, fn(event) {
-      process.send(mailbox, InferenceWorkerEvent(run_id, round, event))
-    })
+    inference_worker.start(
+      runtime_state.config.provider,
+      request,
+      pig_otel.context(span),
+      fn(event) {
+        process.send(mailbox, InferenceWorkerEvent(run_id, round, event))
+      },
+    )
   let operation =
     InferenceOperation(
       round:,
       worker:,
       started_at: events.system_time(),
       input_messages: final_messages,
-      settings:,
+      settings: request.settings,
+      span:,
+      content_capture: capture,
     )
   RuntimeState(
     ..runtime_state,
@@ -1054,6 +1210,25 @@ fn finish_inference(
   operation: InferenceOperation,
   inference_result: Result(provider.InferenceResult, AiError),
 ) -> RuntimeState {
+  case inference_result {
+    Ok(result) -> {
+      pig_otel.annotate(
+        operation.span,
+        pig_otel.response_attributes(result.metadata),
+      )
+      annotate_inference_content(
+        operation,
+        pig_otel.Succeeded,
+        option.Some(#(result.message, result_stop_reason(result))),
+      )
+      tracing.finish(operation.span, pig_otel.Succeeded)
+    }
+    Error(error) -> {
+      let outcome = inference_outcome(error)
+      annotate_inference_content(operation, outcome, option.None)
+      tracing.finish(operation.span, outcome)
+    }
+  }
   process.send(
     active.sink,
     agent_run.InferenceFinished(
@@ -1115,6 +1290,46 @@ fn finish_inference(
   }
 }
 
+fn result_stop_reason(
+  result: provider.InferenceResult,
+) -> option.Option(StopReason) {
+  case result.metadata.stop_reason {
+    option.Some(_) as reason -> reason
+    option.None ->
+      case result.message {
+        message.Assistant(stop_reason:, ..) -> stop_reason
+        _ -> option.None
+      }
+  }
+}
+
+fn annotate_inference_content(
+  operation: InferenceOperation,
+  outcome: pig_otel.Outcome,
+  output: option.Option(#(Message, option.Option(StopReason))),
+) -> Nil {
+  case operation.content_capture {
+    option.Some(#(options, input_capture)) -> {
+      // Reserve attribute slots for terminal metadata before optional content.
+      pig_otel.annotate(operation.span, pig_otel.terminal(outcome).1)
+      pig_otel.annotate(
+        operation.span,
+        content.attributes(input_capture, content.Input),
+      )
+      let output_capture = case output {
+        option.Some(#(message, stop_reason)) ->
+          content.normalized_output(options, message, stop_reason)
+        option.None -> content.incomplete()
+      }
+      pig_otel.annotate(
+        operation.span,
+        content.attributes(output_capture, content.Output),
+      )
+    }
+    option.None -> Nil
+  }
+}
+
 fn emit_inference_failure(
   runtime_state: RuntimeState,
   operation: InferenceOperation,
@@ -1149,6 +1364,9 @@ fn start_tools(
     Error(batch_error) -> {
       let rejected =
         list.map(calls, fn(call) {
+          let assert Running(active) = runtime_state.activity
+          let span = start_tool_span(active, call)
+          tracing.finish(span, pig_otel.Failed("invalid_request"))
           #(call, Error(tool.InvalidToolCallBatch(batch_error)))
         })
       advance(runtime_state, msg.ToolResults(rejected))
@@ -1166,6 +1384,8 @@ fn start_valid_tools(
     tool_batch.partition_by_hook_decision(runtime_state.config.hooks, calls)
   let blocked_outcomes =
     list.map(blocked, fn(blocked_tool) {
+      let span = start_tool_span(active, blocked_tool.call)
+      tracing.finish(span, pig_otel.Failed("tool_blocked"))
       emit.to_dispatcher(
         runtime_state.config.dispatcher,
         events.ToolBlocked(
@@ -1207,6 +1427,7 @@ fn start_valid_tools(
   let mailbox = runtime_mailbox(runtime_state)
   let active_tools =
     list.map(allowed, fn(call) {
+      let span = start_tool_span(active, call)
       emit.to_dispatcher(
         runtime_state.config.dispatcher,
         events.ToolStarted(tool_call: call),
@@ -1222,6 +1443,7 @@ fn start_valid_tools(
         tool_worker.start(
           runtime_state.config.tools,
           call,
+          pig_otel.context(span),
           fn(result, duration_ms) {
             process.send(
               mailbox,
@@ -1229,7 +1451,7 @@ fn start_valid_tools(
             )
           },
         )
-      tool_batch.ActiveTool(call:, worker:, started_at:)
+      tool_batch.ActiveTool(call:, worker:, started_at:, span:)
     })
   case active_tools {
     [] ->
@@ -1312,6 +1534,7 @@ fn finish_active_tool(
   case tool_batch.finish(batch, call, tool_result, duration_ms) {
     tool_batch.Ignored -> runtime_state
     tool_batch.Finished(outcomes) -> {
+      finish_tool_span(runtime_state, batch, call, tool_result)
       observe_tool_result(
         runtime_state,
         active,
@@ -1327,6 +1550,7 @@ fn finish_active_tool(
       )
     }
     tool_batch.Waiting(next_batch) -> {
+      finish_tool_span(runtime_state, batch, call, tool_result)
       observe_tool_result(
         runtime_state,
         active,
@@ -1347,6 +1571,19 @@ fn observe_tool_result(
   runtime_state: RuntimeState,
   active: ActiveRun,
   round: Int,
+  call: ToolCall,
+  tool_result: Result(json.Json, tool.ToolError),
+  duration_ms: Int,
+) -> Nil {
+  observe_tool_completion(runtime_state, call, tool_result, duration_ms)
+  process.send(
+    active.sink,
+    agent_run.ToolFinished(round:, call:, result: tool_result),
+  )
+}
+
+fn observe_tool_completion(
+  runtime_state: RuntimeState,
   call: ToolCall,
   tool_result: Result(json.Json, tool.ToolError),
   duration_ms: Int,
@@ -1378,10 +1615,6 @@ fn observe_tool_result(
   emit.to_dispatcher(
     runtime_state.config.dispatcher,
     events.ToolExecuted(tool_call: call, result: final_content, duration_ms:),
-  )
-  process.send(
-    active.sink,
-    agent_run.ToolFinished(round:, call:, result: tool_result),
   )
 }
 
@@ -1443,6 +1676,11 @@ fn finish_terminal(
     run_recovery.TermFailed(error) -> agent_run.Failed(error)
     run_recovery.TermCancelled(reason) -> agent_run.Cancelled(reason)
   }
+  case terminal {
+    run_recovery.TermCancelled(_) -> Nil
+    _ -> tracing.finish(active.span, terminal_outcome(terminal))
+  }
+  client_watcher.stop_option(active.watcher)
   agent_run.publish_terminal(active.run, event)
   run_recovery.notify_terminal(
     terminal,
@@ -1451,7 +1689,6 @@ fn finish_terminal(
     runtime_state.agent_state.iterations,
     active.sink,
   )
-  client_watcher.stop_option(active.watcher)
   RuntimeState(..runtime_state, activity: Idle)
 }
 
@@ -1474,10 +1711,34 @@ fn cancel_current_run(
   case runtime_state.activity {
     Idle -> runtime_state
     Running(active) -> {
+      let outcome = pig_otel.Cancelled(cancel_category(reason))
+      // Finalize before cancellation notifications can invoke throwing hooks.
       case active.phase {
         Preparing -> Nil
         AwaitingInference(operation) -> {
+          annotate_inference_content(operation, outcome, option.None)
+          tracing.finish(operation.span, outcome)
+        }
+        AwaitingTools(batch) ->
+          list.each(batch.active, fn(item) {
+            tracing.finish(item.span, outcome)
+          })
+      }
+      tracing.finish(active.span, outcome)
+      // Send every cancellation before any user callback can throw.
+      case active.phase {
+        Preparing -> Nil
+        AwaitingInference(operation) ->
           inference_worker.cancel(operation.worker)
+        AwaitingTools(batch) ->
+          list.each(batch.active, fn(active_tool) {
+            tool_worker.cancel(active_tool.worker)
+          })
+      }
+      // Keep operation completion events ahead of the authoritative terminal.
+      case active.phase {
+        Preparing -> Nil
+        AwaitingInference(operation) ->
           process.send(
             active.sink,
             agent_run.InferenceFinished(
@@ -1485,28 +1746,55 @@ fn cancel_current_run(
               result: Error(error.Cancelled),
             ),
           )
-          emit_inference_failure(
-            runtime_state,
-            operation,
-            error.Cancelled,
-            events.system_time() - operation.started_at,
-          )
-        }
         AwaitingTools(batch) ->
           list.each(batch.active, fn(active_tool) {
-            tool_worker.cancel(active_tool.worker)
-            let cancelled = Error(tool.Cancelled)
-            observe_tool_result(
-              runtime_state,
-              active,
-              batch.round,
-              active_tool.call,
-              cancelled,
-              events.system_time() - active_tool.started_at,
+            process.send(
+              active.sink,
+              agent_run.ToolFinished(
+                round: batch.round,
+                call: active_tool.call,
+                result: Error(tool.Cancelled),
+              ),
             )
           })
       }
-      finish_terminal(runtime_state, run_recovery.TermCancelled(reason))
+      let next =
+        finish_terminal(runtime_state, run_recovery.TermCancelled(reason))
+      // Hooks run only after the run handle and runtime state are terminal.
+      case active.phase {
+        Preparing -> Nil
+        AwaitingInference(operation) -> {
+          emit.to_dispatcher(
+            runtime_state.config.dispatcher,
+            events.InferenceFailed(
+              model: runtime_state.config.model,
+              error: error.Cancelled,
+              duration_ms: events.system_time() - operation.started_at,
+              input_messages: operation.input_messages,
+              settings: operation.settings,
+            ),
+          )
+          hooks.notify_error(
+            runtime_state.config.hooks,
+            hooks.ErrorEvent(
+              model: runtime_state.config.model,
+              error: error.Cancelled,
+              settings: operation.settings,
+            ),
+          )
+        }
+        AwaitingTools(batch) -> {
+          list.each(batch.active, fn(active_tool) {
+            observe_tool_completion(
+              runtime_state,
+              active_tool.call,
+              Error(tool.Cancelled),
+              events.system_time() - active_tool.started_at,
+            )
+          })
+        }
+      }
+      next
     }
   }
 }
@@ -1634,5 +1922,69 @@ fn to_durable_session(session: SessionState) -> durable_session.SessionState {
       durable_session.SessionPending(store:, commit:, candidate:, disposition:)
     SessionSettingsPending(store:, settings:, mode:) ->
       durable_session.SessionSettingsPending(store:, settings:, mode:)
+  }
+}
+
+fn start_tool_span(active: ActiveRun, call: ToolCall) -> pig_otel.Span {
+  tracing.start(
+    active.backend,
+    pig_otel.context(active.span),
+    pig_otel.Tool(call.name, call.id),
+  )
+}
+
+fn finish_tool_span(
+  runtime_state: RuntimeState,
+  batch: tool_batch.ToolBatch,
+  call: ToolCall,
+  result: Result(json.Json, tool.ToolError),
+) -> Nil {
+  let assert Ok(item) = list.find(batch.active, fn(item) { item.call == call })
+  let outcome = case result {
+    Ok(_) -> pig_otel.Succeeded
+    Error(tool.Cancelled) -> pig_otel.Cancelled("cancelled")
+    Error(_) ->
+      case tool.lookup(runtime_state.config.tools, call.name) {
+        Error(_) -> pig_otel.Failed("tool_not_found")
+        Ok(_) ->
+          case json.parse(call.arguments_json, decode.dynamic) {
+            Error(_) -> pig_otel.Failed("invalid_arguments")
+            Ok(_) -> pig_otel.Failed("tool_error")
+          }
+      }
+  }
+  tracing.finish(item.span, outcome)
+}
+
+fn inference_outcome(error: AiError) -> pig_otel.Outcome {
+  case error {
+    error.Cancelled -> pig_otel.Cancelled("cancelled")
+    error.Timeout -> pig_otel.Failed("timeout")
+    error.RateLimited -> pig_otel.Failed("rate_limited")
+    error.UnsupportedMessageRole(_) -> pig_otel.Failed("invalid_request")
+    error.ApiError(_) | error.InvalidResponse(_) ->
+      pig_otel.Failed("provider_error")
+  }
+}
+
+fn cancel_category(reason: run_error.CancelReason) -> String {
+  case reason {
+    run_error.CallerRequested -> "cancelled"
+    run_error.DeadlineExceeded -> "deadline_exceeded"
+    run_error.ClientDisconnected -> "client_disconnected"
+    run_error.AgentStopped -> "agent_stopped"
+  }
+}
+
+fn terminal_outcome(terminal: run_recovery.Terminal) -> pig_otel.Outcome {
+  case terminal {
+    run_recovery.Completed(_) -> pig_otel.Succeeded
+    run_recovery.TermCancelled(reason) ->
+      pig_otel.Cancelled(cancel_category(reason))
+    run_recovery.TermFailed(run_error.Session(_)) ->
+      pig_otel.Failed("persistence_error")
+    run_recovery.TermFailed(run_error.Inference(error)) ->
+      inference_outcome(error)
+    run_recovery.TermFailed(_) -> pig_otel.Failed("process_exit")
   }
 }

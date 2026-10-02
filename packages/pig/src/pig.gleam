@@ -30,6 +30,7 @@ import pig/skill
 import pig/skill/librarian
 import pig/tool
 import pig/turn.{type Input}
+import pig_otel
 import pig_protocol/message.{type Message}
 import pig_protocol/thinking.{type ThinkingLevel}
 
@@ -41,6 +42,7 @@ pub opaque type PigConfig {
     skills: List(skill.Skill),
     consumer_specs: List(ConsumerSpec),
     hooks: List(Hooks),
+    tracing: pig_otel.Policy,
     initial_history: List(Message),
     session_store: option.Option(SessionStore),
   )
@@ -97,9 +99,17 @@ pub fn new(provider: Provider) -> PigConfig {
     skills: [],
     consumer_specs: [],
     hooks: [],
+    tracing: pig_otel.MetadataOnly,
     initial_history: [],
     session_store: option.None,
   )
+}
+
+/// Select metadata-only tracing (default), bounded conversation capture, or
+/// disable Pig spans. All policies preserve the explicit caller context with
+/// baggage stripped.
+pub fn with_tracing(config: PigConfig, policy: pig_otel.Policy) -> PigConfig {
+  PigConfig(..config, tracing: policy)
 }
 
 /// Register a tool in the config.
@@ -443,6 +453,7 @@ fn start_with_session(
                   provider: final_config.provider,
                   tools: final_config.tools,
                   hooks: config.hooks,
+                  tracing: config.tracing,
                   dispatcher: dispatcher_subject,
                   model: final_config.model,
                   max_iterations: final_config.max_iterations,
@@ -693,13 +704,16 @@ pub fn test_harness() -> PigConfig {
   new(provider.from_buffered(fn(_request) { Ok(from_message(response)) }))
 }
 
+type PromptPurpose {
+  ProviderPrompt
+  AuthoredPrompt
+}
+
 /// Build the final AgentConfig from a PigConfig.
 ///
-/// Registers librarian tool if skills are present and composes
-/// system prompt from skill descriptions and tool info. Used by
-/// `start` and `pig/supervisor.start_supervised`.
+/// Registers librarian tool if skills are present and composes the provider
+/// prompt from authored instructions, skill descriptions, and tool info.
 pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
-  // Register librarian tool if skills present
   let config_with_librarian = case config.skills {
     [] -> config.agent_config
     skills -> {
@@ -710,48 +724,72 @@ pub fn build_agent_config(config: PigConfig) -> state.AgentConfig {
       )
     }
   }
-
-  // Collect fragments to append to the system prompt
-  let fragments = []
-
-  // Compose skill descriptions
-  let fragments = case config.skills {
-    [] -> fragments
-    skills -> {
-      let skill_fragment =
-        skills
-        |> list.map(skill.skill_to_system_fragment)
-        |> string.join("\n")
-      [skill_fragment, ..fragments]
-    }
-  }
-
-  // Compose tool info from registry (includes librarian if added)
-  let tool_prompts = tool.list_tool_prompts(config_with_librarian.tools)
-  let fragments = case tool_prompts {
-    [] -> fragments
-    prompts -> {
-      let tool_lines =
-        prompts
-        |> list.map(fn(tp: tool.ToolPrompt) -> String {
-          "- " <> tp.name <> ": " <> tp.description
-        })
-        |> string.join("\n")
-      let tool_fragment = "Available tools:\n" <> tool_lines
-      [tool_fragment, ..fragments]
-    }
-  }
-
-  // Combine all fragments with the existing system prompt
-  case fragments {
-    [] -> config_with_librarian
-    _ -> {
-      let combined = case config_with_librarian.system_prompt {
-        option.Some(existing) ->
-          existing <> "\n\n" <> string.join(list.reverse(fragments), "\n\n")
-        option.None -> string.join(list.reverse(fragments), "\n\n")
+  let provider_prompt =
+    compose_system_prompt(
+      state.system_instructions(config.agent_config),
+      config.skills,
+      config_with_librarian.tools,
+      ProviderPrompt,
+    )
+  let authored_instructions =
+    compose_system_prompt(
+      state.system_instructions(config.agent_config),
+      config.skills,
+      config_with_librarian.tools,
+      AuthoredPrompt,
+    )
+  let generated_tool_prompt =
+    tool.list_tool_prompts(config_with_librarian.tools) != []
+  case provider_prompt {
+    option.Some(prompt) ->
+      case generated_tool_prompt {
+        True ->
+          state.with_composed_system_prompt(
+            config_with_librarian,
+            prompt,
+            authored_instructions,
+          )
+        False -> state.with_system_prompt(config_with_librarian, prompt)
       }
-      state.with_system_prompt(config_with_librarian, combined)
+    option.None -> config_with_librarian
+  }
+}
+
+fn compose_system_prompt(
+  authored: option.Option(String),
+  skills: List(skill.Skill),
+  registry: tool.ToolRegistry,
+  purpose: PromptPurpose,
+) -> option.Option(String) {
+  let skill_fragments = case skills {
+    [] -> []
+    _ -> [
+      skills |> list.map(skill.skill_to_system_fragment) |> string.join("\n"),
+    ]
+  }
+  let fragments = case purpose {
+    ProviderPrompt -> {
+      let prompts = tool.list_tool_prompts(registry)
+      case prompts {
+        [] -> skill_fragments
+        _ -> {
+          let tool_lines =
+            prompts
+            |> list.map(fn(prompt: tool.ToolPrompt) {
+              "- " <> prompt.name <> ": " <> prompt.description
+            })
+            |> string.join("\n")
+          list.append(skill_fragments, ["Available tools:\n" <> tool_lines])
+        }
+      }
     }
+    AuthoredPrompt -> skill_fragments
+  }
+  case authored, fragments {
+    option.None, [] -> option.None
+    option.Some(existing), [] -> option.Some(existing)
+    option.None, _ -> option.Some(string.join(fragments, "\n\n"))
+    option.Some(existing), _ ->
+      option.Some(existing <> "\n\n" <> string.join(fragments, "\n\n"))
   }
 }

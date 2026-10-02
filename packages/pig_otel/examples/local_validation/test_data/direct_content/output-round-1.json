@@ -1,0 +1,20 @@
+{
+  "gen_ai.output.messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_CALL"},
+        {
+          "type": "tool_call",
+          "id": "fixture_call",
+          "name": "fixture_tool",
+          "arguments": {
+            "safe": "CAPTURE_ALLOWED_DIRECT_ARGUMENT",
+            "api_key": "[REDACTED]"
+          }
+        }
+      ],
+      "finish_reason": "tool_call"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "pig.content.input.status": "captured",
+  "pig.content.input.reason": "complete",
+  "gen_ai.input.messages": [
+    {"role": "developer", "parts": [{"type": "text", "content": "keep developer"}]},
+    {"role": "user", "parts": [{"type": "text", "content": "hello"}]}
+  ],
+  "gen_ai.system_instructions": [
+    {"type": "text", "content": "system instructions"}
+  ]
+}

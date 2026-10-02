@@ -1,0 +1,1 @@
+{"api":"responses","assertions":{"absent":["SECRET","PRIVATE"],"parts":[{"id":"call_media","response":[{"api_key":"[REDACTED]","image_url":"application reference","type":"input_image"},{"type":"custom","value":"[REDACTED]"},[42,true]],"type":"tool_call_response"}]},"direction":"input","literals":["PRIVATE"]}

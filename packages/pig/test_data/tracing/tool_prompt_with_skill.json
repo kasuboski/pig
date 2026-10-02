@@ -1,0 +1,6 @@
+{
+  "provider_prompt": "standing instruction\n\nSkill: fixture-skill\nDescription: skill description\nPath: test_data/tracing/tool_prompt_skill\n\n\nAvailable tools:\n- fixture_tool: NEVER_EXPORT_DIRECT_DESCRIPTION\n- read_skill: Read the full content of a skill by name. Returns the SKILL.md content for the requested skill.",
+  "system_instructions": [
+    {"type": "text", "content": "standing instruction\n\nSkill: fixture-skill\nDescription: skill description\nPath: test_data/tracing/tool_prompt_skill\n"}
+  ]
+}

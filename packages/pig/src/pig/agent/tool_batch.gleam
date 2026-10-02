@@ -5,11 +5,17 @@ import gleam/list
 import pig/agent/tool_worker
 import pig/hooks
 import pig/tool
+import pig_otel
 import pig_protocol/message.{type ToolCall}
 
 @internal
 pub type ActiveTool {
-  ActiveTool(call: ToolCall, worker: tool_worker.Worker, started_at: Int)
+  ActiveTool(
+    call: ToolCall,
+    worker: tool_worker.Worker,
+    started_at: Int,
+    span: pig_otel.Span,
+  )
 }
 
 @internal

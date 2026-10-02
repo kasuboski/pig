@@ -1,0 +1,1 @@
+{"input":[{"type":"function_call","call_id":"c","name":"f","arguments":"{\"password\":\"SECRET\""}]}

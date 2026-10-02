@@ -230,7 +230,7 @@ fn check_system_prompt(
   assert_fn: fn(String) -> Nil,
 ) -> Nil {
   let cfg = pig.build_agent_config(config)
-  let assert Some(prompt) = cfg.system_prompt
+  let assert Some(prompt) = state.provider_system_prompt(cfg)
   assert_fn(prompt)
 }
 
@@ -259,9 +259,23 @@ pub fn tools_append_to_existing_system_prompt_test() {
   )
 }
 
+/// Built configs keep generated provider text separate from source instructions.
+pub fn built_config_retains_system_prompt_provenance_test() {
+  let cfg =
+    pig.test_harness()
+    |> pig.with_system_prompt("You are helpful.")
+    |> pig.with_tool(harness.echo_tool())
+    |> pig.build_agent_config
+  let assert Some(provider_prompt) = state.provider_system_prompt(cfg)
+  let assert Some(instructions) = state.system_instructions(cfg)
+  assert string.contains(provider_prompt, "Available tools:")
+  assert string.contains(provider_prompt, "echo: Echoes back")
+  assert instructions == "You are helpful."
+}
+
 /// No tools and no system prompt: system_prompt stays None.
 pub fn no_tools_no_prompt_means_no_system_prompt_test() {
   let config = pig.test_harness()
   let cfg = pig.build_agent_config(config)
-  assert cfg.system_prompt == None
+  assert state.provider_system_prompt(cfg) == None
 }

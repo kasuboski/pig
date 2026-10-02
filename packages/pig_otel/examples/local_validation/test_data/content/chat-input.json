@@ -1,0 +1,1 @@
+{"gen_ai.input.messages":[{"role":"system","parts":[{"type":"text","content":"CAPTURE_ALLOWED_CHAT_SYSTEM"}]},{"role":"user","parts":[{"type":"text","content":"CAPTURE_ALLOWED_CHAT_INPUT"}]}],"gen_ai.tool.definitions":[{"type":"function","name":"CAPTURE_ALLOWED_TOOL_NAME"}]}

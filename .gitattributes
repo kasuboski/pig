@@ -1,3 +1,12 @@
 # Preserve raw SSE framing fixtures byte-for-byte.
 packages/pig_protocol/test_data/sse/crlf_stream.sse -text -diff
 packages/pig_protocol/test_data/sse/mixed_stream.sse -text -diff
+
+# A final blank line terminates the last event in these tracing fixtures.
+packages/pig_otel/examples/local_validation/test_data/*.sse -text whitespace=-blank-at-eof
+packages/pig_proxy/test_data/tracing/*.sse -text whitespace=-blank-at-eof
+packages/pig_otel/examples/local_validation/test_data/content/*.sse -text whitespace=-blank-at-eof
+
+# Content decoder bodies include intentionally malformed UTF-8 and SSE framing.
+packages/pig_otel/test_data/content/*.body -text -diff
+packages/pig_proxy/test_data/content_lifecycle/*.body -text -diff

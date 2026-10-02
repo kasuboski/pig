@@ -1,0 +1,8 @@
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"item0","type":"message","role":"assistant","status":"in_progress","content":[]}}
+
+data: {"type":"response.output_text.delta","output_index":0,"item_id":"item0","content_index":0,"delta":"draft"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item0","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"FINAL"}]}}
+
+data: {"type":"response.completed","response":{"status":"completed","output":[]}}
+

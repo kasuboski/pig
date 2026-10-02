@@ -1,0 +1,10 @@
+{
+  "api": "responses",
+  "direction": "input",
+  "keys": [
+    "pin"
+  ],
+  "literals": [
+    "PRIVATE"
+  ]
+}

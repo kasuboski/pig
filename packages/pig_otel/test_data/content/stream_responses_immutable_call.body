@@ -1,0 +1,4 @@
+data: {"item":{"arguments":"","call_id":"call_1","id":"item_1","name":"tool","type":"function_call"},"output_index":0,"type":"response.output_item.added"}
+
+data: {"call_id":"different","delta":"{}","item_id":"item_1","output_index":0,"type":"response.function_call_arguments.delta"}
+

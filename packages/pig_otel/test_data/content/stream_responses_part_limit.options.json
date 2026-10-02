@@ -1,0 +1,6 @@
+{
+  "api": "responses",
+  "direction": "output",
+  "source": 100000,
+  "stream": true
+}

@@ -1,0 +1,5 @@
+{
+  "api": "chat",
+  "direction": "output",
+  "stream": true
+}

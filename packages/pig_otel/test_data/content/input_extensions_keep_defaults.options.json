@@ -1,0 +1,7 @@
+{
+  "api": "responses",
+  "direction": "input",
+  "keys": [
+    "pin"
+  ]
+}

@@ -29,6 +29,7 @@ import pig/session_store
 import pig/session_store/memory
 import pig/tool
 import pig/turn
+import pig_otel
 import pig_protocol/error
 import pig_protocol/message
 import pig_protocol/stop_reason
@@ -160,6 +161,7 @@ fn start_with_collector(
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider_fn,
       tools: registry,
       hooks: hooks_list,
@@ -185,6 +187,7 @@ fn start_simple(
   let registry = list.fold(tools, tool.new_registry(), tool.register)
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider_fn,
       tools: registry,
       hooks: [],
@@ -217,6 +220,7 @@ fn start_with_session_store(
     |> state.with_max_iterations(50)
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider_fn,
       tools: registry,
       hooks: [],
@@ -967,6 +971,7 @@ pub fn hook_blocks_tool_session_writer_records_it_test() {
   let registry = tool.new_registry() |> tool.register(echo_tool())
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(
         sequenced_provider([response1, response2]),
       ),
@@ -1068,6 +1073,7 @@ pub fn runs_accumulate_history_with_hooks_test() {
   let assert Ok(disp2) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(provider_fn),
       tools: tool.new_registry(),
       hooks: [guard],
@@ -1116,6 +1122,7 @@ pub fn max_iterations_circuit_breaker_test() {
   let assert Ok(disp) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(fixed_provider(looping)),
       tools: tool.new_registry() |> tool.register(echo_tool()),
       hooks: [],
@@ -1748,6 +1755,7 @@ fn start_restored_session(
     list.fold(messages, state.new(agent_config), state.add_message)
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(provider_fn),
       tools: registry,
       hooks: [],
@@ -1933,6 +1941,7 @@ fn start_with_history(
   let agent_st = list.fold(history, state.new(agent_config), state.add_message)
   let runtime_config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(provider_fn),
       tools: registry,
       hooks: [],
@@ -2164,6 +2173,7 @@ pub fn low_level_runtime_config_settings_are_used_test() {
   let assert Ok(disp) = dispatcher.start()
   let config =
     runtime.RuntimeConfig(
+      tracing: pig_otel.MetadataOnly,
       provider: provider.from_buffered(provider_fn),
       tools: tool.new_registry(),
       hooks: [],

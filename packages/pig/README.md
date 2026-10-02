@@ -214,9 +214,64 @@ the input. Use `None` when no standing prompt is configured.
 - **Parallel tool execution** — independent tool calls run concurrently.
 - **Skills and hooks** — compose reusable capabilities and lifecycle policy.
 - **Durable history with `SessionStore`** — preload and continue checkpointed conversations.
-- **Observability** — structured `:telemetry`, terminal output, and JSONL sessions.
+- **Observability** — structured `:telemetry`, terminal output, JSONL sessions, and direct metadata-only OpenTelemetry spans.
 - **Workspace tools** — optional SQLite-backed key/value and virtual-file storage.
 - **Supervision** — child specifications for OTP supervision trees.
+
+### Direct Tracing
+
+Run, inference, and tool spans use `pig_otel.MetadataOnly` by default. Direct Pig
+can also opt into bounded structured capture with the same policy used by the
+proxy. The input is the normalized `provider.InferenceRequest` after request
+hooks/defaults and before dispatch to the provider worker; completed assistant
+output is attached when inference ends. Buffered and streaming providers follow
+the same path: streaming capture uses the completed result, not a second SSE
+accumulator. Custom providers therefore expose normalized protocol input/output,
+not necessarily the provider's actual wire payload.
+
+Configure validated options using `pig_otel/content/options` and select
+`pig_otel.Conversation(options)` through `pig.with_tracing`:
+
+```gleam
+import pig_otel
+import pig_otel/content/options
+import pig
+
+let config =
+  pig.new(provider)
+  |> pig.with_tracing(pig_otel.Conversation(options.defaults()))
+```
+
+`MetadataOnly` remains the default, and `pig_otel.Disabled` disables Pig spans
+without disabling sanitized parent propagation. Rich audit events remain a
+separate content-bearing channel. Capture includes resolved post-hook/default
+messages and tool definitions, plus authored system instructions and skills in
+`gen_ai.system_instructions`. Pig keeps those authored values separate from its
+generated tool-description block; capture excludes that block, tool descriptions
+and schemas, thinking, media, and raw provider-wire/custom transforms. This does
+not capture the entire `InferenceRequest.system_prompt` or change provider prompt
+bytes/order. Developer and tool messages retain their protocol IDs. Unknown/error
+stop reasons are omitted rather than fabricated; failed or cancelled output is
+incomplete. Error mapping is normalized and lossy; omitted detail is not
+reconstructed as a content-filter reason.
+Run/tool spans do not carry conversation payload. See the
+[shared capture guide](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md) for
+limits, redaction and privacy details.
+
+The host starts/configures the official SDK and exporter before starting work;
+Pig itself depends only on the API. Tracers refresh at accepted runs, so intentional
+SDK restart is supported between completed operations, not during one. Owned and
+supervised/continuation entrypoints capture the caller parent at their common
+pre-send seams. Stop cancels work and finalizes spans; it is not successful draining.
+Finish Pig cleanup before host SDK flush/shutdown. Overlapping host HTTP
+instrumentation must be disabled for proxy-owned sends.
+
+See the [architecture](../../knowledge/OPENTELEMETRY.md) and
+[local validation runbook](../pig_otel/examples/local_validation/README.md).
+The [validation runbook](../../knowledge/OPENTELEMETRY_VALIDATION.md) covers
+API-only, official SDK recording, and actual OTLP delivery checks. The test gate
+accepts only the documented third-party Mist/Gramps deprecations; project warnings
+remain errors.
 
 Shared messages, errors, stop reasons, and provider codecs live in
 [`pig_protocol`](https://hex.pm/packages/pig_protocol).

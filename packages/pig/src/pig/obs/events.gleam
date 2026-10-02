@@ -69,14 +69,14 @@ pub type Event {
     error_type: String,
     settings: provider.InferenceSettings,
   )
-  ToolStart(tool_name: String, tool_call_id: String, arguments_json: String)
+  ToolStart(tool_name: String, tool_call_id: String)
   ToolStop(
     tool_name: String,
     tool_call_id: String,
     duration_ms: Int,
     result: String,
   )
-  ToolException(tool_name: String, tool_call_id: String, arguments_json: String)
+  ToolException(tool_name: String, tool_call_id: String)
 }
 
 // ── Event Name Constants ─────────────────────────────────────────────
@@ -213,13 +213,12 @@ pub fn emit(event: Event) -> Nil {
         ])
       ffi_execute(inference_exception_name(), measurements, metadata)
     }
-    ToolStart(tool_name:, tool_call_id:, arguments_json:) -> {
+    ToolStart(tool_name:, tool_call_id:) -> {
       let measurements = dict.from_list([#("system_time", ffi_system_time())])
       let metadata =
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
-          #("arguments_json", arguments_json),
         ])
       ffi_execute(tool_start_name(), measurements, metadata)
     }
@@ -236,13 +235,12 @@ pub fn emit(event: Event) -> Nil {
         ])
       ffi_execute(tool_stop_name(), measurements, metadata)
     }
-    ToolException(tool_name:, tool_call_id:, arguments_json:) -> {
+    ToolException(tool_name:, tool_call_id:) -> {
       let measurements = dict.from_list([#("system_time", ffi_system_time())])
       let metadata =
         dict.from_list([
           #("tool_name", tool_name),
           #("tool_call_id", tool_call_id),
-          #("arguments_json", arguments_json),
         ])
       ffi_execute(tool_exception_name(), measurements, metadata)
     }
@@ -392,8 +390,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
     ["pig", "tool", "start"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
-      let assert Ok(args) = dict.get(raw.metadata, "arguments_json")
-      ToolStart(tool_name: name, tool_call_id: id, arguments_json: args)
+      ToolStart(tool_name: name, tool_call_id: id)
     }
     ["pig", "tool", "stop"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
@@ -408,8 +405,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
     ["pig", "tool", "exception"] -> {
       let assert Ok(name) = dict.get(raw.metadata, "tool_name")
       let assert Ok(id) = dict.get(raw.metadata, "tool_call_id")
-      let assert Ok(args) = dict.get(raw.metadata, "arguments_json")
-      ToolException(tool_name: name, tool_call_id: id, arguments_json: args)
+      ToolException(tool_name: name, tool_call_id: id)
     }
     _ -> {
       let msg = "unknown telemetry event: " <> name_to_string(raw.name)
@@ -419,7 +415,7 @@ pub fn decode(raw: RawCapturedEvent) -> Event {
 }
 
 // ── SessionEvent (rich events for pig consumers) ────────────────────
-// Carries full message content for session replay and OTel.
+// Carries full message content for session replay; direct tracing is separate.
 
 /// Reasons why a session ended.
 pub type SessionEndReason {
@@ -446,7 +442,7 @@ pub type HookActionDetail {
   HookActionDetail(action_type: String, description: String)
 }
 
-/// Rich session events for pig consumers (session writer, terminal printer, OTel).
+/// Rich session events for pig consumers (session writer, terminal printer).
 /// Carries full message content, tool args/results, token counts, and timing.
 pub type SessionEvent {
   SessionStarted(

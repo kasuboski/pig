@@ -35,6 +35,11 @@ pub fn attach_to(names: List(List(String))) -> ListenerHandle {
   ffi_attach(names)
 }
 
+/// Get raw metadata for privacy and lightweight telemetry contract assertions.
+pub fn get_raw_events(handle: ListenerHandle) -> List(RawCapturedEvent) {
+  ffi_get_captured_events(handle)
+}
+
 /// Get all captured events as typed `Event` values, in emission order.
 pub fn get_events(handle: ListenerHandle) -> List(Event) {
   ffi_get_captured_events(handle)

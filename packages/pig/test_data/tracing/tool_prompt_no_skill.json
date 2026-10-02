@@ -1,0 +1,6 @@
+{
+  "provider_prompt": "standing instruction\n\nAvailable tools:\n- fixture_tool: NEVER_EXPORT_DIRECT_DESCRIPTION",
+  "system_instructions": [
+    {"type": "text", "content": "standing instruction"}
+  ]
+}

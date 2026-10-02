@@ -1,0 +1,22 @@
+{
+  "gen_ai.input.messages": [
+    {
+      "role": "developer",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_DEVELOPER"}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_INPUT"}
+      ]
+    }
+  ],
+  "gen_ai.system_instructions": [
+    {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_SYSTEM"}
+  ],
+  "gen_ai.tool.definitions": [
+    {"type": "function", "name": "fixture_tool"}
+  ]
+}

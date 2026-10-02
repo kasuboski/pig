@@ -130,7 +130,8 @@ pub fn start_stream(
   )
 }
 
-fn start_with(
+/// Start both scripted shapes for shared orchestration contract matrices.
+pub fn start_with(
   sync_queue,
   sync_exhausted,
   stream_queue,

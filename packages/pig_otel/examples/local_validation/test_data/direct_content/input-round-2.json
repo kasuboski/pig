@@ -1,0 +1,50 @@
+{
+  "gen_ai.input.messages": [
+    {
+      "role": "developer",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_DEVELOPER"}
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_INPUT"}
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_CALL"},
+        {
+          "type": "tool_call",
+          "id": "fixture_call",
+          "name": "fixture_tool",
+          "arguments": {
+            "safe": "CAPTURE_ALLOWED_DIRECT_ARGUMENT",
+            "api_key": "[REDACTED]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool_call_response",
+          "id": "fixture_call",
+          "response": {
+            "safe": "CAPTURE_ALLOWED_DIRECT_RESULT",
+            "password": "[REDACTED]"
+          }
+        }
+      ]
+    }
+  ],
+  "gen_ai.system_instructions": [
+    {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_SYSTEM"}
+  ],
+  "gen_ai.tool.definitions": [
+    {"type": "function", "name": "fixture_tool"}
+  ]
+}
