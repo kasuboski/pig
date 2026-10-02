@@ -66,6 +66,20 @@ cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
 429/503 responses or honor their Retry-After headers. Monitor exporter diagnostics;
 shutdown flush is best effort and does not prove remote persistence.
 
+Discover the configured models with:
+
+```sh
+curl http://127.0.0.1:8080/v1/models
+```
+
+The endpoint returns an OpenAI-compatible `object: "list"` with one entry per
+unique model ID from both model lists, in configuration order. Entries include
+`id`, `object: "model"`, `created: 0` (timestamp unknown), and `owned_by`
+(`openai` or `zai`). Discovery is local: no upstream calls, credentials or base
+URLs in the response, and no subscription entitlement check. It does not imply
+that a ChatGPT model supports Chat Completions; the API restrictions below still
+apply.
+
 Clients must call raw upstream-compatible `/v1/responses` or
 `/v1/chat/completions` and use `stream: true` for streaming. For Responses,
 the Codex backend expects `store: false`, `stream: true`, and an `instructions`
@@ -115,7 +129,10 @@ mise run test-integration-subscriptions
 ```
 
 It launches the real host with synthetic Codex/z.ai credentials and two local
-upstream HTTP fixtures. Buffered and SSE traffic is sent through both APIs;
+upstream HTTP fixtures. Model discovery checks every configured ID across both
+providers (including multiple models per provider), provider ownership, JSON
+content type, credential/URL exclusion, and zero upstream calls. Buffered and
+SSE traffic is sent through both APIs;
 tests check route paths, model/body forwarding, provider-specific bearer and
 Codex account headers, Chat-only stream usage injection, rejected requests and
 zero upstream calls for validation/routing failures. SIGTERM must exit zero and

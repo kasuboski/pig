@@ -101,8 +101,27 @@ the mist HTTP server.
 |---|---|---|
 | `POST` | `/v1/chat/completions` | Proxied to upstream, streaming or sync depending on `"stream"` in the body. |
 | `POST` | `/v1/responses` | Proxied to upstream's Responses API (also the Codex Responses route). |
+| `GET` | `/v1/models` | OpenAI-compatible model discovery from explicitly configured strict routes. |
 | `GET` | `/health` | Liveness probe — always `200 {"status":"ok"}`. |
 | `GET` | `/metrics` | Prometheus text exposition of request/latency/token/cost metrics. |
+
+### Model Discovery
+
+`GET /v1/models` returns `{"object":"list","data":[...]}`. Each entry has
+`id`, `object: "model"`, `created: 0` (timestamp unknown), and `owned_by`
+(the configured provider, or `pig_proxy` when unknown). Model IDs are
+unique and keep their first routable occurrence in configuration order;
+that occurrence also supplies the provider ownership.
+
+Only strict routes supported by the server and their target are advertised.
+Default-target mode returns an empty list because it has no explicit finite
+model inventory. Discovery never calls upstreams, reads credentials, or uses
+the models.dev pricing catalog, and does not establish subscription entitlement.
+Clients still need to select the correct API for each model.
+
+```sh
+curl http://127.0.0.1:8080/v1/models
+```
 
 ## Codex / ChatGPT OAuth
 

@@ -4,6 +4,7 @@
 //// Routes:
 ////   POST /v1/chat/completions  — proxy to upstream (streaming or sync)
 ////   POST /v1/responses         — proxy to upstream (Codex Responses)
+////   GET  /v1/models            — configured OpenAI-compatible model list
 ////   GET  /health               — liveness probe
 ////   GET  /metrics              — Prometheus metrics (Phase 4)
 ////   *    /                     — 404
@@ -27,6 +28,7 @@ import pig_proxy/hackney
 import pig_proxy/metrics
 import pig_proxy/metrics_endpoint
 import pig_proxy/model_catalog
+import pig_proxy/models_endpoint
 import pig_proxy/proxy
 import pig_proxy/routes
 import pig_proxy/telemetry
@@ -120,6 +122,8 @@ fn handle_request(
     http.Get, ["health"] -> health_response()
 
     http.Get, ["metrics"] -> metrics_response(state)
+
+    http.Get, ["v1", "models"] -> models_endpoint.response(state.config)
 
     http.Post, ["v1", "chat", "completions"] ->
       proxy_request(req, state, "/v1/chat/completions")

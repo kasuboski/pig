@@ -24,8 +24,8 @@ run_host(Capture, Erl, Args, Auth) ->
     {Codex, CodexPort} = upstream(),
     {Zai, ZaiPort} = upstream(),
     Receiver = pig_subscriptions_otlp_receiver:start(),
-    Env =  [{"PIG_CHATGPT_MODELS", "fake-codex"},
-           {"PIG_ZAI_MODELS", "fake-zai"}, {"ZAI_API_KEY", "synthetic-zai-key"},
+    Env =  [{"PIG_CHATGPT_MODELS", "fake-codex,gpt-6-astra,gpt-6-sol,gpt-6-luna,gpt-6.1-sol"},
+           {"PIG_ZAI_MODELS", "fake-zai,glm-5.3,glm-5.3-flash"}, {"ZAI_API_KEY", "synthetic-zai-key"},
            {"PIG_CHATGPT_BASE_URL", "http://127.0.0.1:" ++ integer_to_list(CodexPort) ++ "/codex"},
            {"PIG_ZAI_BASE_URL", "http://127.0.0.1:" ++ integer_to_list(ZaiPort) ++ "/v1"},
            {"PIG_PROXY_PORT", integer_to_list(Port)},
@@ -51,6 +51,8 @@ run_host(Capture, Erl, Args, Auth) ->
     try
         await_started(Host, <<>>),
         {200, _} = request(Port, get, "/health", <<>>, []),
+        check_models(Port),
+        {404, _} = request(Port, post, "/v1/models", <<"{}">>, json_headers()),
         {404, _} = request(Port, get, "/not-a-route", <<>>, []),
         {404, _} = request(Port, post, "/v1/unknown", <<"{}">>, []),
         {400, _} = request(Port, post, "/v1/responses", <<"{}">>, json_headers()),
@@ -282,7 +284,34 @@ await_started(Host, Acc) ->
 path_string(Path) when is_binary(Path) -> binary_to_list(Path);
 path_string(Path) -> Path.
 
+check_models(Port) ->
+    {200, Headers, Body} = request_response(Port, get, "/v1/models", <<>>, []),
+    "application/json" = proplists:get_value("content-type", Headers),
+    Expected = [{<<"fake-codex">>, <<"openai">>},
+                {<<"gpt-6-astra">>, <<"openai">>},
+                {<<"gpt-6-sol">>, <<"openai">>},
+                {<<"gpt-6-luna">>, <<"openai">>},
+                {<<"gpt-6.1-sol">>, <<"openai">>},
+                {<<"fake-zai">>, <<"zai">>},
+                {<<"glm-5.3">>, <<"zai">>},
+                {<<"glm-5.3-flash">>, <<"zai">>}],
+    Models = [#{<<"id">> => Id, <<"object">> => <<"model">>,
+                <<"created">> => 0, <<"owned_by">> => Owner} || {Id, Owner} <- Expected],
+    #{<<"object">> := <<"list">>, <<"data">> := Models} = json:decode(Body),
+    lists:foreach(fun(Secret) -> nomatch = binary:match(Body, Secret) end,
+        [<<"synthetic-zai-key">>, fake_jwt(), <<"synthetic-latitude-key">>,
+         <<"127.0.0.1">>, <<"base_url">>, <<"target_id">>]),
+    %% Client-supplied credentials do not change this local inventory.
+    {200, Body} = request(Port, get, "/v1/models", <<>>, json_headers()),
+    ok.
+
 request(Port, Method, Path, Body, Headers) ->
+    case request_response(Port, Method, Path, Body, Headers) of
+        {Code, _, Response} -> {Code, Response};
+        Error -> Error
+    end.
+
+request_response(Port, Method, Path, Body, Headers) ->
     Url = "http://127.0.0.1:" ++ integer_to_list(Port) ++ path_string(Path),
     H = [{"connection", "close"} | Headers],
     Result = case Method of
@@ -290,7 +319,7 @@ request(Port, Method, Path, Body, Headers) ->
         post -> httpc:request(post, {Url, H, "application/json", Body}, [{timeout, 5000}], [{body_format, binary}])
     end,
     case Result of
-        {ok, {{_, Code, _}, _, Response}} -> {Code, Response};
+        {ok, {{_, Code, _}, ResponseHeaders, Response}} -> {Code, ResponseHeaders, Response};
         {error, Reason} -> {error, Reason}
     end.
 
