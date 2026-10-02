@@ -65,25 +65,51 @@ pub type ServerState {
 /// The caller is responsible for keeping the process alive (e.g. via
 /// `process.sleep_forever()` in `main`).
 pub fn start(state: ServerState) -> Nil {
+  let assert Ok(_) = start_managed(state)
+  Nil
+}
+
+/// Handle to a listener started by `start_managed`.
+pub opaque type Listener {
+  Listener(process.Pid)
+}
+
+/// Start ingress and retain its supervisor PID so a host can stop listening
+/// before stopping the managed runtime.
+pub fn start_managed(state: ServerState) -> Result(Listener, String) {
   logging.configure()
   hackney.ensure_started()
   let handler = fn(req) { handle_request(req, state) }
-
-  let assert Ok(_) =
+  case
     handler
     |> mist.new
     |> mist.bind(state.config.bind)
     |> mist.port(state.config.port)
     |> mist.start
-
-  logging.log(
-    logging.Info,
-    "pig_proxy listening on "
-      <> state.config.bind
-      <> ":"
-      <> int.to_string(state.config.port),
-  )
+  {
+    Ok(started) -> {
+      logging.log(
+        logging.Info,
+        "pig_proxy listening on "
+          <> state.config.bind
+          <> ":"
+          <> int.to_string(state.config.port),
+      )
+      Ok(Listener(started.pid))
+    }
+    Error(_) -> Error("failed to start HTTP listener")
+  }
 }
+
+/// Stop managed ingress synchronously, force-stopping a stuck listener after
+/// five seconds. This does not claim connection drain or wire delivery.
+pub fn stop_managed(listener: Listener) -> Nil {
+  let Listener(pid) = listener
+  stop_listener(pid)
+}
+
+@external(erlang, "pig_proxy_server_ffi", "stop_listener")
+fn stop_listener(pid: process.Pid) -> Nil
 
 /// The main request handler.
 fn handle_request(
