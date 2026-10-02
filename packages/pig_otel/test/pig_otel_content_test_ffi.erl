@@ -1,6 +1,12 @@
--module(pig_proxy_content_test_ffi).
+-module(pig_otel_content_test_ffi).
 -export([scenario/1, golden/1, normalize/1, chunks/2, partitions/2,
-         validate/2, check_validation_cases/1, check_fixtures/1]).
+         validate/2, check_validation_cases/1, read_fixture/1]).
+
+read_fixture(Path) ->
+    case file:read_file(Path) of
+        {ok, Bytes} -> {ok, Bytes};
+        {error, _} -> {error, nil}
+    end.
 
 scenario(Json) ->
     M = json:decode(Json),
@@ -104,60 +110,3 @@ text_shape(P) ->
 
 identity_shape(B) -> true = is_binary(B) andalso byte_size(B) > 0 andalso byte_size(B) =< 256.
 fields(M, Keys) -> true = lists:sort(maps:keys(M)) =:= lists:sort(Keys).
-
-%% Standalone pure-adapter gate while coordinated Gleam builds are unavailable.
-%% The Gleam harness exercises the same data through the public binding API.
-check_fixtures(Directory) ->
-    {ok, ValidationCases} = file:read_file(filename:join(Directory, "validation_cases.json")),
-    true = check_validation_cases(ValidationCases),
-    Files = filelib:wildcard(filename:join(Directory, "*.options.json")),
-    lists:foreach(fun(File) ->
-        Base = filename:rootname(File, ".options.json"),
-        {ok, Settings} = file:read_file(File),
-        {ok, Body} = file:read_file(Base ++ ".body"),
-        {ok, Expected} = file:read_file(Base ++ ".golden.json"),
-        {scenario, Api, Direction, Source, Budget, Keys, Literals, Complete} = scenario(Settings),
-        {ok, O1} = pig_proxy_content_ffi:with_limits(pig_proxy_content_ffi:defaults(), Source, Budget),
-        {ok, O2} = pig_proxy_content_ffi:with_redacted_keys(O1, Keys),
-        {ok, O} = pig_proxy_content_ffi:with_redacted_text(O2, Literals),
-        Check = fun(Capture) ->
-            Pairs = pig_proxy_content_ffi:pairs(Capture, Direction),
-            case validate(Pairs, Settings) of
-                true -> ok;
-                false -> erlang:error({content_shape_or_semantics, Base, Pairs})
-            end,
-            Actual = maps:from_list([{K, normalize(V)} || {K, V} <- Pairs]),
-            Want = maps:from_list([{K, normalize(V)} || {K, V} <- golden(Expected)]),
-            case Actual =:= Want of
-                true -> ok;
-                false -> erlang:error({content_fixture, Base, Actual, Want})
-            end
-        end,
-        case maps:get(<<"stream">>, json:decode(Settings), false) of
-            false ->
-                Capture = case Direction of
-                    input -> pig_proxy_content_ffi:input(O, Api, Body);
-                    output -> pig_proxy_content_ffi:buffered(O, Api, Body)
-                end,
-                Check(Capture);
-            true -> lists:foreach(fun(Chunks) ->
-                S = lists:foldl(fun(B, Acc) ->
-                    Next = pig_proxy_content_ffi:push(Acc, B),
-                    true = pig_proxy_content_ffi:retained_bytes(Next) =< Source,
-                    case Next of
-                        #{failure := _} ->
-                            0 = pig_proxy_content_ffi:retained_bytes(Next),
-                            Next = pig_proxy_content_ffi:push(Next, <<"ignored">>);
-                        _ -> ok
-                    end,
-                    Next
-                end, pig_proxy_content_ffi:new_stream(O, Api), Chunks),
-                case maps:get(<<"pig.content.output.reason">>, json:decode(Expected)) of
-                    <<"source_limit">> -> 0 = pig_proxy_content_ffi:retained_bytes(S);
-                    _ -> ok
-                end,
-                Check(pig_proxy_content_ffi:finish(S, Complete))
-            end, partitions(Body, Settings))
-        end
-    end, Files),
-    length(Files).

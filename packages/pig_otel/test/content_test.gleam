@@ -10,6 +10,10 @@ pub fn options_validation_test() {
   content.check_options()
 }
 
+pub fn normalized_projection_test() {
+  content.check_normalized_projection()
+}
+
 pub fn input_chat_structured_test() {
   content.check_content("input_chat_structured")
 }

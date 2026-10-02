@@ -6,10 +6,13 @@ checks, see [OPENTELEMETRY_VALIDATION.md](OPENTELEMETRY_VALIDATION.md).
 ## Ownership and dependencies
 
 Pig reuses the `otel_gleam` binding; it does not implement an SDK or exporter.
-`pig_otel` contains shared semantic mapping and propagation policy. `pig` owns
-agent/run/inference/tool lifetimes; `pig_proxy` owns HTTP ingress, logical
-inference and physical attempts. `pig_protocol` and `pig_transport` remain
-OTel-independent. The host owns SDK/exporter dependencies, resource and sampler
+`pig_otel` contains shared semantic mapping, propagation policy and the single
+private content decoder/redactor/limits FFI. `pig` owns agent/run/inference/tool
+lifetimes; `pig_proxy` owns HTTP ingress, logical inference and physical attempts.
+Their separate OTP FFI helpers remain for crash guards, monitors, handoffs and
+shutdown ownership, not duplicate OTel API calls. `pig_protocol` and
+`pig_transport` remain OTel-independent. The host owns SDK/exporter dependencies,
+resource and sampler
 configuration, credentials, collector settings, flush and shutdown. Production
 Pig packages do not start or configure the global SDK.
 
@@ -27,20 +30,29 @@ These are integration pins, not claims of latest versions.
 
 ## Capture and privacy
 
-`pig_otel.Policy` and direct `pig` tracing support `MetadataOnly` (default) and
-`Disabled`; neither captures conversation content. `pig_proxy` separately offers
-explicit, bounded structured conversation capture for eligible Chat and Responses
-requests. It is selected per proxy config, is not enabled by environment, and does
-not extend direct Pig capture. See the [capture guide](OPENTELEMETRY_CONTENT_CAPTURE.md)
-for projection, limits and privacy boundaries.
+`pig_otel.Policy` is shared by direct `pig` and `pig_proxy`: `MetadataOnly`
+(default), `Conversation(options.Options)`, or `Disabled`. Capture is explicit,
+per consumer config, and never enabled by environment. Direct Pig projects
+resolved post-hook/default messages and tool definitions, authored system
+instructions and skills, and completed inference output. Its opaque system
+prompt state keeps authored guidance separate from the generated tool listing;
+capture excludes that generated block and does not represent the entire provider
+`InferenceRequest.system_prompt`. The proxy projects observed Chat/Responses
+JSON or SSE. Both use the shared `pig_otel/content` implementation, while their
+source-byte budgets reflect different input provenance. Provider prompt
+bytes/order are unchanged. See the
+[capture guide](OPENTELEMETRY_CONTENT_CAPTURE.md) for projection, limits and
+privacy boundaries.
 
 Metadata-only adapters accept known safe metadata, not arbitrary data requiring
 sanitization. Do not pass content, credentials, raw exception text, arbitrary
-baggage, or raw URLs through those adapters. Error categories are bounded;
-failures set Error status without a description or exception event. Unknown
-counts/settings remain absent, not invented. Rich session/audit events and
-developer logs are separate channels and may have different content
-characteristics; metadata-only tracing does not sanitize them.
+baggage, or raw URLs through those adapters. Error categories are bounded and
+lossy; omitted provider detail is not reconstructed as a `content_filter`
+reason. Failures set Error status without a description or exception event.
+Unknown counts/settings remain absent, not invented. Explicit conversation capture uses
+a separate shared projection boundary. Rich session/audit events and developer
+logs remain separate channels and may have different content characteristics;
+metadata-only tracing does not sanitize them.
 
 `Disabled` makes no Pig spans and no tracer lookup, but preserves a supplied
 explicit parent. Proxy header scrubbing applies regardless of policy or SDK.

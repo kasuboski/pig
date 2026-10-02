@@ -10,7 +10,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import pig_otel
-import pig_proxy/content
 
 /// How an upstream target authenticates: a static API key, or
 /// ChatGPT/Codex OAuth whose live token is resolved from the credential
@@ -47,19 +46,11 @@ pub type UpstreamTarget {
   )
 }
 
-/// Proxy-scoped tracing and content policy. Content capture is explicit and
-/// cannot be combined with disabled tracing.
-pub type Tracing {
-  Disabled
-  MetadataOnly
-  Conversation(content.Options)
-}
-
 /// Full proxy configuration.
 pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
-    tracing: Tracing,
+    tracing: pig_otel.Policy,
     bind: String,
     port: Int,
     /// Per-Target Retry Budget: additional attempts per upstream target
@@ -102,7 +93,7 @@ pub const default_models_refresh_ms = 3_600_000
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
-    tracing: MetadataOnly,
+    tracing: pig_otel.MetadataOnly,
     bind: default_bind,
     port: default_port,
     retries_per_target: default_retries_per_target,
@@ -114,25 +105,12 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   )
 }
 
-/// Select metadata-only tracing or disable Pig spans. This compatibility
-/// builder clears any previous conversation capture; the last builder wins.
+/// Set the tracing and capture policy. The last call replaces the prior policy.
 pub fn with_tracing(
   config: ProxyConfig,
   policy: pig_otel.Policy,
 ) -> ProxyConfig {
-  let tracing = case policy {
-    pig_otel.MetadataOnly -> MetadataOnly
-    pig_otel.Disabled -> Disabled
-  }
-  ProxyConfig(..config, tracing:)
-}
-
-/// Explicitly enable bounded structured conversation capture on logical spans.
-pub fn with_conversation_capture(
-  config: ProxyConfig,
-  options: content.Options,
-) -> ProxyConfig {
-  ProxyConfig(..config, tracing: Conversation(options))
+  ProxyConfig(..config, tracing: policy)
 }
 
 /// Set the HTTP bind address.

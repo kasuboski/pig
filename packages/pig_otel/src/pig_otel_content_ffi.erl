@@ -1,10 +1,11 @@
--module(pig_proxy_content_ffi).
+-module(pig_otel_content_ffi).
 
 %% Pure domain adapter, not an OTel binding. Every public data boundary catches
 %% failures and drops content. No process dictionary, callbacks, or side effects.
 -export([defaults/0, with_limits/3, with_redacted_keys/2,
          with_redacted_text/2, input/3, buffered/3, pairs/2,
-         new_stream/2, push/2, finish/2, retained_bytes/1]).
+         new_stream/2, push/2, finish/2, retained_bytes/1,
+         normalized_input/4, normalized_output/3, incomplete/0]).
 
 -define(MAX_NODES, 4096).
 -define(MAX_DEPTH, 32).
@@ -46,6 +47,133 @@ rules(O, Kind, Rules, Max) ->
 
 input({options, O}, Api, Body) -> capture(O, Api, Body, input).
 buffered({options, O}, Api, Body) -> capture(O, Api, Body, output).
+incomplete() -> omitted(<<"incomplete">>).
+
+%% Normalized values are traversed and budgeted before a projection tree is
+%% assembled. Provider schemas, descriptions, thinking and metadata never enter it.
+normalized_input({options, O}, System, Messages, Tools) ->
+    safe_capture(fun() ->
+        bounded_list(Messages, 64), bounded_list(Tools, 32),
+        Source = normalized_input_cost(System, Messages, Tools, O),
+        ensure(Source =< maps:get(source, O), source_limit),
+        {Projected, Filtered} = normalized_messages(O, Messages),
+        {Instructions, IF} = case System of
+            none -> {[], false};
+            {some, B} -> {P, F} = text(O, B), {[{<<"gen_ai.system_instructions">>, [P]}], F};
+            _ -> throw(unsupported_shape)
+        end,
+        {Defs, DF} = normalized_tools(O, Tools),
+        Attrs = [{<<"gen_ai.input.messages">>, Projected}] ++ Instructions ++ Defs,
+        encoded(O, input, Attrs, Filtered orelse IF orelse DF)
+    end).
+
+normalized_output({options, O}, Message, Stop) ->
+    safe_capture(fun() ->
+        Reason = normalized_finish(Stop),
+        Source = normalized_message_raw_cost(Message, 0, O),
+        ensure(Source =< maps:get(source, O), source_limit),
+        validate_normalized_message(Message),
+        {Messages, Filtered} = normalized_messages(O, [Message]),
+        [Assistant] = Messages,
+        ensure(maps:get(<<"role">>, Assistant) =:= <<"assistant">>, unsupported_shape),
+        Output = [Assistant#{<<"finish_reason">> => Reason}],
+        encoded(O, output, [{<<"gen_ai.output.messages">>, Output}], Filtered)
+    end).
+
+normalized_finish({some, stop}) -> <<"stop">>;
+normalized_finish({some, length}) -> <<"length">>;
+normalized_finish({some, tool_use}) -> <<"tool_call">>;
+normalized_finish({some, error}) -> throw(incomplete);
+normalized_finish(_) -> throw(incomplete).
+
+normalized_input_cost(System, Messages, Tools, O) ->
+    S = case System of none -> 0; {some, B} -> raw_string_cost(0, B, O); _ -> throw(unsupported_shape) end,
+    MessageBytes = lists:foldl(fun(M, N) -> normalized_message_raw_cost(M, N, O) end, S, Messages),
+    ToolBytes = lists:foldl(fun(T, Acc) ->
+        Name = case T of {tool_definition, ToolName, _, _} -> ToolName; _ -> throw(unsupported_shape) end,
+        raw_string_cost(Acc, Name, O)
+    end, MessageBytes, Tools),
+    validate_normalized_input(System, Messages, Tools),
+    ToolBytes.
+
+raw_string_cost(N, B, O) when is_binary(B) ->
+    debit_source(N, byte_size(B), O);
+raw_string_cost(_, _, _) -> throw(unsupported_shape).
+
+debit_source(N, Add, O) ->
+    Total = N + Add,
+    ensure(Total =< maps:get(source, O), source_limit),
+    Total.
+
+validate_string(B) when is_binary(B) ->
+    ensure(is_binary(unicode:characters_to_binary(B)), invalid_utf8);
+validate_string(_) -> throw(unsupported_shape).
+
+validate_normalized_input(System, Messages, Tools) ->
+    case System of none -> ok; {some, B} -> validate_string(B); _ -> throw(unsupported_shape) end,
+    lists:foreach(fun validate_normalized_message/1, Messages),
+    lists:foreach(fun
+        ({tool_definition, Name, _, _}) -> validate_string(Name);
+        (_) -> throw(unsupported_shape)
+    end, Tools).
+
+validate_normalized_message({user, B}) -> validate_string(B);
+validate_normalized_message({developer, B}) -> validate_string(B);
+validate_normalized_message({system, B}) -> validate_string(B);
+validate_normalized_message({tool, Id, B}) -> validate_string(Id), validate_string(B);
+validate_normalized_message({assistant, B, Calls, _, _}) ->
+    validate_string(B),
+    lists:foreach(fun
+        ({tool_call, Id, Name, Args}) -> validate_string(Id), validate_string(Name), validate_string(Args);
+        (_) -> throw(unsupported_shape)
+    end, Calls);
+validate_normalized_message(_) -> throw(unsupported_shape).
+
+normalized_message_raw_cost({user, B}, N, O) -> raw_string_cost(N, B, O);
+normalized_message_raw_cost({developer, B}, N, O) -> raw_string_cost(N, B, O);
+normalized_message_raw_cost({system, B}, N, O) -> raw_string_cost(N, B, O);
+normalized_message_raw_cost({tool, Id, B}, N, O) -> raw_string_cost(raw_string_cost(N, Id, O), B, O);
+normalized_message_raw_cost({assistant, B, Calls, _, _}, N, O) ->
+    bounded_list(Calls, 32),
+    lists:foldl(fun(C, Acc) ->
+        case C of
+            {tool_call, Id, Name, Args} ->
+                raw_string_cost(raw_string_cost(raw_string_cost(Acc, Id, O), Name, O), Args, O);
+            _ -> throw(unsupported_shape)
+        end
+    end, raw_string_cost(N, B, O), Calls);
+normalized_message_raw_cost(_, _, _) -> throw(unsupported_shape).
+
+normalized_messages(O, Messages) -> map_filtered(fun(M) -> normalized_message(O, M) end, Messages).
+normalized_message(O, {user, B}) -> normalized_text_message(O, <<"user">>, B);
+normalized_message(O, {developer, B}) -> normalized_text_message(O, <<"developer">>, B);
+normalized_message(O, {system, B}) -> normalized_text_message(O, <<"system">>, B);
+normalized_message(O, {tool, Id, B}) ->
+    {P, F} = tool_result(O, Id, B), {message(<<"tool">>, [P]), F};
+normalized_message(O, {assistant, B, Calls, _, _}) ->
+    {TextParts, TF} = case B of
+        <<>> -> {[], false};
+        _ -> {TextPart, TextFiltered} = text(O, B), {[TextPart], TextFiltered}
+    end,
+    {CallParts, CF} = flat_filtered(fun
+        ({tool_call, Id, Name, Args}) -> {P, F} = tool_call(O, Id, Name, Args), {[P], F};
+        (_) -> throw(unsupported_shape)
+    end, bounded_list(Calls, 32)),
+    {message(<<"assistant">>, TextParts ++ CallParts), TF orelse CF};
+normalized_message(_, _) -> throw(unsupported_shape).
+
+normalized_text_message(O, Role, B) ->
+    {Parts, F} = case B of <<>> -> {[], false}; _ -> {P, F0} = text(O, B), {[P], F0} end,
+    {message(Role, Parts), F}.
+
+normalized_tools(_O, []) -> {[], false};
+normalized_tools(O, Tools) ->
+    {Defs, F} = map_filtered(fun
+        ({tool_definition, Name, _, _}) ->
+            identity(O, Name), {#{<<"type">> => <<"function">>, <<"name">> => Name}, false};
+        (_) -> throw(unsupported_shape)
+    end, bounded_list(Tools, 32)),
+    {[{<<"gen_ai.tool.definitions">>, Defs}], F}.
 
 capture(O, Api, Body, Direction) ->
     safe_capture(fun() ->
@@ -128,7 +256,14 @@ preflight(<<C, Rest/binary>>, D, N, _, _)
 preflight(<<_, Rest/binary>>, D, N, outside, _) -> preflight(Rest, D, N + 1, scalar, 1);
 preflight(<<_, Rest/binary>>, D, N, scalar, Length) -> preflight(Rest, D, N, scalar, Length + 1).
 
-bounded_list(L, Max) -> ensure(is_list(L) andalso length(L) =< Max, structure_limit), L.
+bounded_list(L, Max) when is_list(L) ->
+    bounded_list_count(L, Max, 0), L;
+bounded_list(_, _) -> throw(structure_limit).
+
+bounded_list_count([], _Max, _Count) -> ok;
+bounded_list_count([_ | Rest], Max, Count) when Count < Max ->
+    bounded_list_count(Rest, Max, Count + 1);
+bounded_list_count(_, _Max, _Count) -> throw(structure_limit).
 required(M, K) when is_map(M) ->
     case maps:find(K, M) of {ok, V} -> V; error -> throw(unsupported_shape) end;
 required(_, _) -> throw(unsupported_shape).

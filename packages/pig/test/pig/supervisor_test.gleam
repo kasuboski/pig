@@ -9,6 +9,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
+import gleam/string
 import gleeunit
 import pig
 import pig/agent/runtime
@@ -23,6 +24,8 @@ import pig/session_store/memory
 import pig/supervisor
 import pig/tool
 import pig/turn
+import pig_otel
+import pig_otel/content/options as content_options
 import pig_protocol/message
 import pig_protocol/stop_reason
 import pig_protocol/thinking
@@ -183,6 +186,34 @@ pub fn start_supervised_succeeds_test() {
 }
 
 // ── run through supervised agent ─────────────────────────────────
+
+/// A built config retains generated provider tool information when supervised.
+pub fn supervised_built_config_keeps_provider_tool_prompt_test() {
+  let seen = process.new_subject()
+  let response = message.Assistant("hello!", [], None, None)
+  let provider =
+    provider.from_buffered(fn(request) {
+      process.send(seen, request)
+      Ok(provider.from_message(response))
+    })
+  let config =
+    pig.new(provider)
+    |> pig.with_tool(harness.echo_tool())
+    |> pig.build_agent_config
+  let options = content_options.defaults()
+  let assert Ok(sup) =
+    supervisor.start_supervised_with_tracing(
+      config,
+      [],
+      pig_otel.Conversation(options),
+    )
+  let assert Ok(_) = supervisor.run(sup, "hi")
+  let assert Ok(request) = process.receive(seen, 2000)
+  let assert Some(prompt) = request.system_prompt
+  assert string.contains(prompt, "Available tools:")
+  assert string.contains(prompt, "echo: Echoes back")
+  supervisor.stop(sup)
+}
 
 /// run returns the provider's response through the supervised agent.
 pub fn run_returns_response_test() {

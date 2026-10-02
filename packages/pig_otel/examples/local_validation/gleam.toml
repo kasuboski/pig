@@ -14,6 +14,7 @@ jscheam = ">= 2.0.0 and < 3.0.0"
 pig = { path = "../../../pig" }
 pig_proxy = { path = "../../../pig_proxy" }
 pig_protocol = { path = "../../../pig_protocol" }
+pig_transport = { path = "../../../pig_transport" }
 pig_otel = { path = "../.." }
 opentelemetry = "== 1.7.0"
 # Exporter 1.10.0 is built by the host's rebar.config. Gleam has no Hex

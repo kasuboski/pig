@@ -129,6 +129,49 @@ pub fn capture_then_disabled_last_builder_test() -> Nil {
   }
 }
 
+pub fn official_sdk_direct_content_recording_test() -> Nil {
+  case host.integration_enabled() {
+    True ->
+      host.check_direct_content_recording(business.exercise_direct_content)
+    False -> Nil
+  }
+}
+
+pub fn official_otlp_direct_content_delivery_test() -> Nil {
+  case host.integration_enabled() {
+    True -> host.check_direct_content_otlp(business.exercise_direct_content)
+    False -> Nil
+  }
+}
+
+pub fn direct_content_metadata_only_test() -> Nil {
+  case host.integration_enabled() {
+    True ->
+      host.check_direct_content_metadata(
+        business.exercise_direct_content_metadata,
+      )
+    False -> Nil
+  }
+}
+
+pub fn direct_content_disabled_policy_test() -> Nil {
+  case host.integration_enabled() {
+    True ->
+      host.check_direct_content_disabled(
+        business.exercise_direct_content_disabled,
+      )
+    False -> Nil
+  }
+}
+
+pub fn direct_content_without_sdk_or_sampling_test() -> Nil {
+  case host.integration_enabled() {
+    True ->
+      host.check_direct_content_unavailable(business.exercise_direct_content)
+    False -> Nil
+  }
+}
+
 pub fn official_sdk_content_value_limit_test() -> Nil {
   case host.integration_enabled() {
     True -> host.check_content_limits(business.exercise_proxy_content)

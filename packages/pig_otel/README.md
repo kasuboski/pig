@@ -1,9 +1,9 @@
 # pig_otel
 
-Shared OpenTelemetry semantics and propagation for Pig on the BEAM. Content
-projection for the proxy is implemented separately in `pig_proxy`; this package
-remains the shared metadata adapter.
-The library depends on `otel_gleam` at remote Git revision
+Shared OpenTelemetry semantics, propagation, and bounded conversation projection
+for Pig on the BEAM. `pig` and `pig_proxy` use the same public `Policy` and the
+same `pig_otel/content` implementation; consumer-specific lifecycle ownership
+remains in each package. The library depends on `otel_gleam` at remote Git revision
 `0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5` and official API 1.5.0. It does not
 start, configure, flush, or depend on the SDK/exporter in production.
 
@@ -26,12 +26,13 @@ checks; they perform no IO.
 - `Disabled` creates no spans and performs no tracer lookup, but retains and
   propagates the supplied explicit parent. Lookup failure has the same span
   behavior, emits a fixed internal diagnostic, and never uses a default tracer.
-- `MetadataOnly` does not honor a global content opt-in. Attribute adapters
-  accept **known metadata only**; they are not sanitizers for arbitrary
-  attributes. Never supply messages, reasoning, tool content, bodies,
-  credentials, baggage, raw URLs, or exception text. Attribute keys must be nonempty.
-- Structured proxy conversation capture is selected through `pig_proxy/config`,
-  not `pig_otel.Policy`; it does not add direct `pig.run` capture. See the
+- `Policy` has `MetadataOnly` (default), `Conversation(options.Options)`, and
+  `Disabled`. Both `pig.with_tracing` and `pig_proxy/config.with_tracing` accept
+  this same choice; there is no separate proxy capture builder/type.
+- `MetadataOnly` does not honor a global content opt-in. `Conversation` explicitly
+  enables bounded structured projection for direct normalized Pig inference and
+  eligible proxy JSON/SSE. Attribute adapters still accept **known metadata
+  only**; they are not sanitizers for arbitrary attributes. See the
   [maintained capture contract](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
 - Agent/tool/route/target names are configured identities, not per-request
   content. Request model is the actual known constructor/request model, not agent

@@ -2,33 +2,34 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import pig_otel
+import pig_otel/content/options
 import pig_proxy/config
-import pig_proxy/content
 import support/content_lifecycle_harness as check
 
-pub fn builder_precedence_is_last_explicit_call_wins_test() {
+pub fn policy_builder_last_call_wins_test() {
+  let capture = pig_otel.Conversation(options.defaults())
   let capture_after_disabled =
     config.new([])
     |> config.with_tracing(pig_otel.Disabled)
-    |> config.with_conversation_capture(content.defaults())
-  let assert config.Conversation(_) = capture_after_disabled.tracing
+    |> config.with_tracing(capture)
+  let assert pig_otel.Conversation(_) = capture_after_disabled.tracing
 
-  let metadata_after_capture =
+  let metadata =
     config.new([])
-    |> config.with_conversation_capture(content.defaults())
+    |> config.with_tracing(capture)
     |> config.with_tracing(pig_otel.MetadataOnly)
-  should.equal(metadata_after_capture.tracing, config.MetadataOnly)
+  should.equal(metadata.tracing, pig_otel.MetadataOnly)
 
-  let disabled_after_capture =
+  let disabled =
     config.new([])
-    |> config.with_conversation_capture(content.defaults())
+    |> config.with_tracing(capture)
     |> config.with_tracing(pig_otel.Disabled)
-  should.equal(disabled_after_capture.tracing, config.Disabled)
+  should.equal(disabled.tracing, pig_otel.Disabled)
 }
 
 pub fn default_config_remains_metadata_only_test() {
-  let assert config.MetadataOnly = config.new([]).tracing
-  let assert config.MetadataOnly = config.from_env().tracing
+  let assert pig_otel.MetadataOnly = config.new([]).tracing
+  let assert pig_otel.MetadataOnly = config.from_env().tracing
 }
 
 pub fn skipped_targets_do_not_capture_unsent_input_test() {

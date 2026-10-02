@@ -38,8 +38,11 @@ import pig/tool
 import pig/tool/execution
 import pig/turn.{type Input}
 import pig_otel
+import pig_otel/content
+import pig_otel/content/options
 import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message, type ToolCall}
+import pig_protocol/stop_reason.{type StopReason}
 import pig_protocol/tool_definition
 
 /// Configuration owned by one runtime actor.
@@ -153,6 +156,7 @@ type InferenceOperation {
     input_messages: List(Message),
     settings: InferenceSettings,
     span: pig_otel.Span,
+    content_capture: option.Option(#(options.Options, content.Capture)),
   )
 }
 
@@ -191,18 +195,11 @@ pub fn start(
 ) -> Result(process.Subject(RuntimeMsg), StartError) {
   let agent_config =
     state.AgentConfig(
-      provider: config.provider,
+      ..state.config(config.provider),
       inference_settings: config.inference_settings,
       tools: config.tools,
-      system_prompt: option.None,
       max_iterations: config.max_iterations,
       model: config.model,
-      agent_id: option.None,
-      agent_name: option.None,
-      agent_description: option.None,
-      agent_version: option.None,
-      provider_name: option.None,
-      session_path: option.None,
     )
   start_with_state(
     config,
@@ -1045,7 +1042,9 @@ fn start_inference(
   let before_event =
     hooks.BeforeInferenceEvent(
       model: runtime_state.config.model,
-      system_prompt: runtime_state.agent_state.config.system_prompt,
+      system_prompt: state.provider_system_prompt(
+        runtime_state.agent_state.config,
+      ),
       messages:,
       settings:,
     )
@@ -1098,7 +1097,9 @@ fn start_valid_inference(
   let round = active.round + 1
   let request =
     provider.InferenceRequest(
-      system_prompt: runtime_state.agent_state.config.system_prompt,
+      system_prompt: state.provider_system_prompt(
+        runtime_state.agent_state.config,
+      ),
       messages: final_messages,
       tools:,
       settings:,
@@ -1112,6 +1113,22 @@ fn start_valid_inference(
   }
   let span =
     tracing.start(active.backend, pig_otel.context(active.span), operation)
+  let capture = case
+    runtime_state.config.tracing,
+    pig_otel.tracing_available(active.backend)
+  {
+    pig_otel.Conversation(options), True -> {
+      let capture =
+        content.normalized_input(
+          options,
+          state.system_instructions(runtime_state.agent_state.config),
+          request.messages,
+          request.tools,
+        )
+      option.Some(#(options, capture))
+    }
+    _, _ -> option.None
+  }
   case request.settings.thinking {
     provider.UseProviderDefault -> Nil
     provider.UseThinkingLevel(level) ->
@@ -1150,6 +1167,7 @@ fn start_valid_inference(
       input_messages: final_messages,
       settings: request.settings,
       span:,
+      content_capture: capture,
     )
   RuntimeState(
     ..runtime_state,
@@ -1198,9 +1216,18 @@ fn finish_inference(
         operation.span,
         pig_otel.response_attributes(result.metadata),
       )
+      annotate_inference_content(
+        operation,
+        pig_otel.Succeeded,
+        option.Some(#(result.message, result_stop_reason(result))),
+      )
       tracing.finish(operation.span, pig_otel.Succeeded)
     }
-    Error(error) -> tracing.finish(operation.span, inference_outcome(error))
+    Error(error) -> {
+      let outcome = inference_outcome(error)
+      annotate_inference_content(operation, outcome, option.None)
+      tracing.finish(operation.span, outcome)
+    }
   }
   process.send(
     active.sink,
@@ -1260,6 +1287,46 @@ fn finish_inference(
         msg.ProviderResponded(Error(error)),
       )
     }
+  }
+}
+
+fn result_stop_reason(
+  result: provider.InferenceResult,
+) -> option.Option(StopReason) {
+  case result.metadata.stop_reason {
+    option.Some(_) as reason -> reason
+    option.None ->
+      case result.message {
+        message.Assistant(stop_reason:, ..) -> stop_reason
+        _ -> option.None
+      }
+  }
+}
+
+fn annotate_inference_content(
+  operation: InferenceOperation,
+  outcome: pig_otel.Outcome,
+  output: option.Option(#(Message, option.Option(StopReason))),
+) -> Nil {
+  case operation.content_capture {
+    option.Some(#(options, input_capture)) -> {
+      // Reserve attribute slots for terminal metadata before optional content.
+      pig_otel.annotate(operation.span, pig_otel.terminal(outcome).1)
+      pig_otel.annotate(
+        operation.span,
+        content.attributes(input_capture, content.Input),
+      )
+      let output_capture = case output {
+        option.Some(#(message, stop_reason)) ->
+          content.normalized_output(options, message, stop_reason)
+        option.None -> content.incomplete()
+      }
+      pig_otel.annotate(
+        operation.span,
+        content.attributes(output_capture, content.Output),
+      )
+    }
+    option.None -> Nil
   }
 }
 
@@ -1648,7 +1715,10 @@ fn cancel_current_run(
       // Finalize before cancellation notifications can invoke throwing hooks.
       case active.phase {
         Preparing -> Nil
-        AwaitingInference(operation) -> tracing.finish(operation.span, outcome)
+        AwaitingInference(operation) -> {
+          annotate_inference_content(operation, outcome, option.None)
+          tracing.finish(operation.span, outcome)
+        }
         AwaitingTools(batch) ->
           list.each(batch.active, fn(item) {
             tracing.finish(item.span, outcome)
@@ -1658,7 +1728,8 @@ fn cancel_current_run(
       // Send every cancellation before any user callback can throw.
       case active.phase {
         Preparing -> Nil
-        AwaitingInference(operation) -> inference_worker.cancel(operation.worker)
+        AwaitingInference(operation) ->
+          inference_worker.cancel(operation.worker)
         AwaitingTools(batch) ->
           list.each(batch.active, fn(active_tool) {
             tool_worker.cancel(active_tool.worker)
@@ -1687,7 +1758,8 @@ fn cancel_current_run(
             )
           })
       }
-      let next = finish_terminal(runtime_state, run_recovery.TermCancelled(reason))
+      let next =
+        finish_terminal(runtime_state, run_recovery.TermCancelled(reason))
       // Hooks run only after the run handle and runtime state are terminal.
       case active.phase {
         Preparing -> Nil

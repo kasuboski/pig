@@ -1,8 +1,9 @@
 # OpenTelemetry Validation Runbook
 
-This runbook describes the maintained local gates for Pig tracing. Run commands
-from the repository root with the source tree and dependency pins under review.
-It does not record one machine's output or temporary evidence.
+This runbook describes the maintained local gates for Pig tracing and their
+verified scope. Run commands from the repository root with the source tree and
+dependency pins under review; this is a maintained validation matrix, not a
+machine-specific historical report.
 
 ## Prerequisites
 
@@ -57,44 +58,60 @@ and acknowledges the expected span set before SDK shutdown; `force_flush` alone
 is not proof of delivery. Recording-only and exporter-refusal cases establish
 instrumentation/business non-interference, not delivery.
 
-The gate covers public buffered and streamed Pig runs and real proxy requests
-for both `/v1/chat/completions` and `/v1/responses`. The final clean SDK/OTLP gate
-passed with 19 enabled integration checks and 4 ungated verifier checks
-(23 passed with integration enabled); a separate
-invocation verifies the ungated suite. With the integration flag off, the unit
-invocation reports 23 passed, including 19 integration no-ops; those are not 23
-true unit tests. The shared SDK suite passed 5 tests. The final root build/check/test
-gates also passed; the package test runner reported 992 passed.
-Evidence for the final SDK/OTLP gate is under
-`/tmp/pig-otel-evidence/content-capture/final-integration-stable`. This evidence
-is a test run record, not a repository input.
+The maintained gates pass:
 
-The content checks observed 12 actual consumer spans for the positive buffered
-and streaming cases across both API routes through official SDK recording and
-OTLP receiver acknowledgement. They also covered metadata-only privacy, a
-retry with a failed 503 first attempt (16 actual consumer spans), malformed
-streamed JSON, source overflow, configured capture with no SDK and with sampling
-off, `Disabled` precedence, and a deliberately small SDK string limit that
-truncated otherwise valid content JSON. The latter was treated as invalid JSON,
-not successful capture. Three fresh-VM interrupted-run repeats each recorded six
-actual spans across the two routes, with interrupted output omitted/incomplete
-alongside failed or
-cancelled outcomes. A full-span privacy sentinel scan and pure regression checks
-passed. A deterministic graceful owners-supervisor teardown barrier prevents
-the interrupted-fixture snapshot race. Pure projection/redaction/bounds fixtures
-and lifecycle/builder tests are also included.
+- `mise run build`, `mise run check`, and `mise run test` pass. The root test
+  total is 1,001: 505 `pig`, 102 `pig_otel`, 144 `pig_protocol`, 235
+  `pig_proxy`, and 15 `pig_transport`.
+- A clean `mise run test-integration-otel` passes 28 entries: 24 enabled
+  integration wrappers plus four ungated verifier checks. The unchanged shared
+  official SDK suite passes five tests. The warning gate passes 12 checks.
+- The clean dependency compiler output retains exactly nine visible
+  `gleam_http.Header` deprecations from Mist/Gramps, as allowed by the narrow
+  warning policy; project warnings remain errors.
 
-Production forwards the effective API request payload unchanged; verified
-forwarding does not apply production normalization.
+Direct SDK/OTLP acceptance covers built-in OpenAI Chat Completions and Responses
+using deterministic streaming transport adapters through public buffered and
+stream-first operations. Four runs each produce two
+inferences and a tool span: 16 spans, all received and acknowledged as real OTLP
+HTTP/protobuf. Exact GenAI content JSON goldens for both rounds verify authored
+system instructions, absence of the original private post-hook input,
+default nested tool-argument/result redaction, and omission of generated tool
+descriptions, schemas and thinking. The whole exported span set is privacy
+checked. Authored `system_instructions` capture excludes the generated tool
+description block; it is not an assertion that the entire provider
+`InferenceRequest.system_prompt`, raw wire payload, or custom-provider transforms
+are captured. Provider prompt bytes/order are unchanged.
 
-These counts prove only the exercised fixtures and SDK/OTLP receiver-acknowledged
-span sets. The 19 enabled integration checks do not validate every backend's
-rendering, retention, truncation policy, or physical downstream wire delivery. Streaming
-cases retain the downstream first-body acknowledgement boundary and check body
-preservation. Input projection is bounded but synchronous before send, buffered
-output projection is synchronous before return, and SSE projection runs
-incrementally on the stream observation path. None is a zero-latency guarantee,
-and SSE capture does not wait for the complete stream before forwarding it.
+The proxy shared-SDK gate also passes for both Chat Completions and Responses,
+buffered and streaming. It observes 12 content-positive spans, 16 retry spans,
+six interrupted spans, plus malformed/overflow, metadata-only, disabled/no-SDK,
+always-off sampling, shared-policy configuration, and the original full proxy
+race matrix.
+
+For direct Pig, eight outgoing `traceparent` observations correlate with actual
+inference spans; transport children intentionally receive no implicit context.
+Four scoped tool callbacks correlate with tool spans. Two caller trace contexts
+are reused across the four API/mode combinations; identical caller facts are
+deduplicated by the fixture's ETS bag. Metadata-only preserves all 16 spans
+without conversation attributes. Disabled, no-SDK and always-off leave business
+results unchanged and export zero spans. These counts distinguish wrapper
+entries from content-positive and receiver-acknowledged span sets; they are not
+broader delivery guarantees.
+
+Separate pinned-schema validation passes for 92 actual exported content
+attributes: 32 each from direct SDK recording and OTLP receipt, and 14 each from
+proxy SDK recording and OTLP receipt. This schema-validation invocation is
+separate from the ordinary checked-in test gate.
+
+Production proxy forwarding remains unchanged; projection does not mutate
+upstream/downstream payloads. These checks validate only exercised projections,
+SDK recording and receiver-acknowledged OTLP spans. They do not establish every
+backend's rendering, retention, or truncation behavior, or physical downstream
+wire delivery. Direct projection is bounded at inference boundaries; proxy input
+and buffered output projection are synchronous, while SSE projection runs
+incrementally on the observation path. None is a zero-latency guarantee, and
+proxy SSE capture does not wait for the complete stream before forwarding it.
 
 Integration wrappers under `test/integration/` compile normally but execute only
 when the host explicitly sets `PIG_RUN_OTEL_INTEGRATION=1`. Root package unit
@@ -105,7 +122,7 @@ mistake skipped network wrappers for the enabled local integration run.
 
 ## Warning policy
 
-The clean dependency graph currently emits nine known `gleam_http.Header`
+The clean dependency graph emits exactly nine known `gleam_http.Header`
 deprecations from Mist 6.0.3 and Gramps 6.0.1. They remain visible in compiler
 logs and are accepted as a documented upstream limitation; do not patch, fork,
 or vendor dependencies to remove them. `scripts/check_otel_warnings.awk` accepts

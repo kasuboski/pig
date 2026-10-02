@@ -61,9 +61,11 @@ default; `pig.with_tracing(config, pig_otel.Disabled)` and
 while preserving sanitized parent propagation. The host owns SDK/exporter setup
 and shutdown; production library dependencies contain only the OTel API.
 
-Direct Pig tracing and proxy metadata-only tracing do not capture content.
-`pig_proxy` also provides explicitly configured, bounded structured capture for
-eligible proxy conversations; this does not enable capture in direct Pig runs.
+Direct Pig and proxy tracing share one `pig_otel.Policy`: metadata-only by
+default, explicitly bounded `Conversation(options)` capture, or `Disabled`.
+Direct Pig projects normalized inference requests/results; the proxy projects
+its observed upstream JSON/SSE. They share projection, redaction and limits,
+without claiming identical source-byte provenance or provider-wire payloads.
 See the [tracing guide](knowledge/OPENTELEMETRY.md),
 [capture guide](knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md),
 [validation runbook](knowledge/OPENTELEMETRY_VALIDATION.md), and

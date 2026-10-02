@@ -47,17 +47,81 @@ pub fn check_agent(
   supervised: Bool,
   work: fn(Agent) -> a,
 ) -> a {
-  check_agent_using(setup, provider, tools, hooks, policy, supervised, work)
+  check_agent_using(
+    setup,
+    provider,
+    tools,
+    hooks,
+    option.None,
+    policy,
+    supervised,
+    work,
+  )
+}
+
+pub fn check_agent_with_system_prompt(
+  provider: provider.Provider,
+  tools: List(tool.Tool),
+  hooks: List(hooks.Hooks),
+  system_prompt: String,
+  policy: pig_otel.Policy,
+  work: fn(Agent) -> a,
+) -> a {
+  check_agent_using(
+    setup,
+    provider,
+    tools,
+    hooks,
+    option.Some(system_prompt),
+    policy,
+    False,
+    work,
+  )
+}
+
+/// Start one fully built public config through either supported agent entrypoint.
+pub fn check_config(
+  config: pig.PigConfig,
+  policy: pig_otel.Policy,
+  supervised: Bool,
+  work: fn(Agent) -> a,
+) -> a {
+  setup()
+  let agent = case supervised {
+    False -> {
+      let assert Ok(agent) = pig.start(pig.with_tracing(config, policy))
+      Direct(agent)
+    }
+    True -> {
+      let agent_config = pig.build_agent_config(config)
+      let assert Ok(agent) =
+        supervisor.start_supervised_with_tracing(agent_config, [], policy)
+      Supervised(agent)
+    }
+  }
+  finally(fn() { work(agent) }, fn() {
+    stop(agent)
+    teardown()
+  })
 }
 
 /// Exercise metadata-only defaults against the API with no tracer provider/SDK.
 pub fn check_no_sdk(provider: provider.Provider, work: fn(Agent) -> a) -> a {
+  check_no_sdk_with_policy(provider, pig_otel.MetadataOnly, work)
+}
+
+pub fn check_no_sdk_with_policy(
+  provider: provider.Provider,
+  policy: pig_otel.Policy,
+  work: fn(Agent) -> a,
+) -> a {
   check_agent_using(
     no_sdk_setup,
     provider,
     [],
     [],
-    pig_otel.MetadataOnly,
+    option.None,
+    policy,
     False,
     work,
   )
@@ -68,6 +132,7 @@ fn check_agent_using(
   provider: provider.Provider,
   tools: List(tool.Tool),
   hooks: List(hooks.Hooks),
+  system_prompt: option.Option(String),
   policy: pig_otel.Policy,
   supervised: Bool,
   work: fn(Agent) -> a,
@@ -77,6 +142,10 @@ fn check_agent_using(
     False -> {
       let config =
         pig.new(provider) |> pig.with_tools(tools) |> pig.with_tracing(policy)
+      let config = case system_prompt {
+        option.Some(prompt) -> pig.with_system_prompt(config, prompt)
+        option.None -> config
+      }
       let config = list.fold(hooks, config, pig.with_hooks)
       let assert Ok(agent) = pig.start(config)
       Direct(agent)
@@ -85,6 +154,10 @@ fn check_agent_using(
       let config =
         state.config(provider)
         |> state.with_tools(list.fold(tools, tool.new_registry(), tool.register))
+      let config = case system_prompt {
+        option.Some(prompt) -> state.with_system_prompt(config, prompt)
+        option.None -> config
+      }
       let assert Ok(agent) =
         supervisor.start_supervised_with_tracing(config, [], policy)
       Supervised(agent)

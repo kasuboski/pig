@@ -9,8 +9,8 @@ import gleam/otp/static_supervisor
 import gleam/result
 import gleeunit/should
 import pig_otel
+import pig_otel/content/options
 import pig_proxy/config
-import pig_proxy/content
 import pig_proxy/execution
 import pig_proxy/trace_metadata
 import pig_proxy/tracing
@@ -33,11 +33,11 @@ pub fn run_retrying_buffered_capture() -> List(String) {
       static_supervisor.new(static_supervisor.OneForOne)
       |> static_supervisor.add(tracing.supervisor(name))
       |> static_supervisor.start
-    let options = content.defaults()
+    let capture_options = options.defaults()
     let owner =
       tracing.register_with_policy(
         name,
-        config.Conversation(options),
+        pig_otel.Conversation(capture_options),
         [],
         "/v1/chat/completions",
       )
@@ -117,7 +117,7 @@ pub fn run_no_target_capture() -> List(String) {
     let owner =
       tracing.register_with_policy(
         name,
-        config.Conversation(content.defaults()),
+        pig_otel.Conversation(options.defaults()),
         [],
         "/v1/chat/completions",
       )
@@ -239,7 +239,7 @@ fn run_selected(
     let owner =
       tracing.register_with_policy(
         name,
-        config.Conversation(content.defaults()),
+        pig_otel.Conversation(options.defaults()),
         [],
         path,
       )

@@ -3,6 +3,7 @@
 -export([check/2, check_agents/2, check_proxy_sync/2, check_proxy_content/2,
          check_proxy_content_overflow/2, check_proxy_content_malformed/2,
          check_proxy_content_retry/2, check_proxy_content_interrupt/2,
+         check_direct_content/2, check_direct_content_metadata/2,
          check_failure/2, safe_metadata/1, content_private_values/1,
          unique_ids/1, related/2]).
 
@@ -34,6 +35,185 @@ check_proxy_sync(Spans, Facts) ->
     true = safe_metadata(Spans),
     lists:foreach(fun valid_span/1, Spans),
     check_proxy(Spans, Facts, 2).
+
+check_direct_content(Spans, Facts) ->
+    16 = length(Spans),
+    true = unique_ids(Spans),
+    true = safe_direct_content(Spans),
+    Pig = scope(<<"pig">>, Spans),
+    16 = length(Pig),
+    lists:foreach(fun direct_valid_span/1, Spans),
+    Runs = operation(<<"invoke_agent">>, Spans),
+    4 = length(Runs),
+    Inferences = operation(<<"chat">>, Spans),
+    8 = length(Inferences),
+    Tools = operation(<<"execute_tool">>, Spans),
+    4 = length(Tools),
+    true = lists:all(fun(S) -> maps:get(kind, S) =:= internal end, Runs ++ Tools),
+    lists:foreach(fun(S) ->
+        [] = [K || K <- maps:keys(maps:get(attributes, S)), is_capture_key(K)]
+    end, Runs ++ Tools),
+    true = lists:all(fun(S) -> maps:get(kind, S) =:= client end, Inferences),
+    lists:foreach(fun(Run) ->
+        Trace = maps:get(trace_id, Run),
+        ParentId = maps:get(parent_span_id, Run),
+        true = lists:any(fun({caller, T, P}) -> T =:= Trace andalso P =:= ParentId end,
+                         [F || F={caller, _, _} <- Facts]),
+        <<"direct_content_validation">> = attr(<<"gen_ai.agent.name">>, Run),
+        Children = children(Run, Spans),
+        3 = length(Children),
+        [Tool] = [S || S <- Children, attr(<<"gen_ai.operation.name">>, S) =:= <<"execute_tool">>],
+        TwoInferences = [S || S <- Children, attr(<<"gen_ai.operation.name">>, S) =:= <<"chat">>],
+        2 = length(TwoInferences),
+        lists:foreach(fun(S) ->
+            check_direct_identity(S),
+            direct_inference(S)
+        end, TwoInferences),
+        internal = maps:get(kind, Tool)
+    end, Runs),
+    Combinations = lists:usort(lists:flatmap(fun(Run) ->
+        ParentTrace = maps:get(trace_id, Run),
+        [ {attr(<<"openai.api.type">>, S), ParentTrace}
+          || S <- children(Run, Spans), attr(<<"gen_ai.operation.name">>, S) =:= <<"chat">> ]
+    end, Runs)),
+    4 = length(Combinations),
+    CallerFacts = [F || F={caller, _, _} <- Facts],
+    2 = length(lists:usort([T || {caller, T, _} <- CallerFacts])),
+    2 = length(CallerFacts),
+    [<<"2222222222222222">>] = lists:usort([P || {caller, _, P} <- CallerFacts]),
+    true = lists:sort([<<"00000000000000000000000000000065">>,
+                       <<"00000000000000000000000000000066">>]) =:=
+           lists:usort([T || {caller, T, _} <- CallerFacts]),
+    check_direct_facts(Spans, Facts),
+    ok.
+
+check_direct_content_metadata(Spans, Facts) ->
+    16 = length(Spans),
+    true = unique_ids(Spans),
+    true = safe_direct_content(Spans),
+    lists:foreach(fun direct_valid_span/1, Spans),
+    Runs = operation(<<"invoke_agent">>, Spans),
+    4 = length(Runs),
+    Inferences = operation(<<"chat">>, Spans),
+    8 = length(Inferences),
+    4 = length(operation(<<"execute_tool">>, Spans)),
+    lists:foreach(fun(S) ->
+        [] = [K || K <- maps:keys(maps:get(attributes, S)), is_capture_key(K)]
+    end, Spans),
+    lists:foreach(fun(S) ->
+        check_direct_identity(S),
+        direct_terminal_metadata(S)
+    end, Inferences),
+    lists:foreach(fun(Run) ->
+        3 = length(children(Run, Spans)),
+        <<"direct_content_validation">> = attr(<<"gen_ai.agent.name">>, Run),
+        true = lists:any(fun({caller, T, P}) ->
+            T =:= maps:get(trace_id, Run) andalso P =:= maps:get(parent_span_id, Run)
+        end, [F || F={caller, _, _} <- Facts])
+    end, Runs),
+    check_direct_facts(Spans, Facts),
+    4 = length(lists:usort([{attr(<<"openai.api.type">>, S), maps:get(trace_id, S)}
+                            || S <- Inferences])),
+    CallerFacts = [F || F={caller, _, _} <- Facts],
+    2 = length(lists:usort([T || {caller, T, _} <- CallerFacts])),
+    2 = length(CallerFacts),
+    [<<"2222222222222222">>] = lists:usort([P || {caller, _, P} <- CallerFacts]),
+    ok.
+
+check_direct_facts(Spans, Facts) ->
+    Propagation = [F || F={propagation, _, _} <- Facts],
+    Callbacks = [F || F={callback, _, _, _} <- Facts],
+    8 = length(Propagation),
+    4 = length(Callbacks),
+    Observed = [{<<"chat">>, T, I} || {propagation, T, I} <- Propagation]
+        ++ [{<<"execute_tool">>, T, I} || {callback, <<"tool">>, T, I} <- Callbacks],
+    12 = length(Observed),
+    lists:foreach(fun({Operation, Trace, Id}) ->
+        [Span] = [S || S=#{trace_id := T, span_id := I} <- Spans, T =:= Trace, I =:= Id],
+        Operation = attr(<<"gen_ai.operation.name">>, Span)
+    end, Observed),
+    ok.
+
+safe_direct_content(Spans) ->
+    Encoded = term_to_binary(Spans),
+    Forbidden = [<<"NEVER_EXPORT_">>, <<"PRIVATE_">>, <<"direct_test_key">>,
+                 <<"Bearer ">>, <<"authorization">>, <<"exception.message">>,
+                 <<"error.message">>],
+    [] = [V || V <- Forbidden, binary:match(Encoded, V) =/= nomatch],
+    true.
+
+direct_valid_span(#{trace_id := Trace, span_id := Id, start := Start, 'end' := End,
+                    status := unset, attributes := Attrs, scope := <<"pig">>,
+                    version := <<"0.6.0">>, schema := <<>>, events := [], links := []}) ->
+    32 = byte_size(Trace),
+    16 = byte_size(Id),
+    true = Start > 0 andalso End >= Start,
+    <<"succeeded">> = maps:get(<<"pig.outcome">>, Attrs),
+    [] = [K || K <- [<<"exception.message">>, <<"exception.stacktrace">>, <<"url.full">>,
+                      <<"baggage">>, <<"http.request.header.authorization">>],
+               maps:is_key(K, Attrs)],
+    ok.
+
+direct_inference(Span) ->
+    Attrs = maps:get(attributes, Span),
+    Round = attr(<<"gen_ai.response.id">>, Span),
+    RoundNumber = case Round of
+        <<"direct_round_1">> -> "round-1";
+        <<"direct_round_2">> -> "round-2"
+    end,
+    direct_terminal_metadata(Span),
+    lists:foreach(fun(Direction) ->
+        Prefix = case Direction of input -> "input"; output -> "output" end,
+        StatusKey = list_to_binary("pig.content." ++ Prefix ++ ".status"),
+        ReasonKey = list_to_binary("pig.content." ++ Prefix ++ ".reason"),
+        Status = maps:get(StatusKey, Attrs),
+        Reason = maps:get(ReasonKey, Attrs),
+        true = ((Status =:= <<"captured">> andalso Reason =:= <<"complete">>) orelse
+                (Status =:= <<"filtered">> andalso Reason =:= <<"redacted_or_excluded">>)),
+        ExpectedFile = filename:join(["test_data", "direct_content",
+            Prefix ++ "-" ++ RoundNumber ++ ".json"]),
+        {ok, ExpectedBytes} = file:read_file(ExpectedFile),
+        Expected = json:decode(ExpectedBytes),
+        Actual = maps:from_list([{K, json:decode(V)} || {K, V} <- maps:to_list(Attrs),
+                                                       is_direction_key(Direction, K)]),
+        Expected = Actual
+    end, [input, output]),
+    AllowedContentKeys = [<<"gen_ai.input.messages">>, <<"gen_ai.output.messages">>,
+        <<"gen_ai.system_instructions">>, <<"gen_ai.tool.definitions">>],
+    [] = [K || K <- maps:keys(Attrs), is_content_key(K), not lists:member(K, AllowedContentKeys)],
+    ok.
+
+direct_terminal_metadata(Span) ->
+    Attrs = maps:get(attributes, Span),
+    Round = attr(<<"gen_ai.response.id">>, Span),
+    Finish = case Round of
+        <<"direct_round_1">> -> [<<"tool_use">>];
+        <<"direct_round_2">> -> [<<"stop">>]
+    end,
+    Finish = maps:get(<<"gen_ai.response.finish_reasons">>, Attrs),
+    5 = attr(<<"gen_ai.usage.input_tokens">>, Span),
+    3 = attr(<<"gen_ai.usage.output_tokens">>, Span),
+    2 = attr(<<"gen_ai.usage.cache_read.input_tokens">>, Span),
+    ok.
+
+is_direction_key(input, <<"gen_ai.input.", _/binary>>) -> true;
+is_direction_key(input, <<"gen_ai.system_instructions">>) -> true;
+is_direction_key(input, <<"gen_ai.tool.definitions">>) -> true;
+is_direction_key(output, <<"gen_ai.output.", _/binary>>) -> true;
+is_direction_key(_, _) -> false.
+
+check_direct_identity(Span) ->
+    Attrs = maps:get(attributes, Span),
+    Api = maps:get(<<"openai.api.type">>, Attrs),
+    true = lists:member(Api, [<<"chat_completions">>, <<"responses">>]),
+    <<"openai">> = maps:get(<<"gen_ai.provider.name">>, Attrs),
+    ExpectedModel = case Api of
+        <<"chat_completions">> -> <<"direct_model_chat">>;
+        <<"responses">> -> <<"direct_model_responses">>
+    end,
+    ExpectedModel = maps:get(<<"gen_ai.request.model">>, Attrs),
+    ExpectedModel = maps:get(<<"gen_ai.response.model">>, Attrs),
+    ok.
 
 check_proxy_content(Spans, Facts) ->
     12 = length(Spans),
@@ -128,6 +308,10 @@ is_content_key(<<"gen_ai.output.", _/binary>>) -> true;
 is_content_key(<<"gen_ai.system_instructions">>) -> true;
 is_content_key(<<"gen_ai.tool.definitions">>) -> true;
 is_content_key(_) -> false.
+
+is_capture_key(<<"pig.content.input.", _/binary>>) -> true;
+is_capture_key(<<"pig.content.output.", _/binary>>) -> true;
+is_capture_key(Key) -> is_content_key(Key).
 
 check_proxy_content_malformed(Spans, Facts) ->
     6 = length(Spans),

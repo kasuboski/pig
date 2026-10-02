@@ -9,13 +9,14 @@ import otel/attribute.{type Attribute}
 import otel/context.{type Context}
 import otel/propagation
 import otel/trace
+import pig_otel/content/options
 import pig_protocol/inference.{type InferenceMetadata}
 import pig_protocol/stop_reason
 
-/// Shared span policy and the direct Pig runtime policy. Proxy conversation
-/// capture is a separate explicit policy in `pig_proxy/config`.
+/// Shared span, metadata-only, and explicitly bounded conversation-capture policies.
 pub type Policy {
   MetadataOnly
+  Conversation(options.Options)
   Disabled
 }
 
@@ -61,7 +62,7 @@ pub type Outcome {
 pub fn backend(policy: Policy, marker: fn() -> Nil) -> Backend {
   case policy {
     Disabled -> NoTracing
-    MetadataOnly ->
+    MetadataOnly | Conversation(_) ->
       case trace.tracer_for(marker) {
         Ok(tracer) -> Enabled(tracer)
         Error(trace.MarkerApplicationNotFound) -> {

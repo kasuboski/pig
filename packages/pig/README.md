@@ -220,18 +220,43 @@ the input. Use `None` when no standing prompt is configured.
 
 ### Direct Tracing
 
-Run, inference, and tool spans are enabled by default with `pig_otel.MetadataOnly`.
-No prompts, completions, reasoning, tool arguments/results, credentials, or raw
-provider errors are captured by direct Pig spans, including for buffered runs.
-Rich audit events remain separately content-bearing. Explicit structured capture
-is a separate `pig_proxy` option and does not alter direct `pig_otel.Policy`.
-To disable Pig spans without disabling sanitized parent propagation:
+Run, inference, and tool spans use `pig_otel.MetadataOnly` by default. Direct Pig
+can also opt into bounded structured capture with the same policy used by the
+proxy. The input is the normalized `provider.InferenceRequest` after request
+hooks/defaults and before dispatch to the provider worker; completed assistant
+output is attached when inference ends. Buffered and streaming providers follow
+the same path: streaming capture uses the completed result, not a second SSE
+accumulator. Custom providers therefore expose normalized protocol input/output,
+not necessarily the provider's actual wire payload.
+
+Configure validated options using `pig_otel/content/options` and select
+`pig_otel.Conversation(options)` through `pig.with_tracing`:
 
 ```gleam
 import pig_otel
+import pig_otel/content/options
+import pig
 
-let config = pig.with_tracing(config, pig_otel.Disabled)
+let config =
+  pig.new(provider)
+  |> pig.with_tracing(pig_otel.Conversation(options.defaults()))
 ```
+
+`MetadataOnly` remains the default, and `pig_otel.Disabled` disables Pig spans
+without disabling sanitized parent propagation. Rich audit events remain a
+separate content-bearing channel. Capture includes resolved post-hook/default
+messages and tool definitions, plus authored system instructions and skills in
+`gen_ai.system_instructions`. Pig keeps those authored values separate from its
+generated tool-description block; capture excludes that block, tool descriptions
+and schemas, thinking, media, and raw provider-wire/custom transforms. This does
+not capture the entire `InferenceRequest.system_prompt` or change provider prompt
+bytes/order. Developer and tool messages retain their protocol IDs. Unknown/error
+stop reasons are omitted rather than fabricated; failed or cancelled output is
+incomplete. Error mapping is normalized and lossy; omitted detail is not
+reconstructed as a content-filter reason.
+Run/tool spans do not carry conversation payload. See the
+[shared capture guide](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md) for
+limits, redaction and privacy details.
 
 The host starts/configures the official SDK and exporter before starting work;
 Pig itself depends only on the API. Tracers refresh at accepted runs, so intentional

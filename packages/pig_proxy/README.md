@@ -360,22 +360,36 @@ needs tool calls or strict JSON schema support.
 ## OpenTelemetry
 
 Both POST inference routes have server, logical GenAI, and physical HTTP attempt
-spans in buffered and streaming mode. Metadata-only is the default. An explicit
-`config.with_conversation_capture(cfg, content.defaults())` opts eligible proxy
-requests into bounded structured capture on the logical span; see the
-[conversation capture guide](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md)
-for projected content, limits, synchronous capture overhead, and privacy
-requirements. Capture is not raw-body recording, does not enable capture in
-direct `pig.run` or `pig_otel.Policy`, and does not alter upstream/downstream
-request bodies or translate Responses requests to Chat Completions. The embedded
-library does not start an SDK/exporter. The host must configure the official composite
+spans in buffered and streaming mode. Metadata-only is the default. Opt eligible
+proxy requests into bounded structured capture by supplying the shared policy to
+`config.with_tracing`:
+
+```gleam
+import pig_otel
+import pig_otel/content/options
+
+let cfg =
+  config.new(targets)
+  |> config.with_tracing(pig_otel.Conversation(options.defaults()))
+```
+
+`pig.with_tracing` accepts the same policy and uses the same private
+`pig_otel_content_ffi` decoder/redactor/limiting boundary for normalized protocol
+input/output. The proxy uses that module for observed upstream JSON/SSE. This
+removes duplicated projection logic and fixtures, not OTP lifecycle ownership:
+Pig owns run/inference/tool spans, while the proxy owns server/logical/attempt
+spans and stream workers. Capture is not raw-body recording and does not alter
+upstream/downstream payloads or translate Responses requests to Chat Completions.
+See the [conversation capture guide](../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md)
+for projection, limits, synchronous capture overhead, and privacy requirements.
+The embedded library does not start an SDK/exporter. The host must configure the official composite
 Trace Context/Baggage propagator and disable overlapping HTTP auto-instrumentation
 for proxy-owned sends. Baggage is stripped; duplicate propagation headers are
 scrubbed before explicit-context injection.
 
 `config.with_tracing(cfg, pig_otel.Disabled)` creates no Pig spans or tracer lookup,
-but preserves sanitized explicit-parent propagation and clears any prior capture
-selection. Builder order is significant; the last tracing builder wins.
+but preserves sanitized explicit-parent propagation. Since there is only one
+tracing-policy builder, the last call replaces the previous policy.
 Health/metrics/unmatched routes and pre-handler HTTP rejection are not traced.
 Body-read rejection on the
 two inference routes is traced.

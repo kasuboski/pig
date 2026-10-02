@@ -4,10 +4,10 @@ This example is a host, not a production Pig dependency. The root build discover
 its `gleam.toml` normally. Network integration modules live in `test/integration/`
 and compile with ordinary tests; only their execution requires
 `PIG_RUN_OTEL_INTEGRATION=1`. Pure verifier unit tests are never gated. This is
-intended as a release gate for tracing and opt-in proxy content contracts;
-unsupported cases remain documented separately. The clean SDK/OTLP content gate
-has passed; the runbook records its scope and the distinction between receiver
-acknowledgement and broader delivery guarantees.
+intended as a release gate for tracing and opt-in conversation capture;
+unsupported cases remain documented separately. The maintained shared-policy
+direct and proxy acceptance gates pass; see the runbook for the verified matrix,
+counts and delivery limits.
 
 The test gate accepts the nine known Mist/Gramps Header deprecations, which remain
 visible in compiler logs. It rejects project-source and unexpected warnings,
@@ -57,24 +57,12 @@ upstream for both `/v1/chat/completions` and `/v1/responses`, buffered and
 streaming. It requires no paid API, credentials, external provider or external
 collector.
 
-Official SDK recording cases separate metadata-only privacy and explicit
-conversation capture. The final clean gate passed with 19 enabled integration
-checks and 4 ungated verifier checks (23 passed with integration enabled); a
-separate invocation verifies the ungated suite. With the integration flag off,
-the unit invocation reports 23 passed, including 19 integration no-ops, not 23
-true unit tests. The shared-SDK runtime suite passed 5 tests. Positive buffered and streaming capture produced 12
-actual consumer spans across both routes, verified through SDK recording and
-OTLP receiver acknowledgement. Other cases cover tool linkage, bounded/redacted
-values, malformed streamed JSON, source overflow, retry after a failed 503
-attempt, capture configured without an SDK or with sampling off, `Disabled`
-precedence, and interruption with truthful omitted/incomplete content and
-failed/cancelled outcomes. A deliberately small SDK value limit demonstrates
-that host truncation can invalidate otherwise valid JSON. Three fresh-VM
-interrupted-run repeats each recorded six spans across both routes; a full-span
-privacy sentinel scan and pure regression checks passed. A deterministic graceful
-owners-supervisor teardown barrier prevents the interrupted-fixture snapshot
-race. See the [validation runbook](../../../../knowledge/OPENTELEMETRY_VALIDATION.md) for the
-scope and caveats.
+The verified direct matrix covers shared-policy capture from built-in OpenAI
+Chat Completions and Responses, public buffered and stream-first operations, and
+16 consumer spans observed through official SDK recording and acknowledged by a
+real OTLP receiver. The proxy gate covers both routes with the same shared policy.
+The [validation runbook](../../../../knowledge/OPENTELEMETRY_VALIDATION.md)
+maintains exact counts, scope and caveats.
 
 Production forwards the effective API request payload unchanged; verified
 forwarding does not apply production normalization. Input projection is bounded synchronous work before

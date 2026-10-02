@@ -15,8 +15,8 @@ import gleam/string
 import otel/attribute.{type Attribute}
 import otel/context.{type Context}
 import pig_otel
-import pig_proxy/config
-import pig_proxy/content
+import pig_otel/content
+import pig_otel/content/options
 import pig_proxy/trace_metadata
 import pig_transport as transport
 
@@ -28,7 +28,7 @@ pub type Owner
 pub type Registration {
   Registration(
     caller: process.Pid,
-    policy: config.Tracing,
+    policy: pig_otel.Policy,
     parent: Context,
     route: String,
   )
@@ -172,17 +172,13 @@ pub fn register(
   headers: List(#(String, String)),
   route: String,
 ) -> Owner {
-  let policy = case policy {
-    pig_otel.Disabled -> config.Disabled
-    pig_otel.MetadataOnly -> config.MetadataOnly
-  }
   register_with_policy(name, policy, headers, route)
 }
 
 /// Register with frozen operation-local tracing and capture policy.
 pub fn register_with_policy(
   name: Owners,
-  policy: config.Tracing,
+  policy: pig_otel.Policy,
   headers: List(#(String, String)),
   route: String,
 ) -> Owner {
@@ -325,8 +321,9 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
     }
     Activate -> {
       let policy = case state.registration.policy {
-        config.Disabled -> pig_otel.Disabled
-        config.MetadataOnly | config.Conversation(_) -> pig_otel.MetadataOnly
+        pig_otel.Disabled -> pig_otel.Disabled
+        pig_otel.MetadataOnly | pig_otel.Conversation(_) ->
+          pig_otel.MetadataOnly
       }
       let backend = pig_otel.backend(policy, application_marker)
       let span =
@@ -537,10 +534,10 @@ pub fn handoff_complete(state: State) -> Bool {
   is_handed_off(state.handoff)
 }
 
-fn capture_options(state: State) -> Option(content.Options) {
+fn capture_options(state: State) -> Option(options.Options) {
   case state.registration.policy {
-    config.Conversation(options) -> Some(options)
-    config.Disabled | config.MetadataOnly -> None
+    pig_otel.Conversation(options) -> Some(options)
+    pig_otel.Disabled | pig_otel.MetadataOnly -> None
   }
 }
 

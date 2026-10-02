@@ -61,3 +61,4 @@ pig = { path = "../../../pig" }
 pig_otel = { path = "../.." }
 pig_protocol = { path = "../../../pig_protocol" }
 pig_proxy = { path = "../../../pig_proxy" }
+pig_transport = { path = "../../../pig_transport" }

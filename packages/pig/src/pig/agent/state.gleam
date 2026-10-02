@@ -17,6 +17,12 @@ import pig_protocol/error.{type AiError}
 import pig_protocol/message.{type Message}
 import pig_protocol/tool_definition.{type ToolDefinition}
 
+/// Provider system prompt with its source provenance retained.
+pub opaque type SystemPrompt {
+  Authored(Option(String))
+  Composed(provider_prompt: String, instructions: Option(String))
+}
+
 /// Configuration for creating an agent. Immutable once constructed.
 ///
 /// Hooks and dispatcher are NOT here — they're runtime concerns
@@ -26,7 +32,7 @@ pub type AgentConfig {
     provider: Provider,
     inference_settings: InferenceSettings,
     tools: ToolRegistry,
-    system_prompt: Option(String),
+    system_prompt: SystemPrompt,
     max_iterations: Int,
     model: String,
     // Agent identity fields
@@ -51,7 +57,7 @@ pub fn config(provider_fn: Provider) -> AgentConfig {
     provider: provider_fn,
     inference_settings: provider.default_settings(),
     tools: tool.new_registry(),
-    system_prompt: option.None,
+    system_prompt: Authored(option.None),
     max_iterations: 50,
     model: "unknown",
     agent_id: option.None,
@@ -78,7 +84,33 @@ pub fn with_tools(config: AgentConfig, tools: ToolRegistry) -> AgentConfig {
 
 /// Set the system prompt on the config.
 pub fn with_system_prompt(config: AgentConfig, prompt: String) -> AgentConfig {
-  AgentConfig(..config, system_prompt: option.Some(prompt))
+  AgentConfig(..config, system_prompt: Authored(option.Some(prompt)))
+}
+
+/// Set the provider prompt while preserving the authored instructions it contains.
+@internal
+pub fn with_composed_system_prompt(
+  config: AgentConfig,
+  provider_prompt: String,
+  instructions: Option(String),
+) -> AgentConfig {
+  AgentConfig(..config, system_prompt: Composed(provider_prompt, instructions))
+}
+
+/// Get the system prompt sent to the provider, if configured.
+pub fn provider_system_prompt(config: AgentConfig) -> Option(String) {
+  case config.system_prompt {
+    Authored(prompt) -> prompt
+    Composed(provider_prompt, _) -> option.Some(provider_prompt)
+  }
+}
+
+/// Get source instructions without Pig-generated tool descriptions.
+pub fn system_instructions(config: AgentConfig) -> Option(String) {
+  case config.system_prompt {
+    Authored(prompt) -> prompt
+    Composed(_, instructions) -> instructions
+  }
 }
 
 /// Set the maximum number of loop iterations before forcing termination.

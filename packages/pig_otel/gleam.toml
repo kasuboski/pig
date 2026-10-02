@@ -1,7 +1,7 @@
 name = "pig_otel"
 version = "0.1.0"
 target = "erlang"
-description = "Metadata-only OpenTelemetry semantics and propagation for Pig."
+description = "OpenTelemetry semantics, propagation, and opt-in conversation capture for Pig."
 licences = ["Apache-2.0"]
 repository = { type = "github", user = "kasuboski", repo = "pig" }
 

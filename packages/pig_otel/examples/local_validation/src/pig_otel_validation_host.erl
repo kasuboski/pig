@@ -3,10 +3,13 @@
          check_proxy_content_recording/1, check_proxy_content_otlp/1, check_proxy_content_overflow/1,
          check_content_limits/1, check_content_malformed/1, check_content_retry/1,
          check_content_unavailable/1, check_content_disabled/1,
+         check_direct_content_recording/1, check_direct_content_otlp/1,
+         check_direct_content_metadata/1, check_direct_content_disabled/1,
+         check_direct_content_unavailable/1,
          check_content_interrupt/1,
          check_otlp/1, check_proxy_otlp/1, check_stream_races/0, check_runtime_shutdown/0,
          check_limitations/1, check_disabled/1, check_failure/1,
-         callback/1, with_caller_parent/2, integration_enabled/0,
+         callback/1, propagated_context/1, with_caller_parent/2, integration_enabled/0,
          register_proxy_owners/1, stop_proxy_owners/0, bootstrap/0]).
 -include_lib("opentelemetry_api/include/opentelemetry.hrl").
 -include_lib("opentelemetry/include/otel_span.hrl").
@@ -53,6 +56,24 @@ check_proxy_content_recording(Work) ->
 
 check_proxy_content_otlp(Work) ->
     deliver(Work, fun pig_otel_validation_verify:check_proxy_content/2, 12, "proxy-content-otlp.term").
+
+check_direct_content_recording(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_direct_content/2,
+           "direct-content-recording.term").
+
+check_direct_content_otlp(Work) ->
+    deliver(Work, fun pig_otel_validation_verify:check_direct_content/2,
+            16, "direct-content-otlp.term").
+
+check_direct_content_metadata(Work) ->
+    record(Work, fun pig_otel_validation_verify:check_direct_content_metadata/2,
+           "direct-content-metadata-recording.term").
+
+check_direct_content_disabled(Work) ->
+    check_disabled(Work).
+
+check_direct_content_unavailable(Work) ->
+    check_content_unavailable(Work).
 
 check_content_interrupt(Work) ->
     record(Work, fun pig_otel_validation_verify:check_proxy_content_interrupt/2,
@@ -409,6 +430,20 @@ with_caller_parent(Streaming, Work) ->
     {nil, _} = otel_ctx:with_ctx(Ctx, Work),
     Before = otel_ctx:get_current(),
     ets:insert(?FACTS, {caller, Trace, Parent}),
+    nil.
+
+%% Transport adapters run in fresh processes. Verify the provider's explicit
+%% wire propagation rather than assuming implicit process-local inheritance.
+propagated_context(Headers) ->
+    Ctx = otel_propagator_text_map:extract_to(#{}, Headers),
+    case otel_tracer:current_span_ctx(Ctx) of
+        #span_ctx{trace_id=Trace, span_id=Span, is_valid=true} ->
+            ets:insert(?FACTS, {propagation, hex(Trace, 32), hex(Span, 16)});
+        _ ->
+            [{mode, Mode}] = ets:lookup(?FACTS, mode),
+            true = Mode =:= no_sdk orelse Mode =:= disabled,
+            ets:insert(?FACTS, {propagation, <<"_INVALID">>, <<"_INVALID">>})
+    end,
     nil.
 
 callback(Label) ->

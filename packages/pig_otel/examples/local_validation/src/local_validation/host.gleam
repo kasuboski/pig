@@ -23,6 +23,26 @@ pub fn check_proxy_content_recording(work: fn() -> Nil) -> Nil
 @external(erlang, "pig_otel_validation_host", "check_proxy_content_otlp")
 pub fn check_proxy_content_otlp(work: fn() -> Nil) -> Nil
 
+/// Record actual Pig direct-provider content spans using the official SDK.
+@external(erlang, "pig_otel_validation_host", "check_direct_content_recording")
+pub fn check_direct_content_recording(work: fn() -> Nil) -> Nil
+
+/// Verify the actual direct-provider graph delivered to the local OTLP receiver.
+@external(erlang, "pig_otel_validation_host", "check_direct_content_otlp")
+pub fn check_direct_content_otlp(work: fn() -> Nil) -> Nil
+
+/// Verify metadata-only direct runs preserve terminal fields without content.
+@external(erlang, "pig_otel_validation_host", "check_direct_content_metadata")
+pub fn check_direct_content_metadata(work: fn() -> Nil) -> Nil
+
+/// Direct capture interaction remains business-compatible under Disabled policy.
+@external(erlang, "pig_otel_validation_host", "check_direct_content_disabled")
+pub fn check_direct_content_disabled(work: fn() -> Nil) -> Nil
+
+/// Direct capture interaction survives absent SDK and always-off sampling.
+@external(erlang, "pig_otel_validation_host", "check_direct_content_unavailable")
+pub fn check_direct_content_unavailable(work: fn() -> Nil) -> Nil
+
 /// Check real HTTP business non-interference when both capture directions overflow.
 @external(erlang, "pig_otel_validation_host", "check_proxy_content_overflow")
 pub fn check_proxy_content_overflow(work: fn() -> Nil) -> Nil
@@ -90,6 +110,10 @@ pub fn with_caller_parent(streaming: Bool, work: fn() -> Nil) -> Nil
 /// Confirm the real provider/tool callback sees a valid process-current span.
 @external(erlang, "pig_otel_validation_host", "callback")
 pub fn callback(label: String) -> Nil
+
+/// Record context extracted from explicit request propagation headers.
+@external(erlang, "pig_otel_validation_host", "propagated_context")
+pub fn propagated_context(headers: List(#(String, String))) -> Nil
 
 /// Register the proxy's host-owned root supervisor for ordered fixture teardown.
 @external(erlang, "pig_otel_validation_host", "register_proxy_owners")

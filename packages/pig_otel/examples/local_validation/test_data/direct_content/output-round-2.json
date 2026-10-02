@@ -1,0 +1,11 @@
+{
+  "gen_ai.output.messages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {"type": "text", "content": "CAPTURE_ALLOWED_DIRECT_COMPLETION"}
+      ],
+      "finish_reason": "stop"
+    }
+  ]
+}

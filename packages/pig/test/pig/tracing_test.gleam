@@ -1,6 +1,7 @@
 //// Feature-level tracing contracts through a centralized OTP boundary harness.
 
 import gleam/bit_array
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -9,6 +10,7 @@ import gleam/string
 import gleeunit/should
 import jscheam/schema
 import otel/context
+import pig
 import pig/agent/runtime
 import pig/hooks
 import pig/openai
@@ -16,14 +18,18 @@ import pig/provider
 import pig/run
 import pig/run_error
 import pig/session_store
+import pig/skill
 import pig/tool
 import pig_otel
+import pig_otel/content/options as content_options
 import pig_protocol/error
 import pig_protocol/inference
 import pig_protocol/message
+import pig_protocol/stop_reason
 import pig_protocol/thinking
 import pig_protocol/tool_definition
 import pig_transport
+import simplifile
 import support/tracing_harness as harness
 
 fn parent() -> context.Context {
@@ -43,6 +49,20 @@ fn attribute(span: harness.Snapshot, key: String) -> Result(String, Nil) {
 fn all_ended(spans: List(harness.Snapshot)) -> Nil {
   should.be_true(list.all(spans, fn(span) { span.ends == 1 }))
   should.be_false(string.contains(string.inspect(spans), "secret"))
+}
+
+fn check_no_capture(span: harness.Snapshot) -> Nil {
+  should.be_false(
+    list.any(span.attributes, fn(attribute) {
+      let key = attribute.0
+      string.starts_with(key, "gen_ai.input.")
+      || string.starts_with(key, "gen_ai.output.")
+      || key == "gen_ai.system_instructions"
+      || key == "gen_ai.tool.definitions"
+      || string.starts_with(key, "pig.content.input.")
+      || string.starts_with(key, "pig.content.output.")
+    }),
+  )
 }
 
 pub fn acceptance_context_busy_streaming_and_continuation_test() {
@@ -81,6 +101,10 @@ pub fn acceptance_context_busy_streaming_and_continuation_test() {
           attribute(inference_span, "gen_ai.provider.name"),
           Error(Nil),
         )
+        should.equal(
+          attribute(inference_span, "gen_ai.input.messages"),
+          Error(Nil),
+        )
         should.equal(run_span.ends, 0)
         should.equal(inference_span.ends, 0)
         should.equal(harness.current_id(), "")
@@ -109,6 +133,305 @@ pub fn acceptance_context_busy_streaming_and_continuation_test() {
       },
     )
   })
+}
+
+pub fn conversation_capture_excludes_generated_tool_prompt_but_keeps_wire_prompt_test() {
+  let description = "NEVER_EXPORT_DIRECT_DESCRIPTION"
+  let capture_tool =
+    tool.Tool(
+      tool_definition.ToolDefinition(
+        "fixture_tool",
+        description,
+        schema.object([]),
+      ),
+      fn(_, _) { Ok(json.string("unused")) },
+    )
+  let assert Ok(capture_options) =
+    content_options.with_redacted_text(content_options.defaults(), [
+      "secret input",
+    ])
+  let capture_policy = pig_otel.Conversation(capture_options)
+  list.each([False, True], fn(supervised) {
+    list.each([False, True], fn(with_skill) {
+      let observed = process.new_subject()
+      let prov =
+        provider.from_buffered(fn(request) {
+          process.send(observed, request)
+          Ok(provider.from_message(harness.assistant()))
+        })
+      let config =
+        pig.new(prov)
+        |> pig.with_tool(capture_tool)
+        |> pig.with_system_prompt("standing instruction")
+      let config = case with_skill {
+        False -> config
+        True -> {
+          let assert Ok(loaded_skill) =
+            skill.load("test_data/tracing/tool_prompt_skill")
+          pig.with_skill(config, loaded_skill)
+        }
+      }
+      let fixture = case with_skill {
+        False -> "test_data/tracing/tool_prompt_no_skill.json"
+        True -> "test_data/tracing/tool_prompt_with_skill.json"
+      }
+      let assert Ok(golden) = simplifile.read(from: fixture)
+      let assert Ok(expected_prompt) =
+        json.parse(golden, decode.at(["provider_prompt"], decode.string))
+      let assert Ok(expected_instructions) =
+        json.parse(golden, decode.at(["system_instructions"], decode.dynamic))
+      harness.check_config(config, capture_policy, supervised, fn(agent) {
+        should.equal(harness.buffered(agent), Ok(harness.assistant()))
+        let request = harness.await(observed)
+        should.equal(request.system_prompt, option.Some(expected_prompt))
+        should.equal(request.messages, [message.User("secret input")])
+        let assert [run_span, inference_span] = harness.snapshot()
+        let assert Ok(encoded_instructions) =
+          attribute(inference_span, "gen_ai.system_instructions")
+        let assert Ok(captured_instructions) =
+          json.parse(encoded_instructions, decode.dynamic)
+        should.equal(captured_instructions, expected_instructions)
+        should.be_false(string.contains(encoded_instructions, description))
+        check_no_capture(run_span)
+        all_ended(harness.snapshot())
+      })
+    })
+  })
+}
+
+pub fn conversation_capture_uses_post_hook_request_and_completed_result_test() {
+  let assert Ok(capture_options) =
+    content_options.defaults()
+    |> content_options.with_redacted_text(["nested private phrase"])
+  let observed = process.new_subject()
+  let hook =
+    hooks.new("replace-for-capture")
+    |> hooks.on_before_inference(fn(_) {
+      hooks.replace_messages([
+        message.Developer("effective developer text with nested private phrase"),
+        message.User("effective user text"),
+        message.Tool("call-1", "effective tool result"),
+      ])
+    })
+  let assistant =
+    message.Assistant(
+      "effective assistant output",
+      [],
+      option.Some(message.Thinking("private reasoning")),
+      option.Some(stop_reason.Stop),
+    )
+  let prov =
+    provider.from_buffered(fn(request) {
+      process.send(observed, request)
+      Ok(provider.from_message(assistant))
+    })
+  harness.check_agent_with_system_prompt(
+    prov,
+    [],
+    [hook],
+    "effective system prompt",
+    pig_otel.Conversation(capture_options),
+    fn(agent) {
+      should.equal(harness.buffered(agent), Ok(assistant))
+      let request = harness.await(observed)
+      should.equal(
+        request.system_prompt,
+        option.Some("effective system prompt"),
+      )
+      should.equal(request.messages, [
+        message.Developer("effective developer text with nested private phrase"),
+        message.User("effective user text"),
+        message.Tool("call-1", "effective tool result"),
+      ])
+      let assert [run_span, inference_span] = harness.snapshot()
+      check_no_capture(run_span)
+      let input = attribute(inference_span, "gen_ai.input.messages")
+      let system = attribute(inference_span, "gen_ai.system_instructions")
+      let output = attribute(inference_span, "gen_ai.output.messages")
+      should.be_true(string.contains(
+        string.inspect(system),
+        "effective system prompt",
+      ))
+      should.be_true(string.contains(
+        string.inspect(input),
+        "effective developer text",
+      ))
+      should.be_false(string.contains(
+        string.inspect(input),
+        "nested private phrase",
+      ))
+      should.be_true(string.contains(
+        string.inspect(input),
+        "effective user text",
+      ))
+      should.be_true(string.contains(
+        string.inspect(input),
+        "effective tool result",
+      ))
+      should.be_true(string.contains(
+        string.inspect(output),
+        "effective assistant output",
+      ))
+      should.be_true(string.contains(string.inspect(output), "stop"))
+      should.be_false(string.contains(
+        string.inspect(output),
+        "private reasoning",
+      ))
+      all_ended(harness.snapshot())
+    },
+  )
+}
+
+pub fn conversation_capture_works_for_streaming_success_and_cancel_test() {
+  let successful =
+    provider.from_streaming(fn(_, emit) {
+      emit(
+        provider.Finished(
+          Ok(
+            provider.from_message(message.Assistant(
+              "streamed completion",
+              [],
+              None,
+              option.Some(stop_reason.Stop),
+            )),
+          ),
+        ),
+      )
+    })
+  harness.check_agent(
+    successful,
+    [],
+    [],
+    pig_otel.Conversation(content_options.defaults()),
+    False,
+    fn(agent) {
+      let sink = process.new_subject()
+      let handle = harness.stream(agent, sink)
+      should.equal(
+        harness.collect(handle, sink),
+        Ok(message.Assistant(
+          "streamed completion",
+          [],
+          None,
+          option.Some(stop_reason.Stop),
+        )),
+      )
+      let assert [_, inference_span] = harness.snapshot()
+      should.equal(
+        attribute(inference_span, "pig.content.output.status"),
+        Ok("captured"),
+      )
+      should.be_true(string.contains(
+        string.inspect(attribute(inference_span, "gen_ai.output.messages")),
+        "streamed completion",
+      ))
+    },
+  )
+
+  let entered = process.new_subject()
+  let gated =
+    provider.from_streaming(fn(_, emit) {
+      let release = process.new_subject()
+      process.send(entered, release)
+      let _ = harness.await(release)
+      emit(provider.Finished(Ok(provider.from_message(harness.assistant()))))
+    })
+  harness.check_agent(
+    gated,
+    [],
+    [],
+    pig_otel.Conversation(content_options.defaults()),
+    False,
+    fn(agent) {
+      let sink = process.new_subject()
+      let handle = harness.stream(agent, sink)
+      let _release = harness.await(entered)
+      run.cancel(handle, run_error.CallerRequested)
+      should.equal(
+        harness.collect(handle, sink),
+        Error(run_error.Cancelled(run_error.CallerRequested)),
+      )
+      let assert [_, inference_span] = harness.snapshot()
+      should.equal(
+        attribute(inference_span, "pig.content.output.status"),
+        Ok("omitted"),
+      )
+      should.equal(
+        attribute(inference_span, "pig.content.output.reason"),
+        Ok("incomplete"),
+      )
+      should.equal(
+        attribute(inference_span, "gen_ai.output.messages"),
+        Error(Nil),
+      )
+    },
+  )
+}
+
+pub fn conversation_capture_marks_failed_output_incomplete_test() {
+  let assert Ok(capture_options) =
+    content_options.with_redacted_text(content_options.defaults(), [
+      "secret input",
+    ])
+  let prov = provider.from_buffered(fn(_) { Error(error.Timeout) })
+  harness.check_agent(
+    prov,
+    [],
+    [],
+    pig_otel.Conversation(capture_options),
+    False,
+    fn(agent) {
+      should.equal(
+        harness.buffered(agent),
+        Error(run_error.Inference(error.Timeout)),
+      )
+      let assert [_, inference_span] = harness.snapshot()
+      should.equal(
+        attribute(inference_span, "pig.content.output.status"),
+        Ok("omitted"),
+      )
+      should.equal(
+        attribute(inference_span, "pig.content.output.reason"),
+        Ok("incomplete"),
+      )
+      should.equal(
+        attribute(inference_span, "gen_ai.output.messages"),
+        Error(Nil),
+      )
+      all_ended(harness.snapshot())
+    },
+  )
+}
+
+pub fn metadata_only_does_not_synthesize_response_finish_reason_test() {
+  let assistant =
+    message.Assistant("completion", [], None, option.Some(stop_reason.Stop))
+  let prov =
+    provider.from_buffered(fn(_) { Ok(provider.from_message(assistant)) })
+  harness.check_agent(prov, [], [], pig_otel.MetadataOnly, False, fn(agent) {
+    should.equal(harness.buffered(agent), Ok(assistant))
+    let assert [_, inference_span] = harness.snapshot()
+    should.equal(
+      attribute(inference_span, "gen_ai.response.finish_reasons"),
+      Error(Nil),
+    )
+    all_ended(harness.snapshot())
+  })
+}
+
+pub fn conversation_capture_skips_when_sdk_is_unavailable_test() {
+  let prov =
+    provider.from_buffered(fn(_) {
+      Ok(provider.from_message(harness.assistant()))
+    })
+  harness.check_no_sdk_with_policy(
+    prov,
+    pig_otel.Conversation(content_options.defaults()),
+    fn(agent) {
+      should.equal(harness.buffered(agent), Ok(harness.assistant()))
+      should.equal(harness.snapshot(), [])
+    },
+  )
 }
 
 pub fn disabled_preserves_explicit_callback_parent_without_spans_test() {
@@ -204,6 +527,8 @@ fn gleam_json_string() -> json.Json {
 }
 
 pub fn tool_sources_are_siblings_and_cancellation_closes_them_test() {
+  let assert Ok(capture_options) =
+    content_options.with_redacted_text(content_options.defaults(), ["secret"])
   let entered = process.new_subject()
   let calls = [
     message.ToolCall("one", "gate", "{\"secret\":1}"),
@@ -217,7 +542,7 @@ pub fn tool_sources_are_siblings_and_cancellation_closes_them_test() {
     prov,
     [gated_tool("gate", entered)],
     [],
-    pig_otel.MetadataOnly,
+    pig_otel.Conversation(capture_options),
     False,
     fn(agent) {
       let sink = process.new_subject()
@@ -225,6 +550,9 @@ pub fn tool_sources_are_siblings_and_cancellation_closes_them_test() {
       let first = harness.await(entered)
       let second = harness.await(entered)
       let assert [run_span, inference_span, one, two] = harness.snapshot()
+      check_no_capture(run_span)
+      check_no_capture(one)
+      check_no_capture(two)
       should.equal(inference_span.ends, 1)
       should.equal(one.parent, run_span.id)
       should.equal(two.parent, run_span.id)
