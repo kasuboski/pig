@@ -47,3 +47,16 @@ run = "cd packages/pig_proxy && gleam run"
 [tasks.codex-login]
 description = "Run the pig_proxy Codex OAuth login flow (writes ~/.pig/codex_auth.json)"
 run = "cd packages/pig_proxy && gleam run -m pig_proxy/codex_login"
+
+[tasks.run-subscriptions]
+description = "Run the ChatGPT/z.ai subscription proxy host"
+run = "scripts/run_subscriptions.sh"
+
+[tasks.test-subscriptions]
+description = "Compile the subscription host SDK/exporter graph and run unit tests"
+run = "scripts/test_subscriptions.sh"
+
+[tasks.test-integration-subscriptions]
+description = "Verify the subscription host with local synthetic credentials and loopback HTTP"
+run = "scripts/test_subscriptions_integration.sh"
+env = { PIG_RUN_SUBSCRIPTIONS_INTEGRATION = "1" }

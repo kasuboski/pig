@@ -1,6 +1,6 @@
 import gleam/list
-import gleam/option.{None, Some}
 import gleeunit
+import pig_otel
 import pig_proxy/config
 import pig_proxy/routes
 
@@ -8,200 +8,144 @@ pub fn main() -> Nil {
   gleeunit.main()
 }
 
-// ── Test fixtures ───────────────────────────────────────────────
+fn target(id: String) -> config.UpstreamTarget {
+  config.openai_target(id, "https://example.test/v1", "key")
+}
 
-fn test_config() -> config.ProxyConfig {
-  config.new([
-    config.openai_target("openai", "https://api.openai.com/v1", "sk-key"),
-    config.UpstreamTarget(
-      id: "ollama",
-      base_url: "http://localhost:11434/v1",
-      auth: config.ApiKey("ollama"),
-      provider: None,
-      fallbacks: [],
-      supports_tools: True,
-      supports_json_schema: False,
+fn check_resolve(
+  cfg: config.ProxyConfig,
+  api: pig_otel.Api,
+  model: String,
+) -> List(config.UpstreamTarget) {
+  routes.resolve_request(cfg, api, model)
+}
+
+fn check_validate(
+  cfg: config.ProxyConfig,
+) -> Result(Nil, routes.ValidationError) {
+  routes.validate(cfg)
+}
+
+pub fn strict_route_matrix_is_exact_and_fail_closed_test() {
+  let cfg =
+    config.new([
+      target("chat"),
+      config.codex_target("codex", "https://codex.test"),
+    ])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, "gpt-chat", "chat"),
+      config.model_route(pig_otel.ChatCompletions, "unknown", "chat"),
+      config.model_route(pig_otel.Responses, "gpt-codex", "codex"),
+    ])
+  let cases = [
+    #(pig_otel.ChatCompletions, "gpt-chat", ["chat"]),
+    #(pig_otel.ChatCompletions, "unknown", ["chat"]),
+    #(pig_otel.Responses, "gpt-codex", ["codex"]),
+    #(pig_otel.Responses, "gpt-chat", []),
+    #(pig_otel.ChatCompletions, "gpt-codex", []),
+    #(pig_otel.Responses, "unknown", []),
+    #(pig_otel.ChatCompletions, "unregistered", []),
+  ]
+  list.each(cases, fn(scenario) {
+    let #(api, model, expected_ids) = scenario
+    let ids = check_resolve(cfg, api, model) |> list.map(fn(t) { t.id })
+    assert expected_ids == ids
+  })
+  assert Ok(Nil) == check_validate(cfg)
+}
+
+pub fn default_multi_is_fail_closed_at_request_time_test() {
+  let cfg = config.new([target("one"), target("two")])
+  assert [] == check_resolve(cfg, pig_otel.ChatCompletions, "any-model")
+  assert Error(routes.MultipleDefaultTargets) == check_validate(cfg)
+}
+
+pub fn default_single_target_preserves_default_behavior_test() {
+  let cfg = config.new([target("only")])
+  assert ["only"]
+    == check_resolve(cfg, pig_otel.ChatCompletions, "any-model")
+    |> list.map(fn(t) { t.id })
+  assert ["only"]
+    == check_resolve(cfg, pig_otel.Responses, "any-model")
+    |> list.map(fn(t) { t.id })
+}
+
+pub fn invalid_configuration_matrix_is_rejected_test() {
+  let default_multi = config.new([target("one"), target("two")])
+  let duplicate_ids = config.new([target("same"), target("same")])
+  let duplicate_routes =
+    config.new([target("one")])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, "model", "one"),
+      config.model_route(pig_otel.ChatCompletions, "model", "one"),
+    ])
+  let missing_target =
+    config.new([target("one")])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, "model", "missing"),
+    ])
+  let incompatible =
+    config.new([config.codex_target("codex", "https://codex.test")])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, "model", "codex"),
+    ])
+  let empty_model =
+    config.new([target("one")])
+    |> config.with_routes([
+      config.model_route(pig_otel.ChatCompletions, " \t ", "one"),
+    ])
+  let empty_target_id = config.new([target(" \t ")])
+  let empty_route_target =
+    config.new([target("one")])
+    |> config.with_routes([
+      config.model_route(pig_otel.Responses, "model", "  "),
+    ])
+  let cases = [
+    #(default_multi, routes.MultipleDefaultTargets),
+    #(duplicate_ids, routes.DuplicateTargetId("same")),
+    #(
+      duplicate_routes,
+      routes.DuplicateRoute(pig_otel.ChatCompletions, "model"),
     ),
-    config.UpstreamTarget(
-      id: "simple",
-      base_url: "http://localhost:8080/v1",
-      auth: config.ApiKey("test"),
-      provider: None,
-      fallbacks: [],
-      supports_tools: False,
-      supports_json_schema: False,
+    #(missing_target, routes.MissingTarget("missing")),
+    #(
+      incompatible,
+      routes.IncompatibleTargetApi("codex", pig_otel.ChatCompletions),
     ),
-  ])
-}
-
-// ── resolve ─────────────────────────────────────────────────────
-
-pub fn resolve_matching_virtual_route_test() {
-  let cfg = test_config()
-  let rts = [routes.route("smart-model", "openai")]
-  let result = routes.resolve(cfg, rts, "smart-model")
-  let assert routes.ResolvedRoute(targets) = result
-  assert 1 == list.length(targets)
-  let assert Some(target) = routes.primary_target(result)
-  assert "openai" == target.id
-}
-
-pub fn resolve_with_fallback_chain_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"]),
+    #(empty_model, routes.EmptyModel),
+    #(empty_target_id, routes.EmptyTargetId),
+    #(empty_route_target, routes.EmptyRouteTargetId),
   ]
-  let result = routes.resolve(cfg, rts, "smart-model")
-  let assert routes.ResolvedRoute(targets) = result
-  assert 3 == list.length(targets)
-  let assert Some(primary) = routes.primary_target(result)
-  assert "openai" == primary.id
-  let fallbacks = routes.fallback_targets(result)
-  assert 2 == list.length(fallbacks)
+  list.each(cases, fn(scenario) {
+    let #(cfg, expected_error) = scenario
+    assert Error(expected_error) == check_validate(cfg)
+  })
 }
 
-pub fn resolve_no_matching_route_uses_default_test() {
-  let cfg = test_config()
-  let result = routes.resolve(cfg, [], "gpt-4")
-  let assert routes.ResolvedRoute(targets) = result
-  assert 1 == list.length(targets)
-  let assert Some(target) = routes.primary_target(result)
-  assert "openai" == target.id
+pub fn empty_strict_routes_are_typed_configuration_error_test() {
+  let cfg = config.new([target("one")]) |> config.with_routes([])
+  assert Error(routes.EmptyStrictRoutes) == check_validate(cfg)
+  assert "strict routing requires at least one model route"
+    == routes.describe(routes.EmptyStrictRoutes)
 }
 
-pub fn resolve_no_targets_returns_no_targets_test() {
-  let cfg = config.new([])
-  let result = routes.resolve(cfg, [], "anything")
-  assert routes.NoTargets == result
+pub fn strict_resolution_checks_api_support_without_startup_validation_test() {
+  let cfg =
+    config.new([
+      config.with_api(target("chat-only"), pig_otel.ChatCompletions),
+    ])
+    |> config.with_routes([
+      config.model_route(pig_otel.Responses, "bad-route", "chat-only"),
+    ])
+  assert [] == check_resolve(cfg, pig_otel.Responses, "bad-route")
 }
 
-pub fn resolve_route_with_missing_target_filtered_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["nonexistent"]),
-  ]
-  let result = routes.resolve(cfg, rts, "smart-model")
-  let assert routes.ResolvedRoute(targets) = result
-  // Only the "openai" target resolves; "nonexistent" is filtered out.
-  assert 1 == list.length(targets)
-  let assert Some(target) = routes.primary_target(result)
-  assert "openai" == target.id
-}
-
-pub fn resolve_route_all_targets_missing_returns_no_targets_test() {
-  let cfg = test_config()
-  let rts = [routes.route("smart-model", "nonexistent")]
-  let result = routes.resolve(cfg, rts, "smart-model")
-  assert routes.NoTargets == result
-}
-
-// ── filter_by_capability ────────────────────────────────────────
-
-pub fn filter_by_capability_no_requirements_passes_all_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"]),
-  ]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  let filtered = routes.filter_by_capability(route, False, False)
-  let assert routes.ResolvedRoute(targets) = filtered
-  assert 3 == list.length(targets)
-  let assert Some(primary) = routes.primary_target(filtered)
-  assert "openai" == primary.id
-}
-
-pub fn filter_by_capability_requires_tools_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"]),
-  ]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  let filtered = routes.filter_by_capability(route, True, False)
-  let assert routes.ResolvedRoute(targets) = filtered
-  // "simple" doesn't support tools → filtered out. "openai" and "ollama" remain.
-  assert 2 == list.length(targets)
-  let assert Some(primary) = routes.primary_target(filtered)
-  assert "openai" == primary.id
-  let fallbacks = routes.fallback_targets(filtered)
-  assert 1 == list.length(fallbacks)
-  let assert [first_fallback] = fallbacks
-  assert "ollama" == first_fallback.id
-}
-
-pub fn filter_by_capability_requires_json_schema_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"]),
-  ]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  let filtered = routes.filter_by_capability(route, False, True)
-  let assert routes.ResolvedRoute(targets) = filtered
-  // "ollama" and "simple" don't support json_schema → filtered out. Only "openai".
-  assert 1 == list.length(targets)
-  let assert Some(primary) = routes.primary_target(filtered)
-  assert "openai" == primary.id
-  assert [] == routes.fallback_targets(filtered)
-}
-
-pub fn filter_by_capability_no_targets_returns_no_targets_test() {
-  let filtered = routes.filter_by_capability(routes.NoTargets, True, True)
-  assert routes.NoTargets == filtered
-}
-
-pub fn filter_by_capability_all_filtered_returns_no_targets_test() {
-  let cfg = test_config()
-  let rts = [routes.route("simple-model", "simple")]
-  let route = routes.resolve(cfg, rts, "simple-model")
-  let filtered = routes.filter_by_capability(route, True, True)
-  assert routes.NoTargets == filtered
-}
-
-// ── primary_target / fallback_targets ───────────────────────────
-
-pub fn primary_target_resolved_route_test() {
-  let cfg = test_config()
-  let rts = [routes.route_with_fallbacks("smart-model", "openai", ["ollama"])]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  let assert Some(target) = routes.primary_target(route)
-  assert "openai" == target.id
-}
-
-pub fn primary_target_no_targets_test() {
-  assert None == routes.primary_target(routes.NoTargets)
-}
-
-pub fn fallback_targets_resolved_route_test() {
-  let cfg = test_config()
-  let rts = [
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"]),
-  ]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  let fallbacks = routes.fallback_targets(route)
-  assert 2 == list.length(fallbacks)
-}
-
-pub fn fallback_targets_no_targets_test() {
-  assert [] == routes.fallback_targets(routes.NoTargets)
-}
-
-pub fn fallback_targets_single_target_test() {
-  let cfg = test_config()
-  let rts = [routes.route("smart-model", "openai")]
-  let route = routes.resolve(cfg, rts, "smart-model")
-  assert [] == routes.fallback_targets(route)
-}
-
-// ── builders ────────────────────────────────────────────────────
-
-pub fn route_builder_test() {
-  let r = routes.route("fast-model", "ollama")
-  assert "fast-model" == r.slug
-  assert 1 == list.length(r.target_ids)
-}
-
-pub fn route_with_fallbacks_builder_test() {
-  let r =
-    routes.route_with_fallbacks("smart-model", "openai", ["ollama", "simple"])
-  assert "smart-model" == r.slug
-  assert 3 == list.length(r.target_ids)
+pub fn strict_route_never_uses_another_configured_target_test() {
+  let cfg =
+    config.new([target("first"), target("second")])
+    |> config.with_routes([
+      config.model_route(pig_otel.Responses, "known", "second"),
+    ])
+  assert [] == check_resolve(cfg, pig_otel.ChatCompletions, "unknown")
+  assert [] == check_resolve(cfg, pig_otel.Responses, "unknown")
 }

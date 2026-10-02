@@ -1,0 +1,19 @@
+name = "pig_proxy_subscriptions"
+version = "0.1.0"
+target = "erlang"
+description = "Operational ChatGPT and z.ai subscription proxy host."
+licences = ["Apache-2.0"]
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_erlang = ">= 1.3.0 and < 2.0.0"
+gleam_otp = ">= 1.2.0 and < 2.0.0"
+gleam_http = ">= 4.3.0 and < 5.0.0"
+gleam_json = ">= 3.1.0 and < 4.0.0"
+envoy = ">= 1.0.0 and < 2.0.0"
+logging = ">= 1.0.0 and < 2.0.0"
+pig_proxy = { path = "../.." }
+pig_otel = { path = "../../../pig_otel" }
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
