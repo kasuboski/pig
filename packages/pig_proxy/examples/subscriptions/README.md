@@ -79,7 +79,15 @@ before SDK setup. Run the opt-in local host acceptance check with:
 mise run test-integration-subscriptions
 ```
 
-It uses synthetic Codex/z.ai credentials and loopback-only configuration; it
-does not use real credential files or call external providers. The acceptance
-suite is compiled with normal tests and prints an explicit skip unless
+It launches the real host with synthetic Codex/z.ai credentials and two local
+upstream HTTP fixtures. Buffered and SSE traffic is sent through both APIs;
+tests check route paths, model/body forwarding, provider-specific bearer and
+Codex account headers, Chat-only stream usage injection, rejected requests and
+zero upstream calls for validation/routing failures. SIGTERM must exit zero and
+close the listener; missing and corrupt isolated auth files must fail startup.
+Latitude is pointed at a refused loopback port while business requests continue
+successfully. This acceptance check does not verify OTLP protobuf delivery or
+content-versus-metadata span projections. No real credential file or external
+provider is used. The acceptance suite is compiled with normal tests and prints
+an explicit skip unless
 `PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1` is set.

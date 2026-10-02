@@ -7,4 +7,4 @@ if [[ ${PIG_SUBSCRIPTIONS_MISE_ACTIVE:-0} != 1 ]]; then
 fi
 example=packages/pig_proxy/examples/subscriptions
 (cd "$example/host" && rebar3 compile)
-(cd "$example" && gleam deps download && gleam build --warnings-as-errors && gleam test)
+(cd "$example" && gleam deps download && gleam build --warnings-as-errors && env -u PIG_RUN_SUBSCRIPTIONS_INTEGRATION gleam test)

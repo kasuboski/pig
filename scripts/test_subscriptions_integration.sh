@@ -5,6 +5,7 @@ cd "$root"
 if [[ ${PIG_SUBSCRIPTIONS_MISE_ACTIVE:-0} != 1 ]]; then
   exec mise exec -- env PIG_SUBSCRIPTIONS_MISE_ACTIVE=1 "$0" "$@"
 fi
+while IFS= read -r name; do unset "$name"; done < <(compgen -e | rg '^OTEL_' || true)
 example=packages/pig_proxy/examples/subscriptions
 (cd "$example/host" && rebar3 compile)
 (cd "$example" && gleam deps download && gleam build --warnings-as-errors && env -u PIG_RUN_SUBSCRIPTIONS_INTEGRATION gleam test)
@@ -17,3 +18,4 @@ for path in "${paths[@]}"; do
 done
 PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1 erl -noshell "${args[@]}" \
   -eval 'pig_subscriptions_acceptance_ffi:run(), halt(0).'
+printf 'Subscriptions host loopback acceptance passed.\n'
