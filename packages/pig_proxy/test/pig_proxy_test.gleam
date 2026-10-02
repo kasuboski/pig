@@ -27,6 +27,7 @@ pub fn scrub_headers_strips_authorization_test() {
 pub fn scrub_headers_strips_api_key_header_test() {
   let headers = [
     #("api-key", "sk-secret"),
+    #("x-api-key", "sk-client-secret"),
     #("x-request-id", "abc-123"),
   ]
   let result = proxy.scrub_headers(headers)
@@ -51,6 +52,7 @@ pub fn scrub_headers_is_case_insensitive_test() {
   let headers = [
     #("Authorization", "Bearer sk-secret"),
     #("API-KEY", "sk-secret"),
+    #("X-API-Key", "sk-client-secret"),
     #("Content-Type", "application/json"),
     #("Accept", "application/json"),
     #("x-request-id", "abc-123"),

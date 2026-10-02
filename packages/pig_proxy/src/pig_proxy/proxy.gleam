@@ -55,6 +55,7 @@ fn is_strip_header(key: String) -> Bool {
     [
       "authorization",
       "api-key",
+      "x-api-key",
       "proxy-authorization",
       "host",
       "connection",
