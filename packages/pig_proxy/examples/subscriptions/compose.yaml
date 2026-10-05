@@ -1,0 +1,31 @@
+services:
+  subscriptions:
+    image: pig-subscriptions:local
+    build:
+      context: ../../../..
+      dockerfile: packages/pig_proxy/examples/subscriptions/Dockerfile
+    env_file:
+      - ${PIG_SUBSCRIPTIONS_ENV_FILE:-.env}
+    environment:
+      # Listen on the container interface, but publish only on host loopback.
+      PIG_PROXY_BIND: 0.0.0.0
+      PIG_PROXY_PORT: "8080"
+      PIG_CODEX_AUTH_PATH: /home/pig/.pig/codex_auth.json
+    ports:
+      - "127.0.0.1:${PIG_PROXY_HOST_PORT:-8080}:8080"
+    volumes:
+      - codex_auth:/home/pig/.pig
+    init: true
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 35s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  codex_auth:

@@ -33,9 +33,74 @@ are rejected. ChatGPT routes use provider `openai`, API `Responses`, target
 `PIG_ZAI_BASE_URL` overrides support loopback acceptance tests. `PIG_PROXY_MODELS_DEV_URL` can also
 point the pricing catalog at a loopback fixture. URLs must use HTTPS, or HTTP to
 loopback, with no embedded credentials, query, or fragment. No model aliases
-or request rewriting are performed. The host binds only to `127.0.0.1` (port
-8080, optionally `PIG_PROXY_PORT`); there is no inbound authentication, so do
-not expose it to an untrusted network.
+or request rewriting are performed. The host defaults to `127.0.0.1` (port
+8080, optionally `PIG_PROXY_PORT`). Set `PIG_PROXY_BIND=0.0.0.0` only when an
+external boundary such as Docker's loopback-only port publishing restricts access.
+There is no inbound authentication, so do not expose it to an untrusted network.
+
+## Docker Compose
+
+From the repository root:
+
+```sh
+cd packages/pig_proxy/examples/subscriptions
+cp .env.example .env
+chmod 600 .env
+# Edit .env with exact model IDs, ZAI_API_KEY, and optional Latitude settings.
+docker compose build
+# Preferred: follow the device-login URL/code; credentials stay in a named volume.
+docker compose run --rm subscriptions login
+docker compose up -d --wait
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/v1/models
+```
+
+Compose reads configuration and secrets from the example's `.env`, never from
+build arguments. `.env` is git-ignored; the Dockerfile-specific build-context
+allowlist excludes environment files, credentials, local build artifacts, tests
+and unrelated project files. Use single quotes around values containing `$` to
+prevent Compose interpolation. Avoid `docker compose config` without `--quiet`
+when real secrets are loaded: rendered configuration includes environment values.
+
+The device flow saves refreshable credentials to `codex_auth`, mounted at
+`/home/pig/.pig` for the non-root service user. No host credential file is mounted
+or read automatically. Alternatively, set `OPENAI_COMPAT_CODEX_TOKEN` in `.env`
+and skip login; that seed cannot refresh, and persisted credentials take precedence.
+Leave optional variables unset instead of blank, especially the seed token and URL
+overrides. After changing `.env`, run `docker compose up -d` to recreate the service.
+
+The service listens on `0.0.0.0:8080` **inside** the container; Compose pins the bind,
+container port and credential path, and publishes only on host `127.0.0.1`.
+`PIG_PROXY_HOST_PORT` in `.env` changes the published port without changing the
+container port. If the native proxy is already using 8080, choose a different host
+port, for example 8081. Containers sharing the Compose network can also reach the
+service, so do not attach untrusted containers. Latitude remains opt-in, and the
+same sensitive-conversation capture warning applies.
+
+```sh
+docker compose logs -f subscriptions
+docker compose down
+```
+
+Compose forwards SIGTERM and allows 35 seconds for the host's 30-second shutdown
+watchdog. The image uses a production Erlang shipment plus the separate official
+SDK/exporter graph, not `gleam run`; no build tool or source checkout is needed at
+runtime. The container runs as UID/GID 10001 with a read-only root filesystem,
+a temporary `/tmp`, dropped capabilities and a writable credential volume.
+`docker compose down` preserves credentials; `down -v` deletes them and requires
+another login. Do not run login concurrently with the host refreshing the same
+credentials: stop the service before replacing an existing login.
+
+To build without Compose, use the **repository root** as context:
+
+```sh
+docker build -f packages/pig_proxy/examples/subscriptions/Dockerfile \
+  -t pig-subscriptions:local .
+```
+
+Compose V2 is required. For an alternate env file, set `PIG_SUBSCRIPTIONS_ENV_FILE`
+and pass the same file to Compose, for example
+`PIG_SUBSCRIPTIONS_ENV_FILE=/path/to/config.env docker compose --env-file /path/to/config.env up -d`.
 
 ## Latitude and conversation capture
 
