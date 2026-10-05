@@ -11,9 +11,14 @@ gleam_otp = ">= 1.2.0 and < 2.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_json = ">= 3.1.0 and < 4.0.0"
 envoy = ">= 1.0.0 and < 2.0.0"
+exception = ">= 2.1.0 and < 3.0.0"
 logging = ">= 1.0.0 and < 2.0.0"
 pig_proxy = { path = "../.." }
 pig_otel = { path = "../../../pig_otel" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+filepath = ">= 1.0.0 and < 2.0.0"
+gleam_httpc = ">= 5.0.0 and < 6.0.0"
+mist = ">= 6.0.0 and < 7.0.0"
+simplifile = ">= 2.7.0 and < 3.0.0"

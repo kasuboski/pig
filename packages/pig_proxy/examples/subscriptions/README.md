@@ -61,8 +61,8 @@ Both `LATITUDE_API_KEY` and `LATITUDE_PROJECT` are required when enabled. The
 default endpoint is `https://ingest.latitude.so/v1/traces`; override it with
 `PIG_LATITUDE_ENDPOINT` for a local receiver. The host sets OTLP/HTTP protobuf,
 no compression, and the authorization/project headers directly; it deliberately
-clears conflicting `OTEL_*` settings inside bootstrap, even for direct invocation. This config is not evidence of
-cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
+clears conflicting `OTEL_*` settings before SDK/exporter startup, even for direct
+invocation. This config is not evidence of cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
 429/503 responses or honor their Retry-After headers. Monitor exporter diagnostics;
 shutdown flush is best effort and does not prove remote persistence.
 
@@ -104,8 +104,10 @@ upstream attempt; missing or malformed models return 400.
 Stop gracefully with SIGTERM: ingress is stopped first, then managed runtime
 actors, then the SDK's blocking termination callback attempts the final queued
 export. No asynchronous force_flush cast is issued immediately before SDK stop.
-A 30-second host watchdog
-bounds the complete shutdown; timeout exits nonzero without claiming trace delivery.
+A 30-second host watchdog bounds the complete shutdown, with a separate
+15-second SDK-stop deadline. Cleanup errors, SDK-stop worker failures and timeouts
+exit nonzero with generic diagnostics, without printing exception values or
+claiming trace delivery.
 Ctrl-C/SIGINT uses the Erlang VM's default interrupt behavior, not this graceful
 path. Other signal events delivered to the replacement handler are ignored;
 SIGQUIT/SIGUSR1 do not retain the default VM handler's diagnostic actions.
@@ -113,7 +115,8 @@ The host exits after cleanup; it does not claim physical connection drain.
 
 ## Verification
 
-Unit config tests always run and make no network calls or credential reads:
+Pure configuration, environment-policy and decoded-span verification tests
+always run and make no network calls or credential reads:
 
 ```sh
 mise run test-subscriptions
@@ -148,7 +151,17 @@ endpoint must leave business requests and graceful shutdown working. The gate
 delays the SDK's scheduled batch timer and asserts zero exports before SIGTERM,
 so shutdown must deliver the observed spans. Conflicting OTEL endpoint, header,
 protocol, compression, and console-export settings are injected into the child
-process to verify that they cannot redirect or print captured content.
+process to verify that they cannot redirect or print captured content. Isolated
+child-VM probes also exercise SDK worker crashes, explicit SDK errors, hung SDK
+stop, hung cleanup and secret-bearing exceptions; each must exit nonzero without
+leaking its marker. Successful cleanup must remain alive past the shortened test
+deadline, verifying that the watchdog is cancelled.
+
+Lifecycle policy, acceptance orchestration, HTTP fixtures, the OTLP receiver and
+span assertions are written in Gleam. Handwritten Erlang is limited to the
+SDK/application and OS-signal adapter, plus test child-VM/platform primitives.
+The receiver calls the existing generated protobuf decoder through FFI; decoding
+its terms into typed spans and verifying their contract happen in Gleam.
 
 No real credential file or external provider is used. The acceptance suite is
 compiled with normal tests and prints an explicit skip unless

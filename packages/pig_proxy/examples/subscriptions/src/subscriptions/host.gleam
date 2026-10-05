@@ -1,5 +1,6 @@
 //// Self-contained operational host for ChatGPT and z.ai subscription routes.
 
+import gleam/erlang/process
 import gleam/io
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -8,6 +9,7 @@ import pig_proxy/codex_credentials
 import pig_proxy/runtime
 import pig_proxy/server
 import subscriptions/config
+import subscriptions/lifecycle
 
 /// Run the loopback subscription host until SIGTERM, then stop with a bounded
 /// best-effort final export. Configuration failures exit without listening.
@@ -32,7 +34,10 @@ fn start(settings: config.Settings) -> Nil {
     }
     True -> Nil
   }
+  lifecycle.clear_otel_environment()
   bootstrap()
+  let subject = process.new_subject()
+  install_signals(fn() { process.send(subject, ShutdownSignal) })
   case latitude {
     Some(config.Latitude(endpoint:, api_key:, project:)) ->
       configure_latitude(endpoint, api_key, project)
@@ -47,7 +52,7 @@ fn start(settings: config.Settings) -> Nil {
     }
     Ok(listener) -> {
       logging.log(logging.Info, "subscriptions host started on 127.0.0.1")
-      await_shutdown()
+      let _ = process.receive_forever(subject)
       shutdown(fn() {
         server.stop_managed(listener)
         runtime.stop(state)
@@ -57,7 +62,7 @@ fn start(settings: config.Settings) -> Nil {
   }
 }
 
-@external(erlang, "pig_subscriptions_host_ffi", "halt")
+@external(erlang, "erlang", "halt")
 fn halt(status: Int) -> Nil
 
 @external(erlang, "pig_subscriptions_host_ffi", "bootstrap")
@@ -81,8 +86,31 @@ fn credentials_available(seed: Option(String)) -> Bool {
   }
 }
 
-@external(erlang, "pig_subscriptions_host_ffi", "await_shutdown")
-fn await_shutdown() -> Nil
+type ShutdownSignal {
+  ShutdownSignal
+}
 
-@external(erlang, "pig_subscriptions_host_ffi", "shutdown")
-fn shutdown(cleanup: fn() -> Nil) -> Nil
+@external(erlang, "pig_subscriptions_host_ffi", "install_signals")
+fn install_signals(notify: fn() -> Nil) -> Nil
+
+@external(erlang, "pig_subscriptions_host_ffi", "stop_sdk")
+fn stop_sdk() -> Result(Nil, Nil)
+
+fn shutdown(cleanup: fn() -> Nil) -> Nil {
+  case
+    lifecycle.shutdown(
+      cleanup,
+      stop_sdk,
+      lifecycle.shutdown_timeout_ms,
+      lifecycle.sdk_stop_timeout_ms,
+    )
+  {
+    Ok(Nil) -> Nil
+    Error(_) -> {
+      io.println_error(
+        "subscriptions host shutdown failed; trace delivery is not guaranteed",
+      )
+      halt(1)
+    }
+  }
+}

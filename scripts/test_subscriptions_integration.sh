@@ -18,5 +18,5 @@ for path in "${paths[@]}"; do
   [[ -d $path ]] && args+=( -pa "$path" )
 done
 PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1 erl -noshell "${args[@]}" \
-  -eval 'pig_subscriptions_acceptance_ffi:run(), halt(0).'
+  -eval 'support@acceptance:run(), halt(0).'
 printf 'Subscriptions host HTTP + OTLP wire acceptance passed.\n'
