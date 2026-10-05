@@ -11,7 +11,7 @@ import pig_proxy/server
 import subscriptions/config
 import subscriptions/lifecycle
 
-/// Run the loopback subscription host until SIGTERM, then stop with a bounded
+/// Run the subscription host until SIGTERM, then stop with a bounded
 /// best-effort final export. Configuration failures exit without listening.
 pub fn main() -> Nil {
   case config.from_env() {
@@ -51,7 +51,7 @@ fn start(settings: config.Settings) -> Nil {
       halt(1)
     }
     Ok(listener) -> {
-      logging.log(logging.Info, "subscriptions host started on 127.0.0.1")
+      logging.log(logging.Info, "subscriptions host started on " <> proxy.bind)
       let _ = process.receive_forever(subject)
       shutdown(fn() {
         server.stop_managed(listener)

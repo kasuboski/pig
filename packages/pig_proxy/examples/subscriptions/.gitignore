@@ -1,1 +1,4 @@
 host/_build/
+.env
+.env.*
+!.env.example

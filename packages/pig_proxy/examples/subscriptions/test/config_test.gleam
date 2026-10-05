@@ -41,6 +41,16 @@ pub fn defaults_and_exact_routes_test() {
   let assert pig_otel.Conversation(_) = proxy.tracing
 }
 
+pub fn explicit_bind_address_test() {
+  list.each(["127.0.0.1", "0.0.0.0"], fn(bind) {
+    let assert Ok(settings) =
+      check_config(
+        list.append(valid(), [#("PIG_PROXY_BIND", " " <> bind <> " ")]),
+      )
+    should.equal(settings.proxy.bind, bind)
+  })
+}
+
 pub fn explicit_metadata_only_override_test() {
   let assert Ok(settings) =
     check_config(
@@ -93,6 +103,9 @@ pub fn parser_rejects_matrix_test() {
     #("PIG_PROXY_PORT", "65536", "PIG_PROXY_PORT"),
     #("PIG_PROXY_PORT", "0", "PIG_PROXY_PORT"),
     #("PIG_PROXY_PORT", "not-a-port", "PIG_PROXY_PORT"),
+    #("PIG_PROXY_BIND", "", "PIG_PROXY_BIND"),
+    #("PIG_PROXY_BIND", "remote.test", "PIG_PROXY_BIND"),
+    #("PIG_PROXY_BIND", "127.0.0.1\nsecret", "PIG_PROXY_BIND"),
     #("PIG_PROXY_CAPTURE_CONVERSATION", "yes", "PIG_PROXY_CAPTURE_CONVERSATION"),
     #("PIG_LATITUDE_ENABLED", "true", "LATITUDE_API_KEY"),
     #("ZAI_API_KEY", "secret\r\ninjected: value", "ZAI_API_KEY"),

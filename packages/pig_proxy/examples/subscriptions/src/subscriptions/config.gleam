@@ -27,6 +27,7 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
   use zai <- result.try(csv(lookup, "PIG_ZAI_MODELS"))
   use zai_key <- result.try(required(lookup, "ZAI_API_KEY"))
   use port <- result.try(port(lookup))
+  use bind <- result.try(bind(lookup))
   use capture <- result.try(boolean(
     lookup,
     "PIG_PROXY_CAPTURE_CONVERSATION",
@@ -82,7 +83,7 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
   let proxy =
     proxy_config.new([codex, z])
     |> proxy_config.with_routes(routes)
-    |> proxy_config.with_bind("127.0.0.1")
+    |> proxy_config.with_bind(bind)
     |> proxy_config.with_port(port)
     |> proxy_config.with_models_dev_url(catalog_url)
     |> proxy_config.with_codex_seed_token(codex_token)
@@ -149,6 +150,18 @@ fn port(lookup: fn(String) -> Option(String)) -> Result(Int, String) {
       case int.parse(string_trim(raw)) {
         Ok(n) if n > 0 && n <= 65_535 -> Ok(n)
         _ -> Error("PIG_PROXY_PORT must be an integer from 1 to 65535")
+      }
+  }
+}
+
+fn bind(lookup: fn(String) -> Option(String)) -> Result(String, String) {
+  case lookup("PIG_PROXY_BIND") {
+    None -> Ok("127.0.0.1")
+    Some(raw) ->
+      case string_trim(raw) {
+        "127.0.0.1" -> Ok("127.0.0.1")
+        "0.0.0.0" -> Ok("0.0.0.0")
+        _ -> Error("PIG_PROXY_BIND must be 127.0.0.1 or 0.0.0.0")
       }
   }
 }

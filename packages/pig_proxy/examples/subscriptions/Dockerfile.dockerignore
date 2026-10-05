@@ -1,0 +1,24 @@
+# Repository-root context: send only production sources and locked build inputs.
+**
+!packages/pig_protocol/gleam.toml
+!packages/pig_protocol/manifest.toml
+!packages/pig_protocol/src/**
+!packages/pig_transport/gleam.toml
+!packages/pig_transport/manifest.toml
+!packages/pig_transport/src/**
+!packages/pig_otel/gleam.toml
+!packages/pig_otel/manifest.toml
+!packages/pig_otel/src/**
+!packages/pig_proxy/gleam.toml
+!packages/pig_proxy/manifest.toml
+!packages/pig_proxy/src/**
+!packages/pig_proxy/examples/subscriptions/gleam.toml
+!packages/pig_proxy/examples/subscriptions/manifest.toml
+!packages/pig_proxy/examples/subscriptions/src/**
+!packages/pig_proxy/examples/subscriptions/host/rebar.config
+!packages/pig_proxy/examples/subscriptions/host/rebar.lock
+!packages/pig_proxy/examples/subscriptions/docker-entrypoint.sh
+**/.env*
+**/codex_auth.json
+**/build/**
+**/_build/**
