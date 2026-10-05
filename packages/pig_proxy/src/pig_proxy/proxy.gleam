@@ -16,6 +16,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None}
+import gleam/result
 import gleam/string
 import logging
 import mist
@@ -54,6 +55,7 @@ fn is_strip_header(key: String) -> Bool {
     [
       "authorization",
       "api-key",
+      "x-api-key",
       "proxy-authorization",
       "host",
       "connection",
@@ -179,7 +181,7 @@ fn stream_field_decoder() -> decode.Decoder(Bool) {
 }
 
 fn model_field_decoder() -> decode.Decoder(String) {
-  use model <- decode.optional_field("model", "unknown", decode.string)
+  use model <- decode.field("model", decode.string)
   decode.success(model)
 }
 
@@ -191,11 +193,23 @@ pub fn is_streaming(body: String) -> Bool {
   }
 }
 
-/// Extract the model name from a JSON request body.
-pub fn extract_model(body: String) -> String {
-  case json.parse(from: body, using: model_field_decoder()) {
-    Ok(model) -> model
-    Error(_) -> "unknown"
+/// Why a request body does not contain a usable model name.
+pub type ModelError {
+  InvalidModelField
+  BlankModel
+}
+
+/// Extract a non-blank model without normalizing the value sent upstream.
+pub fn extract_model(body: String) -> Result(String, ModelError) {
+  use model <- result.try(
+    case json.parse(from: body, using: model_field_decoder()) {
+      Ok(model) -> Ok(model)
+      Error(_) -> Error(InvalidModelField)
+    },
+  )
+  case string.trim(model) == "" {
+    True -> Error(BlankModel)
+    False -> Ok(model)
   }
 }
 

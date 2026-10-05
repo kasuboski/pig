@@ -32,7 +32,6 @@ fn state(owners: tracing.Owners, root: process.Pid) -> server.ServerState {
       fn(_) { Nil },
     ),
     owners:,
-    routes: [],
     circuit: process.new_name("unused_circuit"),
     catalog: process.new_name("unused_catalog"),
     metrics: process.new_name("unused_metrics"),

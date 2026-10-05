@@ -45,6 +45,7 @@ import pig_proxy/config.{type ProxyConfig}
 import pig_proxy/metric_labels
 import pig_proxy/metrics
 import pig_proxy/model_catalog
+import pig_proxy/routes
 import pig_proxy/server
 import pig_proxy/telemetry
 import pig_proxy/tracing
@@ -53,6 +54,14 @@ import pig_proxy/vault
 /// Bring up the proxy runtime for `cfg` and return the `ServerState` ready
 /// to pass to `server.start`.
 pub fn start(cfg: ProxyConfig) -> server.ServerState {
+  case routes.validate(cfg) {
+    Ok(Nil) -> Nil
+    Error(error) -> {
+      let message =
+        "pig_proxy: invalid routing configuration: " <> routes.describe(error)
+      panic as message
+    }
+  }
   telemetry.ensure_started()
   // Shared names: created once, captured by the supervisor workers (which
   // register under them) and stored in ServerState (so the request path
@@ -107,7 +116,11 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
       metrics_name,
       metric_labels.Identities(
         catalog: fn() { model_catalog.cached(catalog_name) },
-        models: list.flat_map(cfg.targets, fn(target) { target.fallbacks }),
+        models: case cfg.routing {
+          config.StrictRoutes(model_routes) ->
+            list.map(model_routes, fn(route) { route.model })
+          config.DefaultTarget -> []
+        },
         targets: list.map(cfg.targets, fn(target) { target.id }),
         providers: [
           "",
@@ -125,7 +138,6 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
     supervisor: Some(started.pid),
     emitter:,
     config: cfg,
-    routes: [],
     circuit: circuit_name,
     catalog: catalog_name,
     metrics: metrics_name,

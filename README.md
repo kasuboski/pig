@@ -70,6 +70,8 @@ See the [tracing guide](knowledge/OPENTELEMETRY.md),
 [capture guide](knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md),
 [validation runbook](knowledge/OPENTELEMETRY_VALIDATION.md), and
 [local host example](packages/pig_otel/examples/local_validation/README.md).
+The [subscription proxy host](packages/pig_proxy/examples/subscriptions/README.md)
+shows a self-contained ChatGPT/z.ai operational deployment with opt-in Latitude export.
 The local suite needs no model credentials and accepts only the documented
 third-party Mist/Gramps deprecations; project warnings remain errors:
 

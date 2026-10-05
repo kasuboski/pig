@@ -4,6 +4,7 @@
 //// Routes:
 ////   POST /v1/chat/completions  — proxy to upstream (streaming or sync)
 ////   POST /v1/responses         — proxy to upstream (Codex Responses)
+////   GET  /v1/models            — configured OpenAI-compatible model list
 ////   GET  /health               — liveness probe
 ////   GET  /metrics              — Prometheus metrics (Phase 4)
 ////   *    /                     — 404
@@ -27,8 +28,9 @@ import pig_proxy/hackney
 import pig_proxy/metrics
 import pig_proxy/metrics_endpoint
 import pig_proxy/model_catalog
+import pig_proxy/models_endpoint
 import pig_proxy/proxy
-import pig_proxy/routes.{type VirtualRoute}
+import pig_proxy/routes
 import pig_proxy/telemetry
 import pig_proxy/trace_metadata
 import pig_proxy/tracing
@@ -46,7 +48,6 @@ pub type ServerState {
     config: ProxyConfig,
     emitter: telemetry.Emitter,
     owners: tracing.Owners,
-    routes: List(VirtualRoute),
     /// Per-target circuit breaker, addressed by name (supervised). Resolved
     /// per request so a restarted breaker is reached transparently.
     circuit: process.Name(circuit_actor.CircuitMsg),
@@ -66,25 +67,51 @@ pub type ServerState {
 /// The caller is responsible for keeping the process alive (e.g. via
 /// `process.sleep_forever()` in `main`).
 pub fn start(state: ServerState) -> Nil {
+  let assert Ok(_) = start_managed(state)
+  Nil
+}
+
+/// Handle to a listener started by `start_managed`.
+pub opaque type Listener {
+  Listener(process.Pid)
+}
+
+/// Start ingress and retain its supervisor PID so a host can stop listening
+/// before stopping the managed runtime.
+pub fn start_managed(state: ServerState) -> Result(Listener, String) {
   logging.configure()
   hackney.ensure_started()
   let handler = fn(req) { handle_request(req, state) }
-
-  let assert Ok(_) =
+  case
     handler
     |> mist.new
     |> mist.bind(state.config.bind)
     |> mist.port(state.config.port)
     |> mist.start
-
-  logging.log(
-    logging.Info,
-    "pig_proxy listening on "
-      <> state.config.bind
-      <> ":"
-      <> int.to_string(state.config.port),
-  )
+  {
+    Ok(started) -> {
+      logging.log(
+        logging.Info,
+        "pig_proxy listening on "
+          <> state.config.bind
+          <> ":"
+          <> int.to_string(state.config.port),
+      )
+      Ok(Listener(started.pid))
+    }
+    Error(_) -> Error("failed to start HTTP listener")
+  }
 }
+
+/// Stop managed ingress synchronously, force-stopping a stuck listener after
+/// five seconds. This does not claim connection drain or wire delivery.
+pub fn stop_managed(listener: Listener) -> Nil {
+  let Listener(pid) = listener
+  stop_listener(pid)
+}
+
+@external(erlang, "pig_proxy_server_ffi", "stop_listener")
+fn stop_listener(pid: process.Pid) -> Nil
 
 /// The main request handler.
 fn handle_request(
@@ -95,6 +122,8 @@ fn handle_request(
     http.Get, ["health"] -> health_response()
 
     http.Get, ["metrics"] -> metrics_response(state)
+
+    http.Get, ["v1", "models"] -> models_endpoint.response(state.config)
 
     http.Post, ["v1", "chat", "completions"] ->
       proxy_request(req, state, "/v1/chat/completions")
@@ -142,75 +171,94 @@ fn proxy_request(
     }
     Ok(body_req) -> {
       let body = bit_array_to_string(body_req.body)
-      let model = proxy.extract_model(body)
-      let streaming = proxy.is_streaming(body)
-      let method = method_to_string(req.method)
-
-      telemetry.emit_scoped(
-        state.emitter,
-        telemetry.RequestStart(model:, streaming:),
-      )
-
-      let exec =
-        execution.executor(hackney.transport(), resolve_named(state.circuit))
-        |> maybe_with_vault(state.vault)
-        |> execution.with_retries_per_target(state.config.retries_per_target)
-        |> execution.with_tracing(owner)
-      let request =
-        execution.ProxyRequest(
-          method:,
-          path:,
-          headers: req.headers,
-          body:,
-          model:,
-        )
-      let chain = resolve_chain(state, model)
-
-      let api = case path {
-        "/v1/responses" -> pig_otel.Responses
-        _ -> pig_otel.ChatCompletions
+      case proxy.extract_model(body) {
+        Error(_) -> invalid_model_response(owner)
+        Ok(model) -> proxy_valid_request(req, state, path, owner, body, model)
       }
-      let provider = case chain.targets {
-        [target, ..] -> target.provider
-        [] -> None
-      }
-      let assert tracing.Current(ctx) =
-        tracing.call(owner, tracing.BeginInference(api, provider, model))
-      context.with_context(ctx, fn() {
-        case streaming {
-          True ->
-            execute_stream(
-              req,
-              exec,
-              request,
-              chain,
-              path,
-              model,
-              owner,
-              state.emitter,
-            )
-          False -> {
-            let outcome = execution.orchestrate(exec, request, chain)
-            emit_outcome_telemetry(outcome, model, state.emitter)
-            let rendered = render_outcome(outcome)
-            finish_buffered(owner, api, outcome, False)
-            rendered
-          }
-        }
-      })
     }
   }
 }
 
-/// Resolve the ordered fallback chain for a model from routing. Falls
-/// back to all configured targets when no route matches.
-fn resolve_chain(state: ServerState, model: String) -> execution.FallbackChain {
-  let resolved = routes.resolve(state.config, state.routes, model)
-  let targets = case resolved {
-    routes.ResolvedRoute(targets:) -> targets
-    routes.NoTargets -> state.config.targets
+fn invalid_model_response(
+  owner: tracing.Owner,
+) -> response.Response(mist.ResponseData) {
+  let failed = pig_otel.Failed("invalid_request")
+  let _ =
+    tracing.call(
+      owner,
+      tracing.LogicalTerminal(failed, trace_metadata.empty(), 400),
+    )
+  let _ = tracing.call(owner, tracing.Downstream(failed))
+  bad_request_response("request body must contain a non-blank string model")
+}
+
+fn proxy_valid_request(
+  req: request.Request(mist.Connection),
+  state: ServerState,
+  path: String,
+  owner: tracing.Owner,
+  body: String,
+  model: String,
+) -> response.Response(mist.ResponseData) {
+  let streaming = proxy.is_streaming(body)
+  let method = method_to_string(req.method)
+  telemetry.emit_scoped(
+    state.emitter,
+    telemetry.RequestStart(model:, streaming:),
+  )
+  let exec =
+    execution.executor(hackney.transport(), resolve_named(state.circuit))
+    |> maybe_with_vault(state.vault)
+    |> execution.with_retries_per_target(state.config.retries_per_target)
+    |> execution.with_tracing(owner)
+  let request =
+    execution.ProxyRequest(method:, path:, headers: req.headers, body:, model:)
+  let api = case path {
+    "/v1/responses" -> pig_otel.Responses
+    _ -> pig_otel.ChatCompletions
   }
-  execution.FallbackChain(targets:)
+  let chain = resolve_chain(state, api, model)
+  let provider = case chain.targets {
+    [target, ..] -> target.provider
+    [] -> None
+  }
+  let assert tracing.Current(ctx) =
+    tracing.call(owner, tracing.BeginInference(api, provider, model))
+  context.with_context(ctx, fn() {
+    case streaming {
+      True ->
+        execute_stream(
+          req,
+          exec,
+          request,
+          chain,
+          path,
+          model,
+          owner,
+          state.emitter,
+        )
+      False -> {
+        let outcome = execution.orchestrate(exec, request, chain)
+        emit_outcome_telemetry(outcome, model, state.emitter)
+        let rendered = render_outcome(outcome)
+        finish_buffered(owner, api, outcome, False)
+        rendered
+      }
+    }
+  })
+}
+
+/// Resolve the configured targets for this API/model without fallback.
+fn resolve_chain(
+  state: ServerState,
+  api: pig_otel.Api,
+  model: String,
+) -> execution.FallbackChain {
+  execution.FallbackChain(targets: routes.resolve_request(
+    state.config,
+    api,
+    model,
+  ))
 }
 
 /// Apply the vault to an executor when one is configured (and currently

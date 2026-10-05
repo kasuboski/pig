@@ -1,8 +1,7 @@
 //// Configuration for the pig_proxy server.
 ////
-//// A `ProxyConfig` describes the upstream provider(s), credential injection,
-//// listening port, and (later) virtual model routes. Built via the builder
-//// functions in this module.
+//// A `ProxyConfig` describes upstream targets, exact API/model routing,
+//// credential injection, and the listening port.
 
 import envoy
 import gleam/int
@@ -23,10 +22,36 @@ pub type TargetAuth {
   Codex
 }
 
+/// Routing policy for requests. Strict routes never fall back to a default target.
+pub type Routing {
+  DefaultTarget
+  StrictRoutes(List(ModelRoute))
+}
+
+/// An exact model and API mapping to one upstream target.
+pub type ModelRoute {
+  ModelRoute(api: pig_otel.Api, model: String, target_id: String)
+}
+
+/// Create an exact API/model route to one target.
+pub fn model_route(
+  api: pig_otel.Api,
+  model: String,
+  target_id: String,
+) -> ModelRoute {
+  ModelRoute(api:, model:, target_id:)
+}
+
+/// API compatibility for an upstream target.
+pub type ApiSupport {
+  BothApis
+  OnlyApi(pig_otel.Api)
+}
+
 /// A single upstream provider target.
 pub type UpstreamTarget {
   UpstreamTarget(
-    /// Slug used in virtual routing (e.g. "openai", "ollama", "codex").
+    /// Configured target id referenced by exact model routes.
     id: String,
     /// Base URL including `/v1` prefix, e.g. "https://api.openai.com/v1".
     base_url: String,
@@ -37,12 +62,8 @@ pub type UpstreamTarget {
     /// model key so cost lookups against the models.dev catalog resolve
     /// correctly. `None` for local or unknown providers.
     provider: Option(String),
-    /// Ordered fallback chain — model slugs to try if this target fails.
-    fallbacks: List(String),
-    /// Whether this target supports tool definitions.
-    supports_tools: Bool,
-    /// Whether this target supports `response_format: json_object`.
-    supports_json_schema: Bool,
+    /// API endpoints this target can serve.
+    api_support: ApiSupport,
   )
 }
 
@@ -50,11 +71,11 @@ pub type UpstreamTarget {
 pub type ProxyConfig {
   ProxyConfig(
     targets: List(UpstreamTarget),
+    routing: Routing,
     tracing: pig_otel.Policy,
     bind: String,
     port: Int,
-    /// Per-Target Retry Budget: additional attempts per upstream target
-    /// before moving to the next fallback. Resets per target.
+    /// Per-target retry budget: additional attempts for the selected target.
     retries_per_target: Int,
     /// Consecutive failures before opening a circuit breaker.
     circuit_threshold: Int,
@@ -93,6 +114,7 @@ pub const default_models_refresh_ms = 3_600_000
 pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
   ProxyConfig(
     targets:,
+    routing: DefaultTarget,
     tracing: pig_otel.MetadataOnly,
     bind: default_bind,
     port: default_port,
@@ -103,6 +125,14 @@ pub fn new(targets: List(UpstreamTarget)) -> ProxyConfig {
     models_refresh_ms: default_models_refresh_ms,
     codex_seed_token: None,
   )
+}
+
+/// Use exact API/model routes, with no default target fallback.
+pub fn with_routes(
+  config: ProxyConfig,
+  routes: List(ModelRoute),
+) -> ProxyConfig {
+  ProxyConfig(..config, routing: StrictRoutes(routes))
 }
 
 /// Set the tracing and capture policy. The last call replaces the prior policy.
@@ -123,7 +153,7 @@ pub fn with_port(config: ProxyConfig, port: Int) -> ProxyConfig {
   ProxyConfig(..config, port:)
 }
 
-/// Set the Per-Target Retry Budget (additional attempts after the first).
+/// Set the per-target retry budget (additional attempts after the first).
 pub fn with_retries_per_target(
   config: ProxyConfig,
   retries_per_target: Int,
@@ -168,9 +198,7 @@ pub fn openai_target(
     base_url:,
     auth: ApiKey(api_key),
     provider: None,
-    fallbacks: [],
-    supports_tools: True,
-    supports_json_schema: True,
+    api_support: BothApis,
   )
 }
 
@@ -183,10 +211,13 @@ pub fn codex_target(id: String, base_url: String) -> UpstreamTarget {
     base_url:,
     auth: Codex,
     provider: None,
-    fallbacks: [],
-    supports_tools: True,
-    supports_json_schema: True,
+    api_support: OnlyApi(pig_otel.Responses),
   )
+}
+
+/// Restrict a target to one API.
+pub fn with_api(target: UpstreamTarget, api: pig_otel.Api) -> UpstreamTarget {
+  UpstreamTarget(..target, api_support: OnlyApi(api))
 }
 
 /// Mark a target as authenticating via ChatGPT/Codex OAuth. Its live token
@@ -211,11 +242,6 @@ pub fn with_provider(
   provider: String,
 ) -> UpstreamTarget {
   UpstreamTarget(..target, provider: Some(provider))
-}
-
-/// Add a fallback model slug to a target's chain.
-pub fn with_fallback(target: UpstreamTarget, slug: String) -> UpstreamTarget {
-  UpstreamTarget(..target, fallbacks: list.append(target.fallbacks, [slug]))
 }
 
 /// Look up a target by its id slug.
@@ -243,7 +269,6 @@ pub fn provider_string(target: UpstreamTarget) -> String {
 ///   PIG_PROXY_RETRIES_PER_TARGET    — Per-Target Retry Budget (default 1)
 ///   OPENAI_COMPAT_BASE_URL          — upstream base URL
 ///   OPENAI_COMPAT_API_KEY           — upstream API key
-///   OPENAI_COMPAT_MODEL             — default model slug
 ///   OPENAI_COMPAT_CODEX             — mark the default target as ChatGPT/Codex OAuth
 ///   OPENAI_COMPAT_CODEX_TOKEN       — optional Codex OAuth JWT (seeds the vault)
 ///   OPENAI_COMPAT_PROVIDER          — models.dev provider key (e.g. "openai")

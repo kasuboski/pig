@@ -417,7 +417,6 @@ fn start_proxy_with_config(_port: Int, cfg: config.ProxyConfig) -> Nil {
       fn(_) { Nil },
     ),
     owners:,
-    routes: [],
     circuit: process.new_name("unused_circuit"),
     catalog: process.new_name("unused_catalog"),
     metrics: process.new_name("unused_metrics"),
