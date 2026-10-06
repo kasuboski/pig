@@ -72,7 +72,9 @@ pub fn start(
 
 /// Await the startup marker with a fixed overall deadline, not per-chunk waits.
 pub fn await_ready(child: Child) -> Nil {
-  await_marker(selector(child), "", now() + 10_000)
+  // Host startup includes a catalog fetch that may take 5 seconds plus VM boot;
+  // allow slow CI runners up to 20 seconds without changing marker semantics.
+  await_marker(selector(child), "", now() + 20_000)
 }
 
 fn await_marker(

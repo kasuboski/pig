@@ -14,6 +14,10 @@ pub fn normalized_projection_test() {
   content.check_normalized_projection()
 }
 
+pub fn directional_budgets_test() {
+  content.check_directional_budgets()
+}
+
 pub fn input_chat_structured_test() {
   content.check_content("input_chat_structured")
 }
@@ -238,6 +242,18 @@ pub fn stream_responses_missing_final_output_test() {
 
 pub fn stream_responses_explicit_empty_test() {
   content.check_stream("stream_responses_explicit_empty")
+}
+
+pub fn stream_responses_live_small_replay_test() {
+  content.check_stream("stream_responses_live_small")
+}
+
+pub fn stream_responses_live_large_input_replay_test() {
+  content.check_stream("stream_responses_live_large_input")
+}
+
+pub fn stream_responses_live_large_instructions_replay_test() {
+  content.check_stream("stream_responses_live_large_instructions")
 }
 
 pub fn stream_responses_missing_item_done_test() {

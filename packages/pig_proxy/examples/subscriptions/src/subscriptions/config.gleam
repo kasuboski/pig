@@ -33,6 +33,37 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
     "PIG_PROXY_CAPTURE_CONVERSATION",
     True,
   ))
+  use input_source_bytes <- result.try(positive_budget(
+    lookup,
+    "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+    4_194_304,
+    4_194_304,
+  ))
+  use input_content_bytes <- result.try(positive_budget(
+    lookup,
+    "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+    2_097_152,
+    2_097_152,
+  ))
+  use output_source_bytes <- result.try(positive_budget(
+    lookup,
+    "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+    4_194_304,
+    4_194_304,
+  ))
+  use output_content_bytes <- result.try(positive_budget(
+    lookup,
+    "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+    65_536,
+    2_097_152,
+  ))
+  use policy <- result.try(capture_policy(
+    capture,
+    input_source_bytes,
+    input_content_bytes,
+    output_source_bytes,
+    output_content_bytes,
+  ))
   use latitude_enabled <- result.try(boolean(
     lookup,
     "PIG_LATITUDE_ENABLED",
@@ -76,10 +107,6 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
         proxy_config.model_route(pig_otel.ChatCompletions, model, "zai")
       }),
     )
-  let policy = case capture {
-    True -> pig_otel.Conversation(options.defaults())
-    False -> pig_otel.MetadataOnly
-  }
   let proxy =
     proxy_config.new([codex, z])
     |> proxy_config.with_routes(routes)
@@ -114,6 +141,60 @@ fn csv(
         True -> Error(key <> " contains duplicate model names")
         False -> Ok(entries)
       }
+  }
+}
+
+fn positive_budget(
+  lookup: fn(String) -> Option(String),
+  key: String,
+  default: Int,
+  maximum: Int,
+) -> Result(Int, String) {
+  case lookup(key) {
+    None -> Ok(default)
+    Some(raw) ->
+      case int.parse(string_trim(raw)) {
+        Ok(value) if value > 0 && value <= maximum -> Ok(value)
+        _ ->
+          Error(
+            key <> " must be an integer from 1 to " <> int.to_string(maximum),
+          )
+      }
+  }
+}
+
+fn capture_policy(
+  capture: Bool,
+  input_source_bytes: Int,
+  input_content_bytes: Int,
+  output_source_bytes: Int,
+  output_content_bytes: Int,
+) -> Result(pig_otel.Policy, String) {
+  case capture {
+    False -> Ok(pig_otel.MetadataOnly)
+    True -> {
+      use capture_options <- result.try(
+        options.with_direction_limits(
+          options.defaults(),
+          options.InputLimits(
+            source_bytes: input_source_bytes,
+            content_bytes: input_content_bytes,
+          ),
+        )
+        |> result.map_error(fn(_) { "invalid input capture budgets" }),
+      )
+      use capture_options <- result.try(
+        options.with_direction_limits(
+          capture_options,
+          options.OutputLimits(
+            source_bytes: output_source_bytes,
+            content_bytes: output_content_bytes,
+          ),
+        )
+        |> result.map_error(fn(_) { "invalid output capture budgets" }),
+      )
+      Ok(pig_otel.Conversation(capture_options))
+    }
   }
 }
 

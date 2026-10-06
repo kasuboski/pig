@@ -632,8 +632,10 @@ fn supported_json(headers: List(#(String, String))) -> Bool {
 }
 
 fn supported_sse(headers: List(#(String, String))) -> Bool {
-  has_header(headers, "content-type")
-  && list.all(headers, fn(header) {
+  // Some upstream gateways omit Content-Type on successful streaming responses.
+  // In that case the bounded, API-specific SSE projector remains the verifier;
+  // an explicitly supplied unsupported or conflicting type is still rejected.
+  list.all(headers, fn(header) {
     string.lowercase(header.0) != "content-type"
     || media_type_is(header.1, "text/event-stream")
   })

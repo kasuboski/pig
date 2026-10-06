@@ -2,7 +2,7 @@
 
 %% Pure domain adapter, not an OTel binding. Every public data boundary catches
 %% failures and drops content. No process dictionary, callbacks, or side effects.
--export([defaults/0, with_limits/3, with_redacted_keys/2,
+-export([defaults/0, with_limits/3, with_direction_limits/2, with_redacted_keys/2,
          with_redacted_text/2, input/3, buffered/3, pairs/2,
          new_stream/2, push/2, finish/2, retained_bytes/1,
          normalized_input/4, normalized_output/3, incomplete/0]).
@@ -12,16 +12,32 @@
 -define(REDACTED, <<"[REDACTED]">>).
 
 defaults() ->
-    {options, #{source => 65536, content => 16384,
+    {options, #{input_source => 4194304, input_content => 2097152,
+                output_source => 4194304, output_content => 65536,
                 keys => [<<"secret">>, <<"token">>, <<"password">>, <<"auth">>,
                          <<"cookie">>, <<"credential">>, <<"api_key">>, <<"apikey">>],
                 literals => []}}.
 
 with_limits({options, O}, S, C)
-  when is_integer(S), S > 0, S =< 1048576,
-       is_integer(C), C > 0, C =< 262144 ->
-    {ok, {options, O#{source := S, content := C}}};
+  when is_integer(S), S > 0, S =< 4194304,
+       is_integer(C), C > 0, C =< 2097152 ->
+    {ok, {options, O#{input_source := S, input_content := C,
+                      output_source := S, output_content := C}}};
 with_limits(_, _, _) -> {error, invalid_limits}.
+
+with_direction_limits({options, O}, {input_limits, S, C}) ->
+    direction_limits(O, input, S, C);
+with_direction_limits({options, O}, {output_limits, S, C}) ->
+    direction_limits(O, output, S, C);
+with_direction_limits(_, _) -> {error, invalid_limits}.
+
+direction_limits(O, Direction, S, C)
+  when is_integer(S), S > 0, S =< 4194304,
+       is_integer(C), C > 0, C =< 2097152 ->
+    Source = case Direction of input -> input_source; output -> output_source end,
+    Content = case Direction of input -> input_content; output -> output_content end,
+    {ok, {options, O#{Source := S, Content := C}}};
+direction_limits(_, _, _, _) -> {error, invalid_limits}.
 
 with_redacted_keys({options, O}, Rules) -> rules(O, keys, Rules, 128).
 with_redacted_text({options, O}, Rules) -> rules(O, literals, Rules, 256).
@@ -45,13 +61,17 @@ rules(O, Kind, Rules, Max) ->
         {ok, {options, O#{Kind := Combined}}}
     catch throw:R -> {error, R}; _:_ -> {error, invalid_rule} end.
 
-input({options, O}, Api, Body) -> capture(O, Api, Body, input).
-buffered({options, O}, Api, Body) -> capture(O, Api, Body, output).
+input({options, O}, Api, Body) -> capture(directional(O, input), Api, Body, input).
+buffered({options, O}, Api, Body) -> capture(directional(O, output), Api, Body, output).
 incomplete() -> omitted(<<"incomplete">>).
+
+directional(O, input) -> O#{source => maps:get(input_source, O), content => maps:get(input_content, O)};
+directional(O, output) -> O#{source => maps:get(output_source, O), content => maps:get(output_content, O)}.
 
 %% Normalized values are traversed and budgeted before a projection tree is
 %% assembled. Provider schemas, descriptions, thinking and metadata never enter it.
-normalized_input({options, O}, System, Messages, Tools) ->
+normalized_input({options, O0}, System, Messages, Tools) ->
+    O = directional(O0, input),
     safe_capture(fun() ->
         bounded_list(Messages, 64), bounded_list(Tools, 32),
         Source = normalized_input_cost(System, Messages, Tools, O),
@@ -67,7 +87,8 @@ normalized_input({options, O}, System, Messages, Tools) ->
         encoded(O, input, Attrs, Filtered orelse IF orelse DF)
     end).
 
-normalized_output({options, O}, Message, Stop) ->
+normalized_output({options, O0}, Message, Stop) ->
+    O = directional(O0, output),
     safe_capture(fun() ->
         Reason = normalized_finish(Stop),
         Source = normalized_message_raw_cost(Message, 0, O),
@@ -543,7 +564,7 @@ projection_limits(L) ->
 %% SSE framing and provider accumulators are intentionally separate from the
 %% protocol codecs: those codecs discard candidate boundaries and item linkage.
 new_stream({options, O}, Api) ->
-    #{options => O, api => Api, seen => 0, line => [], data => [],
+    #{options => directional(O, output), api => Api, seen => 0, line => [], data => [],
       choices => #{}, items => #{}, terminal => false, filtered => false, skip_lf => false}.
 
 push(#{failure := _} = S, _) -> S;
@@ -792,8 +813,16 @@ response_completed(S, R) ->
     ensure(required(R, <<"status">>) =:= <<"completed">>, incomplete),
     ensure(not maps:is_key(<<"error">>, R) orelse maps:get(<<"error">>, R) =:= null, incomplete),
     case maps:find(<<"output">>, R) of
+        {ok, []} ->
+            case map_size(maps:get(items, S)) > 0 of
+                true ->
+                    %% Some streaming gateways send an empty final output array
+                    %% after complete output_item.done events. Preserve them.
+                    S#{terminal := true};
+                false -> S#{terminal := true, items := #{}}
+            end;
         {ok, Items} ->
-            %% A final full entity replaces deltas, even when explicitly empty.
+            %% A non-empty final entity is authoritative and replaces deltas.
             All = bounded_list(Items, 64),
             {_, Pairs} = lists:foldl(fun(Item, {I, Acc}) ->
                 {I + 1, [{I, item_state(Item, true)} | Acc]}

@@ -31,8 +31,14 @@ are rejected. ChatGPT routes use provider `openai`, API `Responses`, target
 `ChatCompletions`, target `zai`, and default base URL
 `https://api.z.ai/api/coding/paas/v4`. Optional `PIG_CHATGPT_BASE_URL` and
 `PIG_ZAI_BASE_URL` overrides support loopback acceptance tests. `PIG_PROXY_MODELS_DEV_URL` can also
-point the pricing catalog at a loopback fixture. URLs must use HTTPS, or HTTP to
-loopback, with no embedded credentials, query, or fragment. No model aliases
+point the pricing catalog at a loopback fixture. At host startup, the subscription
+host waits up to five seconds for the first successful catalog fetch before opening
+HTTP ingress. If no catalog is published by then, it logs a warning and starts
+normally; requests admitted before the next successful refresh have no span-level
+price estimate. Later catalog refreshes price later inferences and `/metrics`, but
+do not retroactively reprice already-admitted spans. This wait is host-only and
+does not block library users or reject inference traffic. URLs must use HTTPS, or
+HTTP to loopback, with no embedded credentials, query, or fragment. No model aliases
 or request rewriting are performed. The host defaults to `127.0.0.1` (port
 8080, optionally `PIG_PROXY_PORT`). Set `PIG_PROXY_BIND=0.0.0.0` only when an
 external boundary such as Docker's loopback-only port publishing restricts access.
@@ -111,6 +117,34 @@ this machine when export is enabled; treat traces as sensitive data. Set
 `pig_proxy` library still defaults to metadata-only. Projection is bounded and
 omits unsupported content; it is not raw HTTP-body recording or a general PII
 sanitizer. Review the [capture/privacy contract](../../../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
+
+The host's default directional budgets are input 4 MiB source / 2 MiB serialized
+content and output 4 MiB source / 64 KiB serialized content. Override them with
+positive decimal integers, each independently bounded by 4 MiB for source and
+2 MiB for serialized content. These conversation-capture budgets are separate
+from the metadata SSE framer's 4 MiB per-event limit: an oversized event is
+skipped through its delimiter so later events can still supply metadata, while
+events above that finite limit are not parsed. A small cumulative capture budget
+can omit conversation content without suppressing completion usage or identity.
+
+| Setting | Default | Maximum |
+| --- | ---: | ---: |
+| `PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES` | 4,194,304 | 4,194,304 |
+| `PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES` | 2,097,152 | 2,097,152 |
+| `PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES` | 4,194,304 | 4,194,304 |
+| `PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES` | 65,536 | 2,097,152 |
+
+Invalid values fail host configuration even when conversation capture is
+switched off. When Latitude export is enabled, a subscription-host exporter
+adapter traverses each SDK export batch and sends at most four spans in each
+OTLP request. The adapter preserves the span and resource records, and leaves
+the SDK queue capacity and scheduled export timing unchanged. Four is chosen
+because configurable input and output content limits can each reach 2 MiB;
+four spans can approach 16 MiB of captured content, leaving headroom against
+the 32 MiB ingestion default in the inspected Latitude source. Eight spans could
+reach 32 MiB before encoding overhead. The hosted service's configured limit is
+not independently verified. This is a span-count bound, not a strict encoded
+request-byte bound.
 
 Latitude export is disabled unless `PIG_LATITUDE_ENABLED=true`. Configure it before
 starting the host:
@@ -207,8 +241,9 @@ zero upstream calls for validation/routing failures. SIGTERM must exit zero and
 close the listener; missing and corrupt isolated auth files must fail startup.
 A loopback OTLP receiver checks the exact `/v1/traces` path, fake Latitude auth
 and project headers, uncompressed protobuf, and `service.name`. It decodes and
-acknowledges 20 spans per capture mode: 12 from successful requests and 8 from
-rejections. Assertions cover span relationships, provider/model/API, response
+acknowledges 26 spans per capture mode: 18 from successful requests and 8 from
+rejections. Each export request must contain at most four spans, with no spans
+lost across batches. Assertions cover span relationships, provider/model/API, response
 IDs, finish reasons, input/output/cache usage, and credential exclusion. Metadata
 mode exports no conversation; the host's default capture mode includes fixture
 prompts and responses for both APIs in buffered and SSE form. A refused exporter
@@ -227,6 +262,11 @@ span assertions are written in Gleam. Handwritten Erlang is limited to the
 SDK/application and OS-signal adapter, plus test child-VM/platform primitives.
 The receiver calls the existing generated protobuf decoder through FFI; decoding
 its terms into typed spans and verifying their contract happen in Gleam.
+
+A catalog-publication barrier verifies that HTTP ingress remains closed until
+pricing is available; a catalog outage verifies the bounded startup fallback.
+The separate `mise run test-integration-catalog` command runs local catalog retry,
+readiness, and admission-snapshot tests without model calls.
 
 No real credential file or external provider is used. The acceptance suite is
 compiled with normal tests and prints an explicit skip unless

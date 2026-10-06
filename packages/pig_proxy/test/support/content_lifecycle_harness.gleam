@@ -7,6 +7,7 @@ import gleam/json
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleam/result
+import gleam/string
 import gleeunit/should
 import pig_otel
 import pig_otel/content/options
@@ -229,7 +230,13 @@ pub fn check_oversized_before_utf8() -> List(String) {
     simplifile.read_bits(
       "test_data/content_lifecycle/oversized_invalid_utf8.body",
     )
-  run_selected(
+  let assert Ok(capture_options) =
+    options.with_direction_limits(
+      options.defaults(),
+      options.OutputLimits(65_536, 65_536),
+    )
+  run_selected_with_options(
+    capture_options,
     pig_otel.ChatCompletions,
     [],
     [#("content-type", "application/json")],
@@ -238,6 +245,22 @@ pub fn check_oversized_before_utf8() -> List(String) {
 }
 
 fn run_selected(
+  api: pig_otel.Api,
+  request_headers: List(#(String, String)),
+  response_headers: List(#(String, String)),
+  response_body: BitArray,
+) -> List(String) {
+  run_selected_with_options(
+    options.defaults(),
+    api,
+    request_headers,
+    response_headers,
+    response_body,
+  )
+}
+
+fn run_selected_with_options(
+  options: options.Options,
   api: pig_otel.Api,
   request_headers: List(#(String, String)),
   response_headers: List(#(String, String)),
@@ -256,7 +279,7 @@ fn run_selected(
     let owner =
       tracing.register_with_policy(
         name,
-        pig_otel.Conversation(options.defaults()),
+        pig_otel.Conversation(options),
         [],
         path,
       )
@@ -317,6 +340,92 @@ fn run_selected(
       tracing.call(owner, tracing.Downstream(tracing.http_outcome(status)))
     Nil
   })
+}
+
+pub fn run_large_completion(policy: pig_otel.Policy) -> List(String) {
+  let ignored = string.repeat("x", 70_000)
+  let event =
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{"
+    <> "\"id\":\"fixture-response-id\","
+    <> "\"model\":\"fixture-response-model\","
+    <> "\"status\":\"completed\","
+    <> "\"usage\":{\"input_tokens\":20,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":6}},"
+    <> "\"ignored_output\":\"PRIVATE_IGNORED_OUTPUT"
+    <> ignored
+    <> "\"}}\n\n"
+  let body = bit_array.from_string(event)
+  with_annotations(fn() {
+    let name = process.new_name("large_completion_owner")
+    let assert Ok(_) =
+      static_supervisor.new(static_supervisor.OneForOne)
+      |> static_supervisor.add(tracing.supervisor(name))
+      |> static_supervisor.start
+    let owner = tracing.register_with_policy(name, policy, [], "/v1/responses")
+    let assert tracing.Current(_) =
+      tracing.call(
+        owner,
+        tracing.BeginInference(
+          pig_otel.Responses,
+          Some("openai"),
+          "fixture-request-model",
+          None,
+        ),
+      )
+    let assert Ok(script) =
+      in_memory_transport.start_stream(
+        [
+          in_memory_transport.CommitStream(
+            200,
+            [#("content-type", "text/event-stream")],
+            [body],
+            in_memory_transport.StreamDone,
+          ),
+        ],
+        in_memory_transport.stream_exhausted_default,
+      )
+    let outcome =
+      execution.orchestrate_stream(
+        execution.executor(in_memory_transport.transport(script), None)
+          |> execution.with_tracing(owner),
+        execution.ProxyRequest(
+          "POST",
+          "/v1/responses",
+          [#("accept", "text/event-stream")],
+          "{}",
+          "fixture-request-model",
+        ),
+        execution.FallbackChain([
+          config.openai_target("fixture", "http://fixture/v1", "PRIVATE_KEY"),
+        ]),
+      )
+    let assert execution.CommittedStream(target_id:, provider:, status:, ..) =
+      outcome
+    let _ =
+      tracing.call(owner, tracing.SelectStream(target_id, provider, status))
+    let sink = process.new_subject()
+    let _ = tracing.call(owner, tracing.Bind(sink))
+    accept_stream(owner, sink)
+    let assert tracing.Body(transport.Chunk(_)) = process.receive_forever(sink)
+    should.equal(process.receive_forever(sink), tracing.Body(transport.Done))
+    let _ =
+      tracing.call(owner, tracing.Downstream(tracing.http_outcome(status)))
+    Nil
+  })
+}
+
+fn accept_stream(
+  owner: tracing.Owner,
+  sink: process.Subject(tracing.ChunkMessage),
+) -> Nil {
+  let setup_ack = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let reply = tracing.call(owner, tracing.Accepted)
+      process.send(setup_ack, reply)
+    })
+  should.equal(process.receive_forever(sink), tracing.Receipt)
+  let _ = tracing.call(owner, tracing.HandoffReceipt)
+  should.equal(process.receive_forever(setup_ack), tracing.Ack)
 }
 
 @external(erlang, "pig_proxy_content_lifecycle_ffi", "with_inference_annotations")

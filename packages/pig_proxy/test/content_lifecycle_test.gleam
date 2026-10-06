@@ -71,3 +71,23 @@ pub fn retry_body_is_never_attached_only_selected_logical_response_test() {
   should.equal(string.contains(all, "fixture answer"), True)
   should.equal(string.contains(all, "PRIVATE_RETRY_ENVELOPE"), False)
 }
+
+pub fn large_responses_completion_keeps_real_span_metadata_test() {
+  let assert Ok(small_capture) =
+    options.with_direction_limits(
+      options.defaults(),
+      options.OutputLimits(1024, 1024),
+    )
+  list.each(
+    [pig_otel.MetadataOnly, pig_otel.Conversation(small_capture)],
+    fn(policy) {
+      let annotations = check.run_large_completion(policy)
+      should.be_true(
+        list.any(annotations, fn(attributes) {
+          attributes
+          == "[{attribute,{key,<<\"gen_ai.response.id\">>},\n            {string_value,<<\"fixture-response-id\">>}},\n {attribute,{key,<<\"gen_ai.response.model\">>},\n            {string_value,<<\"fixture-response-model\">>}},\n {attribute,{key,<<\"gen_ai.response.finish_reasons\">>},\n            {string_list,[<<\"stop\">>]}},\n {attribute,{key,<<\"gen_ai.usage.input_tokens\">>},{int_value,20}},\n {attribute,{key,<<\"gen_ai.usage.output_tokens\">>},{int_value,7}},\n {attribute,{key,<<\"gen_ai.usage.cache_read.input_tokens\">>},{int_value,6}},\n {attribute,{key,<<\"pig.outcome\">>},{string_value,<<\"succeeded\">>}}]"
+        }),
+      )
+    },
+  )
+}

@@ -146,6 +146,12 @@ pub fn start(cfg: ProxyConfig) -> server.ServerState {
   )
 }
 
+/// Wait for the first successful catalog publication, up to `timeout_ms`.
+/// This is opt-in so library runtimes never block inference on catalog IO.
+pub fn await_catalog(state: server.ServerState, timeout_ms: Int) -> Bool {
+  model_catalog.await_ready(state.catalog, timeout_ms)
+}
+
 /// Stop a managed runtime's entire supervision tree synchronously.
 ///
 /// The host must stop HTTP ingress before calling this and flush its SDK only

@@ -1,9 +1,11 @@
+import gleam/bit_array
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import pig_otel
+import pig_otel/content
 import pig_proxy/config as proxy_config
 import subscriptions/config
 
@@ -107,6 +109,66 @@ pub fn parser_rejects_matrix_test() {
     #("PIG_PROXY_BIND", "remote.test", "PIG_PROXY_BIND"),
     #("PIG_PROXY_BIND", "127.0.0.1\nsecret", "PIG_PROXY_BIND"),
     #("PIG_PROXY_CAPTURE_CONVERSATION", "yes", "PIG_PROXY_CAPTURE_CONVERSATION"),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+      "0",
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+      "4194305",
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+      "four",
+      "PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+      "0",
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+      "2097153",
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+      "large",
+      "PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+      "0",
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+      "4194305",
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+      "bad",
+      "PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+      "0",
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+      "2097153",
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+    ),
+    #(
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+      "not-an-integer",
+      "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
+    ),
     #("PIG_LATITUDE_ENABLED", "true", "LATITUDE_API_KEY"),
     #("ZAI_API_KEY", "secret\r\ninjected: value", "ZAI_API_KEY"),
     #("PIG_CHATGPT_BASE_URL", "", "PIG_CHATGPT_BASE_URL"),
@@ -174,6 +236,56 @@ pub fn latitude_endpoint_validation_matrix_test() {
       should.equal(string.contains(error, "PIG_LATITUDE_ENDPOINT"), True)
       should.equal(string.contains(error, "secret"), False)
     },
+  )
+}
+
+pub fn directional_capture_budgets_accept_valid_overrides_test() {
+  let env =
+    valid()
+    |> list.append([
+      #("PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES", "123456"),
+      #("PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES", "100"),
+      #("PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES", "345678"),
+      #("PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES", "4096"),
+    ])
+  let assert Ok(config.Settings(proxy:, ..)) = check_config(env)
+  let assert pig_otel.Conversation(capture_options) = proxy.tracing
+  let input =
+    content.input(
+      capture_options,
+      pig_otel.ChatCompletions,
+      bit_array.from_string(
+        "{\"messages\":[{\"role\":\"user\",\"content\":\""
+        <> string.repeat("x", 500)
+        <> "\"}]}",
+      ),
+    )
+  let output =
+    content.buffered(
+      capture_options,
+      pig_otel.ChatCompletions,
+      bit_array.from_string(
+        "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\""
+        <> string.repeat("y", 500)
+        <> "\"},\"finish_reason\":\"stop\"}]}",
+      ),
+    )
+  should.equal(list.length(content.attributes(input, content.Input)), 2)
+  should.equal(list.length(content.attributes(output, content.Output)), 3)
+}
+
+pub fn invalid_capture_budgets_rejected_when_capture_disabled_test() {
+  let assert Error(error) =
+    check_config(
+      valid()
+      |> list.append([
+        #("PIG_PROXY_CAPTURE_CONVERSATION", "false"),
+        #("PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES", "0"),
+      ]),
+    )
+  should.equal(
+    string.contains(error, "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES"),
+    True,
   )
 }
 

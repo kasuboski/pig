@@ -41,6 +41,7 @@ pub fn run() -> Nil {
   list.each([Metadata, Conversation, Outage], fn(mode) {
     run_host(context, auth, mode)
   })
+  run_gated_catalog_startup(context, auth)
   let probe_environment = [
     #("OPENAI_COMPAT_CODEX_TOKEN", None),
     #("ZAI_API_KEY", None),
@@ -67,6 +68,34 @@ pub fn run() -> Nil {
     assert !string.contains(output, "private-lifecycle-marker")
   })
   io.println("Subscriptions HTTP, OTLP and shutdown failure acceptance passed.")
+}
+
+fn run_gated_catalog_startup(context: child_vm.Context, auth: String) -> Nil {
+  let codex = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(codex) })
+  let zai = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(zai) })
+  let #(catalog, observed) = upstream.start_gated_catalog()
+  use <- exception.defer(fn() { upstream.stop(catalog) })
+  let receiver = otlp_receiver.start()
+  use <- exception.defer(fn() { otlp_receiver.stop(receiver) })
+  let port = child_vm.free_port()
+  let env = environment(auth, Conversation, port, codex, zai, catalog, receiver)
+  let host = child_vm.start(context, host_eval, env)
+  use <- exception.defer(fn() { child_vm.cleanup(host) })
+
+  let assert Ok(release) = process.receive(observed, 5000)
+  let assert Ok(ingress_probe) = request.to(base_url(port) <> "/health")
+  let ingress_result =
+    httpc.dispatch(httpc.timeout(httpc.configure(), 250), ingress_probe)
+  let assert Error(_) = ingress_result
+
+  let _ = process.send(release, Nil)
+  child_vm.await_ready(host)
+  assert request_to(port, http.Get, "/health", "", []).status == 200
+  check_models(port)
+  await_catalog_pricing(port, codex, zai, catalog)
+  await_priced_metrics(port, 1000)
 }
 
 fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
@@ -237,7 +266,14 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
   }
   assert upstream.count(codex) == expected_upstream_requests
   assert upstream.count(zai) == expected_upstream_requests
-  assert upstream.count(catalog) >= 1
+  case mode {
+    Outage -> {
+      assert upstream.count(catalog) == 0
+    }
+    Conversation | Metadata -> {
+      assert upstream.count(catalog) >= 1
+    }
+  }
   otlp_receiver.assert_no_export(receiver)
   child_vm.signal_term(host)
   let #(status, _) = child_vm.await_exit(host, 5000)
@@ -272,6 +308,10 @@ fn environment(
     Outage -> "http://127.0.0.1:1/v1/traces"
     _ -> otlp_receiver.endpoint(receiver)
   }
+  let catalog_url = case mode {
+    Outage -> "http://127.0.0.1:1/catalog"
+    _ -> base_url(upstream.port(catalog)) <> "/catalog"
+  }
   [
     #(
       "PIG_CHATGPT_MODELS",
@@ -282,10 +322,7 @@ fn environment(
     #("PIG_CHATGPT_BASE_URL", Some(base_url(upstream.port(codex)) <> "/codex")),
     #("PIG_ZAI_BASE_URL", Some(base_url(upstream.port(zai)) <> "/v1")),
     #("PIG_PROXY_PORT", Some(int.to_string(port))),
-    #(
-      "PIG_PROXY_MODELS_DEV_URL",
-      Some(base_url(upstream.port(catalog)) <> "/catalog"),
-    ),
+    #("PIG_PROXY_MODELS_DEV_URL", Some(catalog_url)),
     #("PIG_CODEX_AUTH_PATH", Some(auth)),
     #("OPENAI_COMPAT_CODEX_TOKEN", Some(fake_jwt())),
     #("PIG_PROXY_CAPTURE_CONVERSATION", capture),

@@ -172,6 +172,112 @@ pub fn late_usage_and_trailing_frame_matrix_test() {
   )
 }
 
+pub fn large_responses_completed_metadata_survives_ignored_payload_test() {
+  let ignored = string.repeat("x", 70_000)
+  let body =
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{"
+    <> "\"id\":\"large-id\",\"model\":\"large-model\",\"status\":\"completed\","
+    <> "\"usage\":{"
+    <> "\"input_tokens\":37,\"output_tokens\":5,"
+    <> "\"input_tokens_details\":{\"cached_tokens\":2}},"
+    <> "\"ignored\":\""
+    <> ignored
+    <> "\"}}\n\n"
+  check.check_incremental(
+    pig_otel.Responses,
+    [body],
+    trace_metadata.Observed(
+      inference.InferenceMetadata(
+        Some("large-id"),
+        Some("large-model"),
+        Some(stop_reason.Stop),
+        Some(37),
+        Some(5),
+        Some(2),
+      ),
+      False,
+    ),
+  )
+}
+
+pub fn metadata_frames_over_one_megabyte_and_fragmented_crlf_test() {
+  let ignored = string.repeat("z", 1_100_000)
+  let body =
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"big\",\"status\":\"completed\",\"usage\":{\"input_tokens\":37,\"output_tokens\":5},\"ignored\":\""
+    <> ignored
+    <> "\"}}\r"
+  check.check_incremental(
+    pig_otel.Responses,
+    [body, "\n", "\r", "\n"],
+    trace_metadata.Observed(
+      inference.InferenceMetadata(
+        Some("big"),
+        None,
+        Some(stop_reason.Stop),
+        Some(37),
+        Some(5),
+        None,
+      ),
+      False,
+    ),
+  )
+}
+
+pub fn metadata_exact_cap_is_accepted_and_oversize_recovers_test() {
+  let prefix = "data: {\"usage\":{\"prompt_tokens\":37},\"ignored\":\""
+  let suffix = "\"}"
+  let filler_size =
+    4_194_304
+    - bit_array.byte_size(bit_array.from_string(prefix))
+    - bit_array.byte_size(bit_array.from_string(suffix))
+    - 1
+  let exactly_capped =
+    prefix <> string.repeat("x", filler_size) <> suffix <> "\n\n"
+  check.check_incremental(
+    pig_otel.ChatCompletions,
+    [exactly_capped],
+    trace_metadata.Observed(
+      inference.InferenceMetadata(
+        ..inference.default_metadata(),
+        input_tokens: Some(37),
+      ),
+      False,
+    ),
+  )
+  let beyond_cap =
+    "data: {\"ignored\":\"" <> string.repeat("x", 4_194_300) <> "\"}\n\n"
+  check.check_incremental(
+    pig_otel.ChatCompletions,
+    [beyond_cap, "data: {\"usage\":{\"prompt_tokens\":5}}\r\n\r\n"],
+    trace_metadata.Observed(
+      inference.InferenceMetadata(
+        ..inference.default_metadata(),
+        input_tokens: Some(5),
+      ),
+      False,
+    ),
+  )
+}
+
+pub fn malformed_utf8_after_oversize_is_discarded_and_recovers_test() {
+  check.check_malformed_oversize_recovers(
+    pig_otel.ChatCompletions,
+    trace_metadata.Observed(
+      inference.InferenceMetadata(
+        ..inference.default_metadata(),
+        input_tokens: Some(5),
+      ),
+      False,
+    ),
+  )
+}
+
+pub fn metadata_framer_retention_is_bounded_across_cap_test() {
+  let at_cap = string.repeat("a", 4_194_304)
+  check.check_retained_bytes(pig_otel.ChatCompletions, at_cap, 4_194_304)
+  check.check_retained_bytes(pig_otel.ChatCompletions, at_cap <> "b", 0)
+}
+
 pub fn oversized_event_is_skipped_and_late_usage_survives_test() {
   let enormous = "data: {\"PRIVATE_CONTENT\":\"" <> string.repeat("x", 70_000)
   check.check_incremental(

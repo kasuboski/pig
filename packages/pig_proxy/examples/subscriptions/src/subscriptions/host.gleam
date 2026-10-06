@@ -11,6 +11,8 @@ import pig_proxy/server
 import subscriptions/config
 import subscriptions/lifecycle
 
+const catalog_startup_timeout_ms = 5000
+
 /// Run the subscription host until SIGTERM, then stop with a bounded
 /// best-effort final export. Configuration failures exit without listening.
 pub fn main() -> Nil {
@@ -44,6 +46,14 @@ fn start(settings: config.Settings) -> Nil {
     _ -> Nil
   }
   let state = runtime.start(proxy)
+  case runtime.await_catalog(state, catalog_startup_timeout_ms) {
+    True -> Nil
+    False ->
+      logging.log(
+        logging.Warning,
+        "model pricing catalog unavailable after 5000ms; starting without pricing until a refresh succeeds",
+      )
+  }
   case server.start_managed(state) {
     Error(message) -> {
       shutdown(fn() { runtime.stop(state) })

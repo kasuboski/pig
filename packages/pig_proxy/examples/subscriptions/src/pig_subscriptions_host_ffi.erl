@@ -18,11 +18,28 @@ configure_latitude(Endpoint, Key, Project) ->
     application:set_env(opentelemetry_exporter, otlp_compression, undefined),
     application:set_env(opentelemetry_exporter, otlp_headers,
         [{"Authorization", <<"Bearer ", Key/binary>>}, {"X-Latitude-Project", Project}]),
+    configure_bounded_latitude_exporter(),
     application:set_env(opentelemetry, resource,
         #{<<"service.name">> => <<"pig-proxy-subscriptions">>}),
     application:set_env(opentelemetry, text_map_propagators, [trace_context, baggage]),
     {ok, _} = application:ensure_all_started(opentelemetry),
     nil.
+
+configure_bounded_latitude_exporter() ->
+    {otel_batch_processor, ProcessorOptions} =
+        case application:get_env(opentelemetry, span_processor) of
+            {ok, {otel_batch_processor, Options}} when is_map(Options) ->
+                {otel_batch_processor, Options};
+            _ ->
+                {otel_batch_processor, #{}}
+        end,
+    OriginalExporter = maps:get(exporter, ProcessorOptions,
+                                {opentelemetry_exporter, #{}}),
+    {opentelemetry_exporter, ExporterOptions} = OriginalExporter,
+    application:set_env(opentelemetry, span_processor,
+        {otel_batch_processor,
+         ProcessorOptions#{exporter => {pig_subscriptions_bounded_exporter,
+                                        ExporterOptions}}}).
 
 install_signals(Notify) ->
     %% The default SIGTERM handler would race the owner's ordered cleanup.

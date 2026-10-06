@@ -1,0 +1,5 @@
+{
+  "pig.content.output.status": "captured",
+  "pig.content.output.reason": "complete",
+  "gen_ai.output.messages": [{"role":"assistant","parts":[{"type":"text","content":"LIVE_SMALL_MARKER"}],"finish_reason":"stop"}]
+}
