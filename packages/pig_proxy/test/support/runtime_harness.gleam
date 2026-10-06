@@ -66,7 +66,14 @@ pub fn check_stop(api: pig_otel.Api, ownership: Ownership) -> Nil {
     ),
     #(True, True, True, False),
   )
-  let starts = trace.calls(recorder)
+  let calls_before = trace.calls(recorder)
+  let starts =
+    list.filter(calls_before, fn(event) {
+      case event {
+        trace.Started(_, _, _) -> True
+        _ -> False
+      }
+    })
   let assert [
     trace.Started(server_span, _, pig_otel.HttpServer(_)),
     trace.Started(logical_span, _, pig_otel.Inference(_, _, _)),
@@ -76,18 +83,34 @@ pub fn check_stop(api: pig_otel.Api, ownership: Ownership) -> Nil {
     External -> {
       runtime.stop(server.ServerState(..state, supervisor: None))
       should.equal(trace.view(owner), before)
-      should.equal(trace.calls(recorder), starts)
+      should.equal(
+        list.filter(trace.calls(recorder), fn(event) {
+          case event {
+            trace.Started(_, _, _) -> True
+            _ -> False
+          }
+        }),
+        starts,
+      )
     }
     Managed -> Nil
   }
   wait_tree_stopped(root, fn() {
     runtime.stop(state)
     // The stop return, not a later owner ACK, is the trace cleanup boundary.
-    should.equal(list.drop(trace.calls(recorder), 3), [
-      trace.Finished(server_span, pig_otel.Cancelled("agent_stopped")),
-      trace.Finished(attempt_span, pig_otel.Cancelled("agent_stopped")),
-      trace.Finished(logical_span, pig_otel.Cancelled("agent_stopped")),
-    ])
+    should.equal(
+      list.filter(trace.calls(recorder), fn(event) {
+        case event {
+          trace.Finished(_, _) -> True
+          _ -> False
+        }
+      }),
+      [
+        trace.Finished(server_span, pig_otel.Cancelled("agent_stopped")),
+        trace.Finished(attempt_span, pig_otel.Cancelled("agent_stopped")),
+        trace.Finished(logical_span, pig_otel.Cancelled("agent_stopped")),
+      ],
+    )
   })
   let ended = trace.calls(recorder)
   runtime.stop(state)

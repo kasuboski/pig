@@ -16,6 +16,7 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import logging
 import mist
@@ -218,12 +219,19 @@ fn proxy_valid_request(
     _ -> pig_otel.ChatCompletions
   }
   let chain = resolve_chain(state, api, model)
-  let provider = case chain.targets {
-    [target, ..] -> target.provider
-    [] -> None
-  }
+  let pricing_catalog = model_catalog.cached(state.catalog)
+  let pricing =
+    model_catalog.pin(
+      pricing_catalog,
+      list.filter_map(chain.targets, fn(target) {
+        case target.provider {
+          Some(provider) -> Ok(#(provider, model))
+          None -> Error(Nil)
+        }
+      }),
+    )
   let assert tracing.Current(ctx) =
-    tracing.call(owner, tracing.BeginInference(api, provider, model))
+    tracing.call(owner, tracing.BeginInference(api, None, model, Some(pricing)))
   context.with_context(ctx, fn() {
     case streaming {
       True ->
@@ -438,7 +446,7 @@ fn finish_buffered(
   requested_streaming: Bool,
 ) -> Nil {
   let #(terminal, metadata, status) = case outcome {
-    execution.Committed(status:, headers:, body:, ..) -> {
+    execution.Committed(target_id:, provider:, status:, headers:, body:, ..) -> {
       let _ =
         tracing.call(
           owner,
@@ -447,6 +455,8 @@ fn finish_buffered(
             status,
             headers,
             body,
+            target_id,
+            Some(provider),
           ),
         )
       #(

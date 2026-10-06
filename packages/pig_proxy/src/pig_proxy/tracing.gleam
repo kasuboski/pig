@@ -17,6 +17,7 @@ import otel/context.{type Context}
 import pig_otel
 import pig_otel/content
 import pig_otel/content/options
+import pig_proxy/model_catalog
 import pig_proxy/trace_metadata
 import pig_transport as transport
 
@@ -54,7 +55,12 @@ pub type ChunkMessage {
 pub type Command {
   Activate
   ServerContext
-  BeginInference(api: pig_otel.Api, provider: Option(String), model: String)
+  BeginInference(
+    api: pig_otel.Api,
+    provider: Option(String),
+    model: String,
+    pricing: Option(model_catalog.Pricing),
+  )
   BeginAttempt(target: String)
   OpenStream(
     adapter: transport.Transport,
@@ -67,6 +73,8 @@ pub type Command {
     status: Int,
     headers: List(#(String, String)),
     body: BitArray,
+    target: String,
+    provider: Option(String),
   )
   SyncTerminal(response: transport.Response)
   AbortAttempt
@@ -129,6 +137,9 @@ pub opaque type State {
     attempt: Option(pig_otel.Span),
     api: pig_otel.Api,
     metadata: trace_metadata.Observed,
+    pricing: Option(model_catalog.Pricing),
+    selected_provider: Option(String),
+    requested_model: Option(String),
     framer: trace_metadata.Framer,
     upstream: Option(pig_otel.Outcome),
     downstream: Option(pig_otel.Outcome),
@@ -243,6 +254,9 @@ pub fn initialise(registration: Registration) -> State {
     attempt: None,
     api: pig_otel.Custom,
     metadata: trace_metadata.empty(),
+    pricing: None,
+    selected_provider: None,
+    requested_model: None,
     framer: trace_metadata.new_framer(),
     upstream: None,
     downstream: None,
@@ -335,7 +349,7 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
       let next = State(..state, backend:, server: Some(span))
       #(next, Current(pig_otel.context(span)))
     }
-    BeginInference(api, provider, model) -> {
+    BeginInference(api, provider, model, pricing) -> {
       let logical =
         pig_otel.start(
           state.backend,
@@ -347,6 +361,9 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           ..state,
           logical: Some(logical),
           api:,
+          pricing:,
+          selected_provider: None,
+          requested_model: bounded_model(model),
           inference_start_time: now_ms(),
         ),
         Current(pig_otel.context(logical)),
@@ -381,14 +398,22 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
       )
     }
     InputSent(body, encoding) -> #(capture_input(state, body, encoding), Ack)
-    SelectedBufferedResponse(requested_streaming, status, headers, body) -> #(
+    SelectedBufferedResponse(
+      requested_streaming,
+      status,
+      headers,
+      body,
+      target,
+      provider,
+    ) -> #(
       capture_buffered_response(
         state,
         requested_streaming,
         status,
         headers,
         body,
-      ),
+      )
+        |> select_provider(target, provider),
       Ack,
     )
     OpenStream(adapter, request, head) -> {
@@ -447,14 +472,24 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
       annotate_status(state.attempt, status)
       case state.logical {
         Some(span) ->
-          pig_otel.annotate(span, [
-            pig_otel.string_attribute("pig.proxy.target", target),
-            pig_otel.string_attribute("pig.proxy.provider", provider),
-            pig_otel.bool_attribute("pig.proxy.committed", True),
-          ])
+          pig_otel.annotate(
+            span,
+            list.append(
+              [
+                pig_otel.string_attribute("pig.proxy.target", target),
+                pig_otel.bool_attribute("pig.proxy.committed", True),
+              ],
+              optional_provider_attributes(provider),
+            ),
+          )
         None -> Nil
       }
-      #(maybe_end_logical(State(..state, committed: True)), Ack)
+      #(
+        maybe_end_logical(
+          State(..state, committed: True, selected_provider: Some(provider)),
+        ),
+        Ack,
+      )
     }
     LogicalTerminal(outcome, metadata, status) -> {
       annotate_status(state.server, status)
@@ -691,6 +726,80 @@ fn end_attempt(state: State, outcome: pig_otel.Outcome) -> State {
   State(..state, attempt: None, upstream: Some(outcome))
 }
 
+fn select_provider(
+  state: State,
+  target: String,
+  provider: Option(String),
+) -> State {
+  case state.logical, provider {
+    Some(span), Some(provider) ->
+      pig_otel.annotate(
+        span,
+        list.append(
+          [
+            pig_otel.string_attribute("pig.proxy.target", target),
+            pig_otel.bool_attribute("pig.proxy.committed", True),
+          ],
+          optional_provider_attributes(provider),
+        ),
+      )
+    _, _ -> Nil
+  }
+  State(..state, committed: True, selected_provider: provider)
+}
+
+fn optional_provider_attributes(provider: String) -> List(Attribute) {
+  case provider {
+    "" -> []
+    _ -> [
+      pig_otel.string_attribute("pig.proxy.provider", provider),
+      pig_otel.string_attribute("gen_ai.provider.name", provider),
+    ]
+  }
+}
+
+fn cost_attributes(state: State) -> List(Attribute) {
+  case state.pricing, state.selected_provider, state.requested_model {
+    Some(pricing), Some(provider), Some(requested_model) ->
+      case
+        model_catalog.estimate_pinned(
+          pricing,
+          provider,
+          requested_model,
+          state.metadata.metadata.input_tokens,
+          state.metadata.metadata.output_tokens,
+          state.metadata.metadata.cached_input_tokens,
+        )
+      {
+        model_catalog.Unknown | model_catalog.UnknownTier -> []
+        model_catalog.InputOnly(input) -> [
+          pig_otel.float_attribute("gen_ai.usage.input_cost", input),
+          pig_otel.string_attribute(
+            "pig.cost.provenance",
+            "models_dev_estimate",
+          ),
+        ]
+        model_catalog.OutputOnly(output) -> [
+          pig_otel.float_attribute("gen_ai.usage.output_cost", output),
+          pig_otel.string_attribute(
+            "pig.cost.provenance",
+            "models_dev_estimate",
+          ),
+        ]
+        model_catalog.Complete(input, output, total) -> [
+          pig_otel.float_attribute("gen_ai.usage.input_cost", input),
+          pig_otel.float_attribute("gen_ai.usage.output_cost", output),
+          pig_otel.float_attribute("gen_ai.usage.total_cost", total),
+          pig_otel.string_attribute(
+            "pig.cost.provenance",
+            "models_dev_estimate",
+          ),
+        ]
+      }
+    _, _, _ -> []
+  }
+}
+
 fn end_logical(state: State, outcome: pig_otel.Outcome) -> State {
   case state.logical {
     Some(span) -> {
@@ -699,7 +808,7 @@ fn end_logical(state: State, outcome: pig_otel.Outcome) -> State {
         span,
         list.append(
           pig_otel.response_attributes(state.metadata.metadata),
-          terminal_attributes,
+          list.append(terminal_attributes, cost_attributes(state)),
         ),
       )
       pig_otel.annotate(span, content_attributes(state))
@@ -711,6 +820,8 @@ fn end_logical(state: State, outcome: pig_otel.Outcome) -> State {
     ..state,
     logical: None,
     logical_closed: True,
+    pricing: None,
+    selected_provider: None,
     input_capture: None,
     output_content: NoOutput,
   )

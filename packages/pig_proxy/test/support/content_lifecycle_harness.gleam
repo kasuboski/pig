@@ -4,7 +4,7 @@ import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleam/result
 import gleeunit/should
@@ -44,7 +44,12 @@ pub fn run_retrying_buffered_capture() -> List(String) {
     let assert tracing.Current(_) =
       tracing.call(
         owner,
-        tracing.BeginInference(pig_otel.ChatCompletions, None, "fixture_model"),
+        tracing.BeginInference(
+          pig_otel.ChatCompletions,
+          None,
+          "fixture_model",
+          None,
+        ),
       )
     let assert Ok(script) =
       in_memory_transport.start(
@@ -86,7 +91,14 @@ pub fn run_retrying_buffered_capture() -> List(String) {
     let _ =
       tracing.call(
         owner,
-        tracing.SelectedBufferedResponse(False, status, headers, body),
+        tracing.SelectedBufferedResponse(
+          False,
+          status,
+          headers,
+          body,
+          "fixture",
+          Some("openai"),
+        ),
       )
     let _ =
       tracing.call(
@@ -124,7 +136,12 @@ pub fn run_no_target_capture() -> List(String) {
     let assert tracing.Current(_) =
       tracing.call(
         owner,
-        tracing.BeginInference(pig_otel.ChatCompletions, None, "fixture_model"),
+        tracing.BeginInference(
+          pig_otel.ChatCompletions,
+          None,
+          "fixture_model",
+          None,
+        ),
       )
     let assert Ok(script) =
       in_memory_transport.start([], transport.TransportError("unused"))
@@ -244,7 +261,10 @@ fn run_selected(
         path,
       )
     let assert tracing.Current(_) =
-      tracing.call(owner, tracing.BeginInference(api, None, "fixture_model"))
+      tracing.call(
+        owner,
+        tracing.BeginInference(api, None, "fixture_model", None),
+      )
     let assert Ok(script) =
       in_memory_transport.start(
         [
@@ -275,7 +295,14 @@ fn run_selected(
     let _ =
       tracing.call(
         owner,
-        tracing.SelectedBufferedResponse(False, status, headers, body),
+        tracing.SelectedBufferedResponse(
+          False,
+          status,
+          headers,
+          body,
+          "fixture",
+          Some("openai"),
+        ),
       )
     let _ =
       tracing.call(

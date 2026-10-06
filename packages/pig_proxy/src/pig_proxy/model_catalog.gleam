@@ -47,6 +47,11 @@ pub opaque type Catalog {
   Catalog(models: Dict(String, ModelInfo))
 }
 
+/// Small immutable request-scoped projection of only routed model prices.
+pub opaque type Pricing {
+  Pricing(catalog: Catalog)
+}
+
 /// Create an empty catalog with no model entries.
 pub fn empty() -> Catalog {
   Catalog(dict.new())
@@ -117,6 +122,40 @@ pub fn snapshot(subject: process.Subject(CatalogMsg)) -> Catalog {
   actor.call(subject, waiting: 5000, sending: fn(reply_to) {
     GetCatalog(reply_to)
   })
+}
+
+/// Pin pricing for the requested model across routed providers. This keeps
+/// mailbox messages small and makes one inference immune to catalog refreshes.
+pub fn pin(catalog: Catalog, identities: List(#(String, String))) -> Pricing {
+  let models =
+    list.fold(identities, dict.new(), fn(models, identity) {
+      let slug = identity.0 <> "/" <> identity.1
+      case dict.get(catalog.models, slug) {
+        Ok(info) -> dict.insert(models, slug, info)
+        Error(_) -> models
+      }
+    })
+  Pricing(Catalog(models))
+}
+
+/// Estimate using a request-scoped pricing projection.
+pub fn estimate_pinned(
+  pricing: Pricing,
+  provider: String,
+  model: String,
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Estimate {
+  let Pricing(catalog) = pricing
+  estimate(
+    catalog,
+    provider,
+    model,
+    input_tokens,
+    output_tokens,
+    cached_input_tokens,
+  )
 }
 
 /// Look up a model by slug in a catalog.
