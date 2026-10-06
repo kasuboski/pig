@@ -24,11 +24,22 @@ pub type ModelInfo {
     output_price: Option(Float),
     cache_read_price: Option(Float),
     cache_write_price: Option(Float),
+    tiers: List(CostTier),
     context_limit: Option(Int),
     output_limit: Option(Int),
     tool_call: Bool,
     structured_output: Bool,
   )
+}
+
+/// A cost result that cannot represent a total unless both token sides are known.
+/// UnknownTier means tiered pricing cannot be safely resolved from usage.
+pub type Estimate {
+  Unknown
+  UnknownTier
+  InputOnly(input: Float)
+  OutputOnly(output: Float)
+  Complete(input: Float, output: Float, total: Float)
 }
 
 /// A flat catalog keyed by model slug (e.g. "openai/gpt-4o").
@@ -153,6 +164,159 @@ pub fn cost_usd(
   input_cost +. cached_cost +. output_cost
 }
 
+/// Estimate USD costs for an exact provider/model identity and optional usage.
+///
+/// Missing usage or price leaves that side unknown. Cached tokens are included
+/// within input usage; absent cache usage means zero cached tokens. Negative
+/// counts make the whole estimate unknown; a negative price makes that side
+/// unknown. Context tier thresholds are strict: usage greater than the declared
+/// `size` uses that tier, while usage exactly at the boundary uses base rates.
+/// Without input usage, or when any tier is unrecognized or malformed, tiered
+/// models return `UnknownTier` rather than a base-rate estimate.
+pub fn estimate(
+  catalog: Catalog,
+  provider: String,
+  model: String,
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Estimate {
+  case has_negative_usage(input_tokens, output_tokens, cached_input_tokens) {
+    True -> Unknown
+    False -> {
+      let slug = provider <> "/" <> model
+      case dict.get(catalog.models, slug) {
+        Error(_) -> Unknown
+        Ok(info) -> {
+          let selected = select_rates(info, input_tokens)
+          case selected {
+            Error(_) -> UnknownTier
+            Ok(rates) -> {
+              let cached = option.unwrap(cached_input_tokens, 0)
+              let input_cost = case input_tokens {
+                Some(tokens) -> {
+                  let cached = int.clamp(cached, 0, tokens)
+                  let uncached = tokens - cached
+                  let cached_price = case rates.cache_read {
+                    Some(price) -> Some(price)
+                    None -> rates.input
+                  }
+                  case
+                    price_tokens(uncached, rates.input),
+                    price_tokens(cached, cached_price)
+                  {
+                    Some(uncached_cost), Some(cached_cost) -> {
+                      let cost = uncached_cost +. cached_cost
+                      Some(cost /. 1_000_000.0)
+                    }
+                    _, _ -> None
+                  }
+                }
+                None -> None
+              }
+              let output_cost = case output_tokens {
+                Some(tokens) ->
+                  price_tokens(tokens, rates.output)
+                  |> option.map(fn(cost) { cost /. 1_000_000.0 })
+                None -> None
+              }
+              case input_cost, output_cost {
+                Some(input), Some(output) ->
+                  Complete(input, output, input +. output)
+                Some(input), None -> InputOnly(input)
+                None, Some(output) -> OutputOnly(output)
+                None, None -> Unknown
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn select_rates(
+  info: ModelInfo,
+  input_tokens: Option(Int),
+) -> Result(PricingRates, Nil) {
+  let has_unsupported_tier =
+    list.fold(info.tiers, False, fn(found, tier) {
+      case tier {
+        UnsupportedTier -> True
+        ContextTier(..) -> found
+      }
+    })
+  case has_unsupported_tier {
+    True -> Error(Nil)
+    False ->
+      case info.tiers, input_tokens {
+        [], _ ->
+          Ok(PricingRates(
+            info.input_price,
+            info.output_price,
+            info.cache_read_price,
+          ))
+        _, None -> Error(Nil)
+        tiers, Some(tokens) -> {
+          let tier =
+            list.fold(tiers, None, fn(selected, candidate) {
+              choose_tier(selected, candidate, tokens)
+            })
+          case tier {
+            Some(ContextTier(_, input, output, cache_read)) ->
+              Ok(PricingRates(input, output, cache_read))
+            Some(UnsupportedTier) -> Error(Nil)
+            None ->
+              Ok(PricingRates(
+                info.input_price,
+                info.output_price,
+                info.cache_read_price,
+              ))
+          }
+        }
+      }
+  }
+}
+
+fn price_tokens(tokens: Int, price: Option(Float)) -> Option(Float) {
+  case tokens, price {
+    0, _ -> Some(0.0)
+    _, Some(price) if price >=. 0.0 -> Some(int.to_float(tokens) *. price)
+    _, _ -> None
+  }
+}
+
+fn choose_tier(
+  selected: Option(CostTier),
+  candidate: CostTier,
+  tokens: Int,
+) -> Option(CostTier) {
+  case candidate {
+    UnsupportedTier -> Some(UnsupportedTier)
+    ContextTier(threshold, _, _, _) ->
+      case selected {
+        None if tokens > threshold -> Some(candidate)
+        Some(ContextTier(current_threshold, _, _, _))
+          if tokens > threshold && threshold > current_threshold
+        -> Some(candidate)
+        _ -> selected
+      }
+  }
+}
+
+fn has_negative_usage(
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Bool {
+  case input_tokens, output_tokens, cached_input_tokens {
+    Some(input), _, _ if input < 0 -> True
+    _, Some(output), _ if output < 0 -> True
+    _, _, Some(cached) if cached < 0 -> True
+    _, _, _ -> False
+  }
+}
+
 /// Parse a models.dev JSON response into a flat catalog.
 pub fn parse(json: String) -> Result(Catalog, json.DecodeError) {
   json.parse(from: json, using: catalog_decoder())
@@ -259,12 +423,32 @@ fn do_refresh(state: CatalogState) -> Result(Catalog, String) {
 
 // ── JSON decoding ───────────────────────────────────────────────
 
+/// A decoded context-price tier, or an unrecognized tier that makes estimates unknown.
+pub opaque type CostTier {
+  ContextTier(
+    threshold: Int,
+    input: Option(Float),
+    output: Option(Float),
+    cache_read: Option(Float),
+  )
+  UnsupportedTier
+}
+
+type PricingRates {
+  PricingRates(
+    input: Option(Float),
+    output: Option(Float),
+    cache_read: Option(Float),
+  )
+}
+
 type CostFields {
   CostFields(
     input: Option(Float),
     output: Option(Float),
     cache_read: Option(Float),
     cache_write: Option(Float),
+    tiers: List(CostTier),
   )
 }
 
@@ -276,17 +460,21 @@ fn catalog_decoder() -> decode.Decoder(Catalog) {
   decode.dict(decode.string, provider_decoder())
   |> decode.map(fn(providers) {
     let models =
-      providers
-      |> dict.values
-      |> list.fold(dict.new(), dict.merge)
+      dict.fold(providers, dict.new(), fn(acc, provider, entries) {
+        dict.fold(entries, acc, fn(models, slug, info) {
+          let qualified_slug = case string.split(slug, "/") {
+            [own_provider, ..] if own_provider == provider -> slug
+            _ -> provider <> "/" <> slug
+          }
+          dict.insert(models, qualified_slug, info)
+        })
+      })
     Catalog(models: add_bare_aliases(models))
   })
 }
 
-/// Index every `provider/model` slug under its bare model name too, so
-/// lookups without a provider prefix (e.g. local or unknown providers)
-/// still resolve. When two providers share a bare name the last one
-/// inserted wins — collisions are rare in the models.dev catalog.
+/// Index every qualified slug under its bare model name too for legacy lookups.
+/// Exact provider/model estimates never use these aliases.
 fn add_bare_aliases(
   models: Dict(String, ModelInfo),
 ) -> Dict(String, ModelInfo) {
@@ -309,7 +497,7 @@ fn provider_decoder() -> decode.Decoder(Dict(String, ModelInfo)) {
 fn model_info_decoder() -> decode.Decoder(ModelInfo) {
   use cost <- decode.optional_field(
     "cost",
-    CostFields(None, None, None, None),
+    CostFields(None, None, None, None, []),
     cost_decoder(),
   )
   use limit <- decode.optional_field(
@@ -329,6 +517,7 @@ fn model_info_decoder() -> decode.Decoder(ModelInfo) {
     output_price: cost.output,
     cache_read_price: cost.cache_read,
     cache_write_price: cost.cache_write,
+    tiers: cost.tiers,
     context_limit: limit.context,
     output_limit: limit.output,
     tool_call:,
@@ -349,7 +538,36 @@ fn cost_decoder() -> decode.Decoder(CostFields) {
     None,
     optional_number_decoder(),
   )
-  decode.success(CostFields(input:, output:, cache_read:, cache_write:))
+  use tiers <- decode.optional_field(
+    "tiers",
+    [],
+    decode.list(cost_tier_decoder()),
+  )
+  decode.success(CostFields(input:, output:, cache_read:, cache_write:, tiers:))
+}
+
+fn cost_tier_decoder() -> decode.Decoder(CostTier) {
+  use input <- decode.optional_field("input", None, optional_number_decoder())
+  use output <- decode.optional_field("output", None, optional_number_decoder())
+  use cache_read <- decode.optional_field(
+    "cache_read",
+    None,
+    optional_number_decoder(),
+  )
+  use threshold <- decode.field("tier", context_tier_threshold_decoder())
+  decode.success(case threshold {
+    Some(size) -> ContextTier(size, input, output, cache_read)
+    None -> UnsupportedTier
+  })
+}
+
+fn context_tier_threshold_decoder() -> decode.Decoder(Option(Int)) {
+  use tier_type <- decode.field("type", decode.string)
+  use size <- decode.optional_field("size", None, decode.optional(decode.int))
+  decode.success(case tier_type, size {
+    "context", Some(threshold) -> Some(threshold)
+    _, _ -> None
+  })
 }
 
 fn limit_decoder() -> decode.Decoder(LimitFields) {

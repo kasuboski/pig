@@ -92,7 +92,7 @@ pub fn parse_ignores_extra_fields_test() {
     }
   }"
   let assert Ok(catalog) = model_catalog.parse(json)
-  let assert Some(model) = model_catalog.find(catalog, "p/m")
+  let assert Some(model) = model_catalog.find(catalog, "provider/p/m")
   assert model.input_price == Some(1.0)
   assert model.output_price == None
 }
@@ -106,6 +106,7 @@ pub fn cost_usd_computes_from_prices_test() {
       output_price: Some(15.0),
       cache_read_price: None,
       cache_write_price: None,
+      tiers: [],
       context_limit: None,
       output_limit: None,
       tool_call: True,
@@ -123,6 +124,7 @@ pub fn cost_usd_bills_cached_tokens_at_cache_read_price_test() {
       output_price: Some(15.0),
       cache_read_price: Some(0.5),
       cache_write_price: None,
+      tiers: [],
       context_limit: None,
       output_limit: None,
       tool_call: True,
@@ -142,6 +144,7 @@ pub fn cost_usd_without_cache_price_falls_back_to_input_price_test() {
       output_price: None,
       cache_read_price: None,
       cache_write_price: None,
+      tiers: [],
       context_limit: None,
       output_limit: None,
       tool_call: True,
@@ -160,6 +163,7 @@ pub fn cost_usd_clamps_cached_above_input_test() {
       output_price: None,
       cache_read_price: Some(0.5),
       cache_write_price: None,
+      tiers: [],
       context_limit: None,
       output_limit: None,
       tool_call: True,
@@ -178,6 +182,7 @@ pub fn cost_usd_missing_prices_are_zero_test() {
       output_price: None,
       cache_read_price: None,
       cache_write_price: None,
+      tiers: [],
       context_limit: None,
       output_limit: None,
       tool_call: False,

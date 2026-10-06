@@ -1,0 +1,90 @@
+{
+  "openai": {
+    "id": "openai",
+    "models": {
+      "gpt-6-astra": {
+        "id": "gpt-6-astra",
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "cache_read": 1,
+          "cache_write": 12.5,
+          "tiers": [
+            {
+              "input": 20,
+              "output": 75,
+              "cache_read": 2,
+              "cache_write": 25,
+              "tier": { "type": "context", "size": 272000 }
+            }
+          ],
+          "context_over_200k": {
+            "input": 20,
+            "output": 75,
+            "cache_read": 2,
+            "cache_write": 25
+          }
+        }
+      },
+      "optional-cache-tier": {
+        "id": "optional-cache-tier",
+        "cost": {
+          "input": 1,
+          "output": 2,
+          "tiers": [
+            {
+              "input": 20,
+              "output": 75,
+              "tier": { "type": "context", "size": 10 }
+            }
+          ]
+        }
+      },
+      "future-tier-model": {
+        "id": "future-tier-model",
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "tiers": [
+            {
+              "input": 20,
+              "output": 75,
+              "tier": { "type": "request" }
+            }
+          ]
+        }
+      },
+      "missing-tier-size": {
+        "id": "missing-tier-size",
+        "cost": {
+          "input": 10,
+          "output": 50,
+          "tiers": [
+            {
+              "input": 20,
+              "output": 75,
+              "tier": { "type": "context" }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "openrouter": {
+    "id": "openrouter",
+    "models": {
+      "gpt-6-astra": {
+        "id": "gpt-6-astra",
+        "cost": { "input": 99, "output": 199 }
+      },
+      "openai/model-x": {
+        "id": "openai/model-x",
+        "cost": { "input": 3, "output": 7 }
+      },
+      "openai/gpt-6-astra": {
+        "id": "openai/gpt-6-astra",
+        "cost": { "input": 99, "output": 199 }
+      }
+    }
+  }
+}
