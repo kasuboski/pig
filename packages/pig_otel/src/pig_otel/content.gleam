@@ -64,7 +64,8 @@ pub fn new_stream(options: Options, api: pig_otel.Api) -> Stream
 pub fn push(stream: Stream, chunk: BitArray) -> Stream
 
 /// Finalize only at the owner's ordered source terminal. A finish reason alone
-/// never ends capture; incomplete, malformed and unfinished outputs are omitted.
+/// never ends capture; incomplete and malformed outputs are omitted. Unfinished
+/// stream items are excluded from a completed capture and mark it filtered.
 @external(erlang, "pig_otel_content_ffi", "finish")
 pub fn finish(stream: Stream, complete: Bool) -> Capture
 

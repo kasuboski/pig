@@ -244,6 +244,11 @@ pub fn stream_responses_explicit_empty_test() {
   content.check_stream("stream_responses_explicit_empty")
 }
 
+pub fn stream_responses_empty_final_item_policy_test() {
+  content.check_stream("stream_responses_empty_final_mixed")
+  content.check_stream("stream_responses_empty_final_unfinished")
+}
+
 pub fn stream_responses_live_small_replay_test() {
   content.check_stream("stream_responses_live_small")
 }

@@ -135,16 +135,33 @@ can omit conversation content without suppressing completion usage or identity.
 | `PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES` | 65,536 | 2,097,152 |
 
 Invalid values fail host configuration even when conversation capture is
-switched off. When Latitude export is enabled, a subscription-host exporter
-adapter traverses each SDK export batch and sends at most four spans in each
-OTLP request. The adapter preserves the span and resource records, and leaves
-the SDK queue capacity and scheduled export timing unchanged. Four is chosen
-because configurable input and output content limits can each reach 2 MiB;
-four spans can approach 16 MiB of captured content, leaving headroom against
-the 32 MiB ingestion default in the inspected Latitude source. Eight spans could
-reach 32 MiB before encoding overhead. The hosted service's configured limit is
-not independently verified. This is a span-count bound, not a strict encoded
+switched off. When Latitude export is enabled, a subscription-host exporter adapter traverses
+SDK export batches sequentially and sends at most four spans in each OTLP
+request. It preserves span and resource records. Four is chosen because
+configurable input and output content limits can each reach 2 MiB; four spans
+can approach 16 MiB of captured content, leaving headroom against the 32 MiB
+ingestion default in the inspected Latitude source. Eight spans could reach
+32 MiB before encoding overhead. The hosted service's configured limit is not
+independently verified. This is a span-count bound, not a strict encoded
 request-byte bound.
+
+The default batch processor queue is finite (2,048 spans). Its export-attempt
+deadline defaults to 300,000 ms (five minutes) to accommodate a full reviewed
+queue of up to 512 sequential requests: about 51 seconds at 100 ms/request or
+256 seconds at 500 ms/request. The five-minute minimum is applied directly to
+each standard processor whose effective exporter is the wrapped official
+exporter. An explicit `traces_exporter` takes precedence over processor
+exporters, as it does in the SDK. Custom global exporters and processors using
+custom exporters retain their processor options and timeouts. Explicit SDK-level
+timeout settings continue to be honored by the SDK. User-supplied
+queue sizes are retained and can exceed 2,048 (or be unbounded with `infinity`),
+and long endpoint stalls can still exceed the export deadline. Failed batches
+are dropped, not retried. The host's 15-second SDK-stop deadline and 30-second
+overall shutdown watchdog are shorter, so shutdown flush is best effort and
+cannot promise draining a full queue. Configured processor pipelines and
+options are retained; official OTLP exporter entries on standard batch/simple
+processors are wrapped, while non-OTLP exporters and custom processors are left
+unchanged.
 
 Latitude export is disabled unless `PIG_LATITUDE_ENABLED=true`. Configure it before
 starting the host:
@@ -159,9 +176,11 @@ mise run run-subscriptions
 Both `LATITUDE_API_KEY` and `LATITUDE_PROJECT` are required when enabled. The
 default endpoint is `https://ingest.latitude.so/v1/traces`; override it with
 `PIG_LATITUDE_ENDPOINT` for a local receiver. The host sets OTLP/HTTP protobuf,
-no compression, and the authorization/project headers directly; it deliberately
-clears conflicting `OTEL_*` settings before SDK/exporter startup, even for direct
-invocation. This config is not evidence of cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
+no compression, and the authorization/project headers directly. Both the
+provided `run_subscriptions.sh` startup script and `subscriptions@host:main()`
+clear `OTEL_*` environment overrides before SDK bootstrap, so direct host startup
+also avoids conflicting operating-system OTEL settings. This config is not
+evidence of cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
 429/503 responses or honor their Retry-After headers. Monitor exporter diagnostics;
 shutdown flush is best effort and does not prove remote persistence.
 

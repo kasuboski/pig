@@ -814,13 +814,12 @@ response_completed(S, R) ->
     ensure(not maps:is_key(<<"error">>, R) orelse maps:get(<<"error">>, R) =:= null, incomplete),
     case maps:find(<<"output">>, R) of
         {ok, []} ->
-            case map_size(maps:get(items, S)) > 0 of
-                true ->
-                    %% Some streaming gateways send an empty final output array
-                    %% after complete output_item.done events. Preserve them.
-                    S#{terminal := true};
-                false -> S#{terminal := true, items := #{}}
-            end;
+            %% An empty final output array can follow output_item.done events.
+            %% Keep completed items, but exclude unfinished partial content.
+            Items = maps:get(items, S),
+            Completed = maps:filter(fun(_Index, Item) -> maps:get(done, Item) end, Items),
+            S#{terminal := true, items := Completed,
+               filtered := maps:get(filtered, S) orelse map_size(Completed) < map_size(Items)};
         {ok, Items} ->
             %% A non-empty final entity is authoritative and replaces deltas.
             All = bounded_list(Items, 64),
