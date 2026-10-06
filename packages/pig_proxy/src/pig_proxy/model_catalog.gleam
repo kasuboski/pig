@@ -16,6 +16,7 @@ import gleam/otp/actor
 import gleam/string
 import logging
 import pig_proxy/hackney
+import pig_proxy/model_catalog_refresh
 
 /// Pricing and context metadata for a single model slug.
 pub type ModelInfo {
@@ -60,7 +61,7 @@ pub fn empty() -> Catalog {
 /// Messages handled by the catalog actor.
 pub type CatalogMsg {
   Refresh
-  RefreshComplete(result: Result(Catalog, String))
+  RefreshComplete(result: Result(Catalog, String), retry_after_ms: Option(Int))
   GetCatalog(reply_to: process.Subject(Catalog))
 }
 
@@ -72,6 +73,7 @@ type CatalogState {
     cache_key: Option(process.Name(CatalogMsg)),
     url: String,
     refresh_ms: Int,
+    failure_count: Int,
     subject: process.Subject(CatalogMsg),
   )
 }
@@ -79,7 +81,9 @@ type CatalogState {
 /// Start the catalog actor.
 ///
 /// It immediately schedules a refresh and re-fetches every `refresh_ms`
-/// milliseconds. If a fetch or parse fails, the previous catalog is kept.
+/// milliseconds after success. Failures retry with jittered exponential
+/// backoff, honoring upstream Retry-After as a minimum, while keeping the
+/// previous catalog.
 pub fn start(
   url: String,
   refresh_ms: Int,
@@ -385,6 +389,7 @@ fn initialise(
       catalog: empty(),
       url:,
       refresh_ms:,
+      failure_count: 0,
       subject:,
       cache_key:,
     ))
@@ -403,28 +408,42 @@ fn handle_message(
       // responsive to snapshot queries while models.dev is slow.
       let _ =
         process.spawn(fn() {
-          process.send(state.subject, RefreshComplete(do_refresh(state)))
+          let #(result, retry_after_ms) = do_refresh(state)
+          process.send(state.subject, RefreshComplete(result, retry_after_ms))
         })
       actor.continue(state)
     }
 
-    RefreshComplete(result) -> {
-      let new_catalog = case result {
+    RefreshComplete(result, retry_after_ms) -> {
+      let #(new_catalog, failure_count, delay_ms) = case result {
         Ok(catalog) -> {
           case state.cache_key {
             Some(name) -> publish(name, catalog)
             None -> Nil
           }
-          catalog
+          #(
+            catalog,
+            model_catalog_refresh.next_failure_count(True, state.failure_count),
+            state.refresh_ms,
+          )
         }
         Error(reason) -> {
           logging.log(logging.Warning, "model_catalog: " <> reason)
-          state.catalog
+          let failure_count =
+            model_catalog_refresh.next_failure_count(False, state.failure_count)
+          let delay_ms =
+            model_catalog_refresh.failure_delay(
+              failure_count,
+              state.refresh_ms,
+              jitter_per_mille(),
+              retry_after_ms,
+            )
+          #(state.catalog, failure_count, delay_ms)
         }
       }
-      let new_state = CatalogState(..state, catalog: new_catalog)
-      let _ =
-        process.send_after(new_state.subject, new_state.refresh_ms, Refresh)
+      let new_state =
+        CatalogState(..state, catalog: new_catalog, failure_count:)
+      let _ = process.send_after(new_state.subject, delay_ms, Refresh)
       actor.continue(new_state)
     }
 
@@ -435,28 +454,72 @@ fn handle_message(
   }
 }
 
-fn do_refresh(state: CatalogState) -> Result(Catalog, String) {
+fn retry_after_for(
+  status: Int,
+  headers: List(#(String, String)),
+) -> Option(Int) {
+  case status == 429 || status == 503 {
+    False -> None
+    True -> {
+      let header = find_retry_after(headers)
+      case header {
+        None -> None
+        Some(value) ->
+          case model_catalog_refresh.retry_after_delta_ms(value) {
+            Some(delay) -> Some(delay)
+            None -> retry_after_http_date_ms(value, current_time_ms())
+          }
+      }
+    }
+  }
+}
+
+fn find_retry_after(headers: List(#(String, String))) -> Option(String) {
+  list.fold(headers, None, fn(found, header) {
+    case found, string.lowercase(header.0) == "retry-after" {
+      None, True -> Some(header.1)
+      _, _ -> found
+    }
+  })
+}
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "jitter_per_mille")
+fn jitter_per_mille() -> Int
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "current_time_ms")
+fn current_time_ms() -> Int
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "retry_after_http_date_ms")
+fn retry_after_http_date_ms(value: String, now_ms: Int) -> Option(Int)
+
+fn do_refresh(state: CatalogState) -> #(Result(Catalog, String), Option(Int)) {
   case hackney.sync_request("GET", state.url, [], "", refresh_timeout_ms) {
     hackney.OkResponse(status: 200, body:, ..) -> {
       case bit_array.to_string(body) {
         Ok(json_text) -> {
           case parse(json_text) {
-            Ok(catalog) -> Ok(catalog)
-            Error(e) ->
+            Ok(catalog) -> #(Ok(catalog), None)
+            Error(e) -> #(
               Error(
                 "failed to parse models.dev response: " <> string.inspect(e),
-              )
+              ),
+              None,
+            )
           }
         }
-        Error(_) -> Error("upstream response body is not valid UTF-8")
+        Error(_) -> #(Error("upstream response body is not valid UTF-8"), None)
       }
     }
 
-    hackney.OkResponse(status:, ..) ->
-      Error("models.dev returned status " <> int.to_string(status))
+    hackney.OkResponse(status:, headers:, ..) -> #(
+      Error("models.dev returned status " <> int.to_string(status)),
+      retry_after_for(status, headers),
+    )
 
-    hackney.ErrorResponse(reason:) ->
-      Error("failed to fetch models.dev: " <> reason)
+    hackney.ErrorResponse(reason:) -> #(
+      Error("failed to fetch models.dev: " <> reason),
+      None,
+    )
   }
 }
 

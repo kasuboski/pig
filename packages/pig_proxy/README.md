@@ -446,7 +446,15 @@ pig_proxy_cost_usd{model="gpt-4o-mini"} 0.003120
 
 Cost is computed from live pricing pulled from models.dev
 (`pig_proxy/model_catalog`), refreshed on the interval configured by
-`PIG_PROXY_MODELS_REFRESH_MS`.
+`PIG_PROXY_MODELS_REFRESH_MS` (one hour by default). The actor fetches once
+immediately at startup. Successful fetches continue at that configured
+interval; failed fetches retain the last-good catalog and retry with equal
+jitter in `[half the exponential delay, the full delay]`: nominal caps grow
+from 5s, 10s, 20s, and so on up to the configured interval. Runtime randomness
+is used for each attempt so separate deployments do not share deterministic
+retry timings. For HTTP 429/503 responses, a valid `Retry-After` delta-seconds
+or HTTP-date is a minimum delay and can exceed the normal interval/backoff cap.
+Any successful refresh resets the failure sequence.
 
 ## Development
 
