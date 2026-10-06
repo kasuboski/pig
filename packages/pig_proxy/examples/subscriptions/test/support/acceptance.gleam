@@ -5,6 +5,7 @@ import exception
 import filepath
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -306,6 +307,7 @@ fn await_catalog_fetch(catalog: upstream.Fixture, remaining: Int) -> Nil {
     True -> Nil
     False -> {
       assert remaining > 0
+      process.sleep(10)
       await_catalog_fetch(catalog, remaining - 1)
     }
   }
@@ -390,7 +392,10 @@ fn await_priced_metrics(port: Int, remaining: Int) -> Nil {
   let zai_priced = priced_metric(metrics, "zai/fake-zai")
   case codex_priced && zai_priced {
     True -> Nil
-    False -> await_priced_metrics(port, remaining - 1)
+    False -> {
+      process.sleep(10)
+      await_priced_metrics(port, remaining - 1)
+    }
   }
 }
 

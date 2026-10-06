@@ -1,5 +1,5 @@
 -module(pig_proxy_trace_test_ffi).
--export([with_calls/1, calls/1, cost_attribute_keys/1, await_finishes/2, wait_closed/2, with_composite/1]).
+-export([with_calls/1, calls/1, cost_attributes/1, await_finishes/2, wait_closed/2, with_composite/1]).
 
 %% Observe shared adapter calls, not a substitute SDK/binding. Official exported
 %% hierarchy/attributes are exercised separately by the host integration suite.
@@ -20,11 +20,13 @@ with_calls(Work) ->
         Recorder ! stop
     end.
 
-cost_attribute_keys(Attributes) ->
+cost_attributes(Attributes) ->
     lists:sort([
-        Key || {attribute, {key, Key}, _} <- Attributes,
-        binary:match(Key, <<"gen_ai.usage.">>) =:= {0, 12} orelse
-            Key =:= <<"pig.cost.provenance">>
+        Attribute || Attribute = {attribute, {key, Key}, _} <- Attributes,
+        lists:member(Key, [<<"gen_ai.usage.input_cost">>,
+                           <<"gen_ai.usage.output_cost">>,
+                           <<"gen_ai.usage.total_cost">>,
+                           <<"pig.cost.provenance">>])
     ]).
 
 calls(Recorder) ->

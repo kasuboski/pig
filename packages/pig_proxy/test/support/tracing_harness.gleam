@@ -35,8 +35,10 @@ pub fn with_calls(work: fn(Calls) -> a) -> a
 @external(erlang, "pig_proxy_trace_test_ffi", "calls")
 pub fn calls(recorder: Calls) -> List(Call)
 
-@external(erlang, "pig_proxy_trace_test_ffi", "cost_attribute_keys")
-fn cost_attribute_keys(attributes: List(attribute.Attribute)) -> List(String)
+@external(erlang, "pig_proxy_trace_test_ffi", "cost_attributes")
+fn cost_attributes(
+  attributes: List(attribute.Attribute),
+) -> List(attribute.Attribute)
 
 @external(erlang, "pig_proxy_trace_test_ffi", "await_finishes")
 pub fn await_finishes(recorder: Calls, count: Int) -> Nil
@@ -196,8 +198,8 @@ pub fn check_cost_attributes(
     })
   let logical_attributes = attributes_for(events, logical_span)
   should.equal(
-    cost_attribute_keys(logical_attributes),
-    cost_attribute_keys(expected_costs),
+    cost_attributes(logical_attributes),
+    cost_attributes(expected_costs),
   )
   should.be_true(list.contains(
     logical_attributes,
@@ -205,7 +207,7 @@ pub fn check_cost_attributes(
   ))
   list.each(spans, fn(span) {
     let attempt_attributes = attributes_for(events, span)
-    should.equal(cost_attribute_keys(attempt_attributes), [])
+    should.equal(cost_attributes(attempt_attributes), [])
   })
   wait_closed(owner, fn() {
     let _ = tracing.call(owner, tracing.Downstream(pig_otel.Succeeded))

@@ -61,6 +61,22 @@ pub fn http_date_retry_after_uses_supplied_clock_test() {
   )
 }
 
+pub fn obsolete_http_date_uses_fifty_year_rule_test() {
+  // The RFC 850 two-digit year 94 means 1994, not 2094, at this 2025 clock.
+  should.equal(
+    retry_after_http_date_ms(
+      "Sunday, 06-Nov-94 08:49:37 GMT",
+      1_761_031_675_000,
+    ),
+    None,
+  )
+  // A four-digit year is explicit and must not receive that correction.
+  should.equal(
+    retry_after_http_date_ms("Sat, 06 Nov 2094 08:49:37 GMT", 1_761_031_675_000),
+    Some(2_178_840_102_000),
+  )
+}
+
 @external(erlang, "pig_proxy_model_catalog_cache_ffi", "retry_after_http_date_ms")
 fn retry_after_http_date_ms(value: String, now_ms: Int) -> Option(Int)
 

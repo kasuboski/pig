@@ -14,11 +14,28 @@ current_time_ms() -> erlang:system_time(millisecond).
 %% boundary explicit and returns only a positive remaining delay.
 retry_after_http_date_ms(Header, NowMs) ->
     try
-        DateTime = httpd_util:convert_request_date(binary_to_list(Header)),
+        Parsed = httpd_util:convert_request_date(binary_to_list(Header)),
+        DateTime = correct_obsolete_year(Header, Parsed, NowMs),
         TargetSeconds = calendar:datetime_to_gregorian_seconds(DateTime) -
                         calendar:datetime_to_gregorian_seconds({{1970,1,1},{0,0,0}}),
         DelayMs = TargetSeconds * 1000 - NowMs,
         case DelayMs > 0 of true -> {some, DelayMs}; false -> none end
     catch
         _:_ -> none
+    end.
+
+%% RFC 9110: only RFC 850's two-digit years get the 50-year correction.
+%% Explicit four-digit dates must retain their stated year.
+correct_obsolete_year(Header, DateTime = {{Year, Month, Day}, Time}, NowMs) ->
+    case re:run(Header, <<"^[A-Za-z]+, [0-9]{2}-[A-Za-z]{3}-[0-9]{2} ">>,
+                [{capture, none}]) of
+        match ->
+            {{NowYear, NowMonth, NowDay}, NowTime} =
+                calendar:system_time_to_universal_time(NowMs, millisecond),
+            FiftyYearsLater = {{NowYear + 50, NowMonth, NowDay}, NowTime},
+            case DateTime > FiftyYearsLater of
+                true -> {{Year - 100, Month, Day}, Time};
+                false -> DateTime
+            end;
+        nomatch -> DateTime
     end.
