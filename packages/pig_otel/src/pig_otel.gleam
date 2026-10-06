@@ -289,6 +289,12 @@ pub fn int_attribute(key: String, value: Int) -> Attribute {
   attribute.int(key, value)
 }
 
+/// Construct a known floating-point metadata attribute. The key must not be empty.
+pub fn float_attribute(key: String, value: Float) -> Attribute {
+  let assert Ok(key) = attribute.key(key)
+  attribute.float(key, value)
+}
+
 /// Construct a known boolean metadata attribute. The key must not be empty.
 pub fn bool_attribute(key: String, value: Bool) -> Attribute {
   let assert Ok(key) = attribute.key(key)

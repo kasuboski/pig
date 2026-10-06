@@ -59,20 +59,23 @@ const secret_fragments = [
   "synthetic-account", "synthetic-signature", "Bearer ", "authorization",
 ]
 
-const trace_ids = [
+const conversation_trace_ids = [
   "00000000000000000000000000000011",
   "00000000000000000000000000000012",
   "00000000000000000000000000000021",
   "00000000000000000000000000000022",
+  "00000000000000000000000000000031",
+  "00000000000000000000000000000032",
 ]
 
 pub fn verify(
   spans: List(Span),
   capture: Bool,
 ) -> Result(Nil, VerificationError) {
+  let expected_count = 26
   use _ <- result.try(expect(
-    list.length(spans) == 20,
-    WrongCount(20, list.length(spans)),
+    list.length(spans) == expected_count,
+    WrongCount(expected_count, list.length(spans)),
   ))
   use _ <- result.try(expect(unique_ids(spans), DuplicateSpanIds))
   use _ <- result.try(expect(
@@ -98,7 +101,7 @@ pub fn verify(
     },
   )
   use _ <- result.try(expect(
-    rejected_spans_valid(spans),
+    rejected_spans_valid(spans, capture),
     WrongTopology("rejected spans"),
   ))
   use _ <- result.try(expect(
@@ -160,21 +163,26 @@ fn string_contains_any(value: String, fragments: List(String)) -> Bool {
   list.any(fragments, fn(fragment) { string.contains(value, fragment) })
 }
 
-fn rejected_spans_valid(spans: List(Span)) -> Bool {
+fn rejected_spans_valid(spans: List(Span), capture: Bool) -> Bool {
+  let valid_traces = expected_trace_ids(capture)
   let rejected =
-    list.filter(spans, fn(s) { !list.contains(trace_ids, s.trace_id) })
+    list.filter(spans, fn(s) { !list.contains(valid_traces, s.trace_id) })
   list.length(rejected) == 8
   && list.length(list.filter(rejected, fn(s) { s.kind == "server" })) == 5
   && list.length(list.filter(rejected, fn(s) { s.kind == "client" })) == 3
-  && list.all(rejected, fn(s) { !has_content_key(s) })
+  && list.all(rejected, fn(s) { !has_content_key(s) && !has_cost_key(s) })
 }
 
 fn valid_groups(spans: List(Span), capture: Bool) -> Bool {
-  list.length(
-    list.filter(spans, fn(s) { list.contains(trace_ids, s.trace_id) }),
-  )
-  == 12
-  && list.all(trace_ids, fn(trace) { valid_group(trace, spans, capture) })
+  let traces = expected_trace_ids(capture)
+  let expected_spans = list.length(traces) * 3
+  list.length(list.filter(spans, fn(s) { list.contains(traces, s.trace_id) }))
+  == expected_spans
+  && list.all(traces, fn(trace) { valid_group(trace, spans, capture) })
+}
+
+fn expected_trace_ids(_capture: Bool) -> List(String) {
+  conversation_trace_ids
 }
 
 fn valid_group(trace: String, spans: List(Span), capture: Bool) -> Bool {
@@ -229,6 +237,9 @@ fn verify_group(trace: String, group: List(Span), capture: Bool) -> Bool {
           && common_group_checks(group)
           && attr_int(server, "http.response.status_code") == 200
           && attr_int(attempt, "http.response.status_code") == 200
+          && !has_cost_key(server)
+          && !has_cost_key(attempt)
+          && cost_valid(trace, logical)
           && content_valid(group, logical, capture, input, output, stream)
       }
     }
@@ -291,6 +302,30 @@ fn trace_mapping(
         "chat-fixture",
         "chat-output-marker",
       ))
+    "00000000000000000000000000000031" ->
+      Ok(#(
+        "/v1/responses",
+        False,
+        "catalog-readiness",
+        "responses",
+        "openai",
+        "fake-codex",
+        "chatgpt",
+        "responses-fixture",
+        "responses-output-marker",
+      ))
+    "00000000000000000000000000000032" ->
+      Ok(#(
+        "/v1/chat/completions",
+        False,
+        "catalog-readiness",
+        "chat_completions",
+        "zai",
+        "fake-zai",
+        "zai",
+        "chat-fixture",
+        "chat-output-marker",
+      ))
     _ -> Error(Nil)
   }
 }
@@ -328,6 +363,48 @@ fn content_valid(
       && !string.contains(all_group_text(group), input)
       && !string.contains(all_group_text(group), output)
   }
+}
+
+fn cost_valid(trace: String, logical: Span) -> Bool {
+  case
+    list.contains(
+      [
+        "00000000000000000000000000000011",
+        "00000000000000000000000000000012",
+        "00000000000000000000000000000021",
+        "00000000000000000000000000000022",
+      ],
+      trace,
+    )
+  {
+    True -> exact_cost_attributes(logical)
+    False -> !has_cost_key(logical) || exact_cost_attributes(logical)
+  }
+}
+
+fn exact_cost_attributes(logical: Span) -> Bool {
+  decimal_matches(logical, "gen_ai.usage.input_cost", 0.0000175)
+  && decimal_matches(logical, "gen_ai.usage.output_cost", 0.00007)
+  && decimal_matches(logical, "gen_ai.usage.total_cost", 0.0000875)
+  && attr_text(logical, "pig.cost.provenance") == "models_dev_estimate"
+}
+
+fn decimal_matches(span: Span, key: String, expected: Float) -> Bool {
+  case attr_decimal(span, key) {
+    Ok(actual) ->
+      actual >. expected -. 0.000000000001
+      && actual <. expected +. 0.000000000001
+    Error(Nil) -> False
+  }
+}
+
+fn has_cost_key(span: Span) -> Bool {
+  list.any(span.attributes, fn(pair) {
+    let #(key, _) = pair
+    string.starts_with(key, "gen_ai.usage.")
+    && string.ends_with(key, "_cost")
+    || key == "pig.cost.provenance"
+  })
 }
 
 fn has_content_key(span: Span) -> Bool {
@@ -430,5 +507,12 @@ fn attr_int(span: Span, key: String) -> Int {
   case attr(span, key) {
     Ok(Number(value)) -> value
     _ -> -1
+  }
+}
+
+fn attr_decimal(span: Span, key: String) -> Result(Float, Nil) {
+  case attr(span, key) {
+    Ok(Decimal(value)) -> Ok(value)
+    _ -> Error(Nil)
   }
 }

@@ -16,6 +16,7 @@ import gleam/otp/actor
 import gleam/string
 import logging
 import pig_proxy/hackney
+import pig_proxy/model_catalog_refresh
 
 /// Pricing and context metadata for a single model slug.
 pub type ModelInfo {
@@ -24,6 +25,7 @@ pub type ModelInfo {
     output_price: Option(Float),
     cache_read_price: Option(Float),
     cache_write_price: Option(Float),
+    tiers: List(CostTier),
     context_limit: Option(Int),
     output_limit: Option(Int),
     tool_call: Bool,
@@ -31,9 +33,24 @@ pub type ModelInfo {
   )
 }
 
+/// A cost result that cannot represent a total unless both token sides are known.
+/// UnknownTier means tiered pricing cannot be safely resolved from usage.
+pub type Estimate {
+  Unknown
+  UnknownTier
+  InputOnly(input: Float)
+  OutputOnly(output: Float)
+  Complete(input: Float, output: Float, total: Float)
+}
+
 /// A flat catalog keyed by model slug (e.g. "openai/gpt-4o").
 pub opaque type Catalog {
   Catalog(models: Dict(String, ModelInfo))
+}
+
+/// Small immutable request-scoped projection of only routed model prices.
+pub opaque type Pricing {
+  Pricing(catalog: Catalog)
 }
 
 /// Create an empty catalog with no model entries.
@@ -44,7 +61,7 @@ pub fn empty() -> Catalog {
 /// Messages handled by the catalog actor.
 pub type CatalogMsg {
   Refresh
-  RefreshComplete(result: Result(Catalog, String))
+  RefreshComplete(result: Result(Catalog, String), retry_after_ms: Option(Int))
   GetCatalog(reply_to: process.Subject(Catalog))
 }
 
@@ -56,6 +73,7 @@ type CatalogState {
     cache_key: Option(process.Name(CatalogMsg)),
     url: String,
     refresh_ms: Int,
+    failure_count: Int,
     subject: process.Subject(CatalogMsg),
   )
 }
@@ -63,7 +81,9 @@ type CatalogState {
 /// Start the catalog actor.
 ///
 /// It immediately schedules a refresh and re-fetches every `refresh_ms`
-/// milliseconds. If a fetch or parse fails, the previous catalog is kept.
+/// milliseconds after success. Failures retry with jittered exponential
+/// backoff, honoring upstream Retry-After as a minimum, while keeping the
+/// previous catalog.
 pub fn start(
   url: String,
   refresh_ms: Int,
@@ -106,6 +126,40 @@ pub fn snapshot(subject: process.Subject(CatalogMsg)) -> Catalog {
   actor.call(subject, waiting: 5000, sending: fn(reply_to) {
     GetCatalog(reply_to)
   })
+}
+
+/// Pin pricing for the requested model across routed providers. This keeps
+/// mailbox messages small and makes one inference immune to catalog refreshes.
+pub fn pin(catalog: Catalog, identities: List(#(String, String))) -> Pricing {
+  let models =
+    list.fold(identities, dict.new(), fn(models, identity) {
+      let slug = identity.0 <> "/" <> identity.1
+      case dict.get(catalog.models, slug) {
+        Ok(info) -> dict.insert(models, slug, info)
+        Error(_) -> models
+      }
+    })
+  Pricing(Catalog(models))
+}
+
+/// Estimate using a request-scoped pricing projection.
+pub fn estimate_pinned(
+  pricing: Pricing,
+  provider: String,
+  model: String,
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Estimate {
+  let Pricing(catalog) = pricing
+  estimate(
+    catalog,
+    provider,
+    model,
+    input_tokens,
+    output_tokens,
+    cached_input_tokens,
+  )
 }
 
 /// Look up a model by slug in a catalog.
@@ -153,6 +207,159 @@ pub fn cost_usd(
   input_cost +. cached_cost +. output_cost
 }
 
+/// Estimate USD costs for an exact provider/model identity and optional usage.
+///
+/// Missing usage or price leaves that side unknown. Cached tokens are included
+/// within input usage; absent cache usage means zero cached tokens. Negative
+/// counts make the whole estimate unknown; a negative price makes that side
+/// unknown. Context tier thresholds are strict: usage greater than the declared
+/// `size` uses that tier, while usage exactly at the boundary uses base rates.
+/// Without input usage, or when any tier is unrecognized or malformed, tiered
+/// models return `UnknownTier` rather than a base-rate estimate.
+pub fn estimate(
+  catalog: Catalog,
+  provider: String,
+  model: String,
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Estimate {
+  case has_negative_usage(input_tokens, output_tokens, cached_input_tokens) {
+    True -> Unknown
+    False -> {
+      let slug = provider <> "/" <> model
+      case dict.get(catalog.models, slug) {
+        Error(_) -> Unknown
+        Ok(info) -> {
+          let selected = select_rates(info, input_tokens)
+          case selected {
+            Error(_) -> UnknownTier
+            Ok(rates) -> {
+              let cached = option.unwrap(cached_input_tokens, 0)
+              let input_cost = case input_tokens {
+                Some(tokens) -> {
+                  let cached = int.clamp(cached, 0, tokens)
+                  let uncached = tokens - cached
+                  let cached_price = case rates.cache_read {
+                    Some(price) -> Some(price)
+                    None -> rates.input
+                  }
+                  case
+                    price_tokens(uncached, rates.input),
+                    price_tokens(cached, cached_price)
+                  {
+                    Some(uncached_cost), Some(cached_cost) -> {
+                      let cost = uncached_cost +. cached_cost
+                      Some(cost /. 1_000_000.0)
+                    }
+                    _, _ -> None
+                  }
+                }
+                None -> None
+              }
+              let output_cost = case output_tokens {
+                Some(tokens) ->
+                  price_tokens(tokens, rates.output)
+                  |> option.map(fn(cost) { cost /. 1_000_000.0 })
+                None -> None
+              }
+              case input_cost, output_cost {
+                Some(input), Some(output) ->
+                  Complete(input, output, input +. output)
+                Some(input), None -> InputOnly(input)
+                None, Some(output) -> OutputOnly(output)
+                None, None -> Unknown
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn select_rates(
+  info: ModelInfo,
+  input_tokens: Option(Int),
+) -> Result(PricingRates, Nil) {
+  let has_unsupported_tier =
+    list.fold(info.tiers, False, fn(found, tier) {
+      case tier {
+        UnsupportedTier -> True
+        ContextTier(..) -> found
+      }
+    })
+  case has_unsupported_tier {
+    True -> Error(Nil)
+    False ->
+      case info.tiers, input_tokens {
+        [], _ ->
+          Ok(PricingRates(
+            info.input_price,
+            info.output_price,
+            info.cache_read_price,
+          ))
+        _, None -> Error(Nil)
+        tiers, Some(tokens) -> {
+          let tier =
+            list.fold(tiers, None, fn(selected, candidate) {
+              choose_tier(selected, candidate, tokens)
+            })
+          case tier {
+            Some(ContextTier(_, input, output, cache_read)) ->
+              Ok(PricingRates(input, output, cache_read))
+            Some(UnsupportedTier) -> Error(Nil)
+            None ->
+              Ok(PricingRates(
+                info.input_price,
+                info.output_price,
+                info.cache_read_price,
+              ))
+          }
+        }
+      }
+  }
+}
+
+fn price_tokens(tokens: Int, price: Option(Float)) -> Option(Float) {
+  case tokens, price {
+    0, _ -> Some(0.0)
+    _, Some(price) if price >=. 0.0 -> Some(int.to_float(tokens) *. price)
+    _, _ -> None
+  }
+}
+
+fn choose_tier(
+  selected: Option(CostTier),
+  candidate: CostTier,
+  tokens: Int,
+) -> Option(CostTier) {
+  case candidate {
+    UnsupportedTier -> Some(UnsupportedTier)
+    ContextTier(threshold, _, _, _) ->
+      case selected {
+        None if tokens > threshold -> Some(candidate)
+        Some(ContextTier(current_threshold, _, _, _))
+          if tokens > threshold && threshold > current_threshold
+        -> Some(candidate)
+        _ -> selected
+      }
+  }
+}
+
+fn has_negative_usage(
+  input_tokens: Option(Int),
+  output_tokens: Option(Int),
+  cached_input_tokens: Option(Int),
+) -> Bool {
+  case input_tokens, output_tokens, cached_input_tokens {
+    Some(input), _, _ if input < 0 -> True
+    _, Some(output), _ if output < 0 -> True
+    _, _, Some(cached) if cached < 0 -> True
+    _, _, _ -> False
+  }
+}
+
 /// Parse a models.dev JSON response into a flat catalog.
 pub fn parse(json: String) -> Result(Catalog, json.DecodeError) {
   json.parse(from: json, using: catalog_decoder())
@@ -182,6 +389,7 @@ fn initialise(
       catalog: empty(),
       url:,
       refresh_ms:,
+      failure_count: 0,
       subject:,
       cache_key:,
     ))
@@ -200,28 +408,42 @@ fn handle_message(
       // responsive to snapshot queries while models.dev is slow.
       let _ =
         process.spawn(fn() {
-          process.send(state.subject, RefreshComplete(do_refresh(state)))
+          let #(result, retry_after_ms) = do_refresh(state)
+          process.send(state.subject, RefreshComplete(result, retry_after_ms))
         })
       actor.continue(state)
     }
 
-    RefreshComplete(result) -> {
-      let new_catalog = case result {
+    RefreshComplete(result, retry_after_ms) -> {
+      let #(new_catalog, failure_count, delay_ms) = case result {
         Ok(catalog) -> {
           case state.cache_key {
             Some(name) -> publish(name, catalog)
             None -> Nil
           }
-          catalog
+          #(
+            catalog,
+            model_catalog_refresh.next_failure_count(True, state.failure_count),
+            state.refresh_ms,
+          )
         }
         Error(reason) -> {
           logging.log(logging.Warning, "model_catalog: " <> reason)
-          state.catalog
+          let failure_count =
+            model_catalog_refresh.next_failure_count(False, state.failure_count)
+          let delay_ms =
+            model_catalog_refresh.failure_delay(
+              failure_count,
+              state.refresh_ms,
+              jitter_per_mille(),
+              retry_after_ms,
+            )
+          #(state.catalog, failure_count, delay_ms)
         }
       }
-      let new_state = CatalogState(..state, catalog: new_catalog)
-      let _ =
-        process.send_after(new_state.subject, new_state.refresh_ms, Refresh)
+      let new_state =
+        CatalogState(..state, catalog: new_catalog, failure_count:)
+      let _ = process.send_after(new_state.subject, delay_ms, Refresh)
       actor.continue(new_state)
     }
 
@@ -232,32 +454,95 @@ fn handle_message(
   }
 }
 
-fn do_refresh(state: CatalogState) -> Result(Catalog, String) {
+fn retry_after_for(
+  status: Int,
+  headers: List(#(String, String)),
+) -> Option(Int) {
+  case status == 429 || status == 503 {
+    False -> None
+    True -> {
+      let header = find_retry_after(headers)
+      case header {
+        None -> None
+        Some(value) ->
+          case model_catalog_refresh.retry_after_delta_ms(value) {
+            Some(delay) -> Some(delay)
+            None -> retry_after_http_date_ms(value, current_time_ms())
+          }
+      }
+    }
+  }
+}
+
+fn find_retry_after(headers: List(#(String, String))) -> Option(String) {
+  list.fold(headers, None, fn(found, header) {
+    case found, string.lowercase(header.0) == "retry-after" {
+      None, True -> Some(header.1)
+      _, _ -> found
+    }
+  })
+}
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "jitter_per_mille")
+fn jitter_per_mille() -> Int
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "current_time_ms")
+fn current_time_ms() -> Int
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "retry_after_http_date_ms")
+fn retry_after_http_date_ms(value: String, now_ms: Int) -> Option(Int)
+
+fn do_refresh(state: CatalogState) -> #(Result(Catalog, String), Option(Int)) {
   case hackney.sync_request("GET", state.url, [], "", refresh_timeout_ms) {
     hackney.OkResponse(status: 200, body:, ..) -> {
       case bit_array.to_string(body) {
         Ok(json_text) -> {
           case parse(json_text) {
-            Ok(catalog) -> Ok(catalog)
-            Error(e) ->
+            Ok(catalog) -> #(Ok(catalog), None)
+            Error(e) -> #(
               Error(
                 "failed to parse models.dev response: " <> string.inspect(e),
-              )
+              ),
+              None,
+            )
           }
         }
-        Error(_) -> Error("upstream response body is not valid UTF-8")
+        Error(_) -> #(Error("upstream response body is not valid UTF-8"), None)
       }
     }
 
-    hackney.OkResponse(status:, ..) ->
-      Error("models.dev returned status " <> int.to_string(status))
+    hackney.OkResponse(status:, headers:, ..) -> #(
+      Error("models.dev returned status " <> int.to_string(status)),
+      retry_after_for(status, headers),
+    )
 
-    hackney.ErrorResponse(reason:) ->
-      Error("failed to fetch models.dev: " <> reason)
+    hackney.ErrorResponse(reason:) -> #(
+      Error("failed to fetch models.dev: " <> reason),
+      None,
+    )
   }
 }
 
 // ── JSON decoding ───────────────────────────────────────────────
+
+/// A decoded context-price tier, or an unrecognized tier that makes estimates unknown.
+pub opaque type CostTier {
+  ContextTier(
+    threshold: Int,
+    input: Option(Float),
+    output: Option(Float),
+    cache_read: Option(Float),
+  )
+  UnsupportedTier
+}
+
+type PricingRates {
+  PricingRates(
+    input: Option(Float),
+    output: Option(Float),
+    cache_read: Option(Float),
+  )
+}
 
 type CostFields {
   CostFields(
@@ -265,6 +550,7 @@ type CostFields {
     output: Option(Float),
     cache_read: Option(Float),
     cache_write: Option(Float),
+    tiers: List(CostTier),
   )
 }
 
@@ -276,17 +562,21 @@ fn catalog_decoder() -> decode.Decoder(Catalog) {
   decode.dict(decode.string, provider_decoder())
   |> decode.map(fn(providers) {
     let models =
-      providers
-      |> dict.values
-      |> list.fold(dict.new(), dict.merge)
+      dict.fold(providers, dict.new(), fn(acc, provider, entries) {
+        dict.fold(entries, acc, fn(models, slug, info) {
+          let qualified_slug = case string.split(slug, "/") {
+            [own_provider, ..] if own_provider == provider -> slug
+            _ -> provider <> "/" <> slug
+          }
+          dict.insert(models, qualified_slug, info)
+        })
+      })
     Catalog(models: add_bare_aliases(models))
   })
 }
 
-/// Index every `provider/model` slug under its bare model name too, so
-/// lookups without a provider prefix (e.g. local or unknown providers)
-/// still resolve. When two providers share a bare name the last one
-/// inserted wins — collisions are rare in the models.dev catalog.
+/// Index every qualified slug under its bare model name too for legacy lookups.
+/// Exact provider/model estimates never use these aliases.
 fn add_bare_aliases(
   models: Dict(String, ModelInfo),
 ) -> Dict(String, ModelInfo) {
@@ -309,7 +599,7 @@ fn provider_decoder() -> decode.Decoder(Dict(String, ModelInfo)) {
 fn model_info_decoder() -> decode.Decoder(ModelInfo) {
   use cost <- decode.optional_field(
     "cost",
-    CostFields(None, None, None, None),
+    CostFields(None, None, None, None, []),
     cost_decoder(),
   )
   use limit <- decode.optional_field(
@@ -329,6 +619,7 @@ fn model_info_decoder() -> decode.Decoder(ModelInfo) {
     output_price: cost.output,
     cache_read_price: cost.cache_read,
     cache_write_price: cost.cache_write,
+    tiers: cost.tiers,
     context_limit: limit.context,
     output_limit: limit.output,
     tool_call:,
@@ -349,7 +640,36 @@ fn cost_decoder() -> decode.Decoder(CostFields) {
     None,
     optional_number_decoder(),
   )
-  decode.success(CostFields(input:, output:, cache_read:, cache_write:))
+  use tiers <- decode.optional_field(
+    "tiers",
+    [],
+    decode.list(cost_tier_decoder()),
+  )
+  decode.success(CostFields(input:, output:, cache_read:, cache_write:, tiers:))
+}
+
+fn cost_tier_decoder() -> decode.Decoder(CostTier) {
+  use input <- decode.optional_field("input", None, optional_number_decoder())
+  use output <- decode.optional_field("output", None, optional_number_decoder())
+  use cache_read <- decode.optional_field(
+    "cache_read",
+    None,
+    optional_number_decoder(),
+  )
+  use threshold <- decode.field("tier", context_tier_threshold_decoder())
+  decode.success(case threshold {
+    Some(size) -> ContextTier(size, input, output, cache_read)
+    None -> UnsupportedTier
+  })
+}
+
+fn context_tier_threshold_decoder() -> decode.Decoder(Option(Int)) {
+  use tier_type <- decode.field("type", decode.string)
+  use size <- decode.optional_field("size", None, decode.optional(decode.int))
+  decode.success(case tier_type, size {
+    "context", Some(threshold) -> Some(threshold)
+    _, _ -> None
+  })
 }
 
 fn limit_decoder() -> decode.Decoder(LimitFields) {

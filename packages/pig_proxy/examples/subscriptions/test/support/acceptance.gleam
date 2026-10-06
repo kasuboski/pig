@@ -5,6 +5,7 @@ import exception
 import filepath
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -73,15 +74,29 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
   use <- exception.defer(fn() { upstream.stop(codex) })
   let zai = upstream.start()
   use <- exception.defer(fn() { upstream.stop(zai) })
+  let catalog = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(catalog) })
   let receiver = otlp_receiver.start()
   use <- exception.defer(fn() { otlp_receiver.stop(receiver) })
   let port = child_vm.free_port()
-  let env = environment(auth, mode, port, codex, zai, receiver)
+  let env = environment(auth, mode, port, codex, zai, catalog, receiver)
   let host = child_vm.start(context, host_eval, env)
   use <- exception.defer(fn() { child_vm.cleanup(host) })
   child_vm.await_ready(host)
   assert request_to(port, http.Get, "/health", "", []).status == 200
   check_models(port)
+  case mode {
+    Conversation | Metadata -> await_catalog_fetch(catalog, 1000)
+    Outage -> Nil
+  }
+  case mode {
+    Conversation | Metadata -> await_catalog_pricing(port, codex, zai, catalog)
+    Outage -> Nil
+  }
+  case mode {
+    Conversation | Metadata -> await_priced_metrics(port, 1000)
+    Outage -> Nil
+  }
   list.each(
     [
       #(http.Post, "/v1/models", "{}", 404),
@@ -99,8 +114,12 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
         == expected
     },
   )
-  assert upstream.count(codex) == 0
-  assert upstream.count(zai) == 0
+  let warmup_requests = case mode {
+    Conversation | Metadata -> 1
+    Outage -> 0
+  }
+  assert upstream.count(codex) == warmup_requests
+  assert upstream.count(zai) == warmup_requests
   list.each(
     [
       #(False, "codex-buffered-secret", "00000000000000000000000000000011"),
@@ -212,8 +231,13 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
       }
     },
   )
-  assert upstream.count(codex) == 2
-  assert upstream.count(zai) == 2
+  let expected_upstream_requests = case mode {
+    Conversation | Metadata -> 3
+    Outage -> 2
+  }
+  assert upstream.count(codex) == expected_upstream_requests
+  assert upstream.count(zai) == expected_upstream_requests
+  assert upstream.count(catalog) >= 1
   otlp_receiver.assert_no_export(receiver)
   child_vm.signal_term(host)
   let #(status, _) = child_vm.await_exit(host, 5000)
@@ -237,6 +261,7 @@ fn environment(
   port: Int,
   codex: upstream.Fixture,
   zai: upstream.Fixture,
+  catalog: upstream.Fixture,
   receiver: otlp_receiver.Receiver,
 ) -> List(#(String, Option(String))) {
   let capture = case mode {
@@ -257,7 +282,10 @@ fn environment(
     #("PIG_CHATGPT_BASE_URL", Some(base_url(upstream.port(codex)) <> "/codex")),
     #("PIG_ZAI_BASE_URL", Some(base_url(upstream.port(zai)) <> "/v1")),
     #("PIG_PROXY_PORT", Some(int.to_string(port))),
-    #("PIG_PROXY_MODELS_DEV_URL", Some("http://127.0.0.1:1/catalog")),
+    #(
+      "PIG_PROXY_MODELS_DEV_URL",
+      Some(base_url(upstream.port(catalog)) <> "/catalog"),
+    ),
     #("PIG_CODEX_AUTH_PATH", Some(auth)),
     #("OPENAI_COMPAT_CODEX_TOKEN", Some(fake_jwt())),
     #("PIG_PROXY_CAPTURE_CONVERSATION", capture),
@@ -272,6 +300,112 @@ fn environment(
     #("OTEL_TRACES_EXPORTER", Some("console")),
     #("OTEL_SDK_DISABLED", Some("true")),
   ]
+}
+
+fn await_catalog_fetch(catalog: upstream.Fixture, remaining: Int) -> Nil {
+  case upstream.count(catalog) > 0 {
+    True -> Nil
+    False -> {
+      assert remaining > 0
+      process.sleep(10)
+      await_catalog_fetch(catalog, remaining - 1)
+    }
+  }
+}
+
+fn await_catalog_pricing(
+  port: Int,
+  codex: upstream.Fixture,
+  zai: upstream.Fixture,
+  catalog: upstream.Fixture,
+) -> Nil {
+  let codex_body =
+    json.object([
+      #("model", json.string("fake-codex")),
+      #("stream", json.bool(False)),
+      #("store", json.bool(False)),
+      #("input", json.string("catalog-readiness")),
+    ])
+    |> json.to_string
+  let codex_response =
+    request_to(
+      port,
+      http.Post,
+      "/v1/responses",
+      codex_body,
+      traced_headers("00000000000000000000000000000031"),
+    )
+  assert codex_response.status == 200
+  let codex_request =
+    check_forward(
+      codex,
+      "/codex/responses",
+      "Bearer " <> fake_jwt(),
+      "fake-codex",
+      False,
+    )
+  assert codex_request.body == codex_body
+
+  let zai_body =
+    json.object([
+      #("model", json.string("fake-zai")),
+      #("stream", json.bool(False)),
+      #(
+        "messages",
+        json.array(
+          [
+            json.object([
+              #("role", json.string("user")),
+              #("content", json.string("catalog-readiness")),
+            ]),
+          ],
+          fn(value) { value },
+        ),
+      ),
+    ])
+    |> json.to_string
+  let zai_response =
+    request_to(
+      port,
+      http.Post,
+      "/v1/chat/completions",
+      zai_body,
+      traced_headers("00000000000000000000000000000032"),
+    )
+  assert zai_response.status == 200
+  let zai_request =
+    check_forward(
+      zai,
+      "/v1/chat/completions",
+      "Bearer synthetic-zai-key",
+      "fake-zai",
+      False,
+    )
+  assert zai_request.body == zai_body
+  assert upstream.count(catalog) >= 1
+}
+
+fn await_priced_metrics(port: Int, remaining: Int) -> Nil {
+  assert remaining > 0
+  let metrics = request_to(port, http.Get, "/metrics", "", []).body
+  let codex_priced = priced_metric(metrics, "openai/fake-codex")
+  let zai_priced = priced_metric(metrics, "zai/fake-zai")
+  case codex_priced && zai_priced {
+    True -> Nil
+    False -> {
+      process.sleep(10)
+      await_priced_metrics(port, remaining - 1)
+    }
+  }
+}
+
+fn priced_metric(metrics: String, model: String) -> Bool {
+  let prefix = "pig_proxy_cost_usd{model=\"" <> model <> "\"} "
+  metrics
+  |> string.split("\n")
+  |> list.any(fn(line) {
+    string.starts_with(line, prefix) && !string.ends_with(line, " 0.000000")
+  })
 }
 
 fn check_forward(

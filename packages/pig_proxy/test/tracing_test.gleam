@@ -10,6 +10,87 @@ import pig_transport as transport
 import support/tracing_death_harness as death
 import support/tracing_harness as check
 
+pub fn logical_inference_costs_api_stream_usage_matrix_test() {
+  list.each([pig_otel.ChatCompletions, pig_otel.Responses], fn(api) {
+    list.each([False, True], fn(streaming) {
+      let usage_body = cost_usage_body(api, streaming, "1000", "1000")
+      check.check_cost_attributes(api, streaming, usage_body, "shared", [
+        pig_otel.float_attribute("gen_ai.usage.input_cost", 0.004),
+        pig_otel.float_attribute("gen_ai.usage.output_cost", 0.012),
+        pig_otel.float_attribute("gen_ai.usage.total_cost", 0.016),
+        pig_otel.string_attribute("pig.cost.provenance", "models_dev_estimate"),
+      ])
+      check.check_cost_attributes(
+        api,
+        streaming,
+        cost_usage_body(api, streaming, "0", "0"),
+        "shared",
+        [
+          pig_otel.float_attribute("gen_ai.usage.input_cost", 0.0),
+          pig_otel.float_attribute("gen_ai.usage.output_cost", 0.0),
+          pig_otel.float_attribute("gen_ai.usage.total_cost", 0.0),
+          pig_otel.string_attribute(
+            "pig.cost.provenance",
+            "models_dev_estimate",
+          ),
+        ],
+      )
+      check.check_cost_attributes(
+        api,
+        streaming,
+        cost_usage_body(api, streaming, "1000", ""),
+        "shared",
+        [
+          pig_otel.float_attribute("gen_ai.usage.input_cost", 0.004),
+          pig_otel.string_attribute(
+            "pig.cost.provenance",
+            "models_dev_estimate",
+          ),
+        ],
+      )
+      check.check_cost_attributes(api, streaming, "{}", "shared", [])
+      check.check_cost_attributes(
+        api,
+        streaming,
+        usage_body,
+        "unknown-requested-model",
+        [],
+      )
+    })
+  })
+}
+
+fn cost_usage_body(
+  api: pig_otel.Api,
+  streaming: Bool,
+  input: String,
+  output: String,
+) -> String {
+  let usage = case api, input, output {
+    pig_otel.Responses, "1000", "1000" ->
+      "{\"model\":\"response-other\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":1000}}"
+    pig_otel.Responses, "0", "0" ->
+      "{\"model\":\"response-other\",\"status\":\"completed\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+    pig_otel.Responses, _, "" ->
+      "{\"model\":\"response-other\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1000}}"
+    _, "1000", "1000" ->
+      "{\"model\":\"response-other\",\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":1000}}"
+    _, "0", "0" ->
+      "{\"model\":\"response-other\",\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0}}"
+    _, _, "" ->
+      "{\"model\":\"response-other\",\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1000}}"
+    _, _, _ -> "{}"
+  }
+  case streaming, api {
+    True, pig_otel.Responses ->
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":"
+      <> usage
+      <> "}\n\n"
+    True, _ -> "data: " <> usage <> "\n\n"
+    False, _ -> usage
+  }
+}
+
 pub fn buffered_metadata_api_matrix_test() {
   list.each(
     [

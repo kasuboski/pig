@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import mist
+import support/catalog_fixture
 
 /// Exact request data received at the upstream HTTP boundary.
 pub type RecordedRequest {
@@ -106,12 +107,17 @@ fn handle_request(
   actor.call(collector, 1000, fn(reply) {
     Record(RecordedRequest(req.path, req.headers, body), reply)
   })
-  let streaming_decoder = {
-    use stream <- decode.field("stream", decode.bool)
-    decode.success(stream)
+  let #(content_type, payload) = case req.path {
+    "/catalog" -> #("application/json", catalog_fixture.body())
+    _ -> {
+      let streaming_decoder = {
+        use stream <- decode.field("stream", decode.bool)
+        decode.success(stream)
+      }
+      let assert Ok(streaming) = json.parse(body, streaming_decoder)
+      response_for(req.path, streaming)
+    }
   }
-  let assert Ok(streaming) = json.parse(body, streaming_decoder)
-  let #(content_type, payload) = response_for(req.path, streaming)
   response.new(200)
   |> response.set_header("content-type", content_type)
   |> response.set_body(mist.Bytes(bytes_tree.from_string(payload)))

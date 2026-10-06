@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleeunit/should
+import otel/attribute
 import otel/context
 import pig_otel
 import pig_proxy/circuit_actor
@@ -25,6 +26,7 @@ pub type Calls
 pub type Call {
   Started(pig_otel.Span, context.Context, pig_otel.Operation)
   Finished(pig_otel.Span, pig_otel.Outcome)
+  Annotated(pig_otel.Span, List(attribute.Attribute))
 }
 
 @external(erlang, "pig_proxy_trace_test_ffi", "with_calls")
@@ -32,6 +34,11 @@ pub fn with_calls(work: fn(Calls) -> a) -> a
 
 @external(erlang, "pig_proxy_trace_test_ffi", "calls")
 pub fn calls(recorder: Calls) -> List(Call)
+
+@external(erlang, "pig_proxy_trace_test_ffi", "cost_attributes")
+fn cost_attributes(
+  attributes: List(attribute.Attribute),
+) -> List(attribute.Attribute)
 
 @external(erlang, "pig_proxy_trace_test_ffi", "await_finishes")
 pub fn await_finishes(recorder: Calls, count: Int) -> Nil
@@ -66,7 +73,10 @@ pub fn owner(
   }
   let owner = tracing.register(name, policy, [], route)
   let _ =
-    tracing.call(owner, tracing.BeginInference(api, None, "fixture_model"))
+    tracing.call(
+      owner,
+      tracing.BeginInference(api, None, "fixture_model", None),
+    )
   owner
 }
 
@@ -102,6 +112,121 @@ pub fn chain() -> execution.FallbackChain {
   execution.FallbackChain([
     config.openai_target("primary", "http://fixture/v1", "PRIVATE_CREDENTIAL"),
   ])
+}
+
+/// Drive cost attribution from parsed buffered or SSE usage, then inspect the
+/// real span recorder. The selected provider intentionally differs from the
+/// inference's initial provider; `response_model` is intentionally ignored.
+pub fn check_cost_attributes(
+  api: pig_otel.Api,
+  streaming: Bool,
+  body: String,
+  requested_model: String,
+  expected_costs: List(attribute.Attribute),
+) -> Nil {
+  use recorder <- with_calls
+  use <- with_composite
+  let assert Ok(json) = simplifile.read("test_data/pricing_catalog.json")
+  let assert Ok(catalog) = model_catalog.parse(json)
+  let pricing = model_catalog.pin(catalog, [#("provider-a", "shared")])
+  let route = case api {
+    pig_otel.Responses -> "/v1/responses"
+    _ -> "/v1/chat/completions"
+  }
+  let owner = tracing.register(owners(), pig_otel.MetadataOnly, [], route)
+  let assert tracing.Current(_) =
+    tracing.call(
+      owner,
+      tracing.BeginInference(
+        api,
+        Some("provider-b"),
+        requested_model,
+        Some(pricing),
+      ),
+    )
+  let assert tracing.Current(_) =
+    tracing.call(owner, tracing.BeginAttempt("fixture"))
+  let observed = case streaming {
+    False -> trace_metadata.buffered(api, body)
+    True -> {
+      let bits = bit_array.from_string(body)
+      let #(framer, observed) =
+        feed_bytes(
+          bits,
+          api,
+          trace_metadata.new_framer(),
+          trace_metadata.empty(),
+        )
+      trace_metadata.finish(api, framer, observed)
+    }
+  }
+  let _ = case streaming {
+    True ->
+      tracing.call(owner, tracing.SelectStream("fixture", "provider-a", 200))
+    False ->
+      tracing.call(
+        owner,
+        tracing.SelectedBufferedResponse(
+          False,
+          200,
+          [],
+          bit_array.from_string(body),
+          "fixture",
+          Some("provider-a"),
+        ),
+      )
+  }
+  let _ =
+    tracing.call(
+      owner,
+      tracing.LogicalTerminal(pig_otel.Succeeded, observed, 200),
+    )
+  let events = calls(recorder)
+  let assert Ok(logical_span) =
+    list.find_map(events, fn(event) {
+      case event {
+        Started(span, _, pig_otel.Inference(_, _, _)) -> Ok(span)
+        _ -> Error(Nil)
+      }
+    })
+  let spans =
+    list.filter_map(events, fn(event) {
+      case event {
+        Started(span, _, pig_otel.HttpAttempt(_)) -> Ok(span)
+        _ -> Error(Nil)
+      }
+    })
+  let logical_attributes = attributes_for(events, logical_span)
+  should.equal(
+    cost_attributes(logical_attributes),
+    cost_attributes(expected_costs),
+  )
+  should.be_true(list.contains(
+    logical_attributes,
+    pig_otel.string_attribute("gen_ai.provider.name", "provider-a"),
+  ))
+  list.each(spans, fn(span) {
+    let attempt_attributes = attributes_for(events, span)
+    should.equal(cost_attributes(attempt_attributes), [])
+  })
+  wait_closed(owner, fn() {
+    let _ = tracing.call(owner, tracing.Downstream(pig_otel.Succeeded))
+    Nil
+  })
+}
+
+fn attributes_for(
+  events: List(Call),
+  span: pig_otel.Span,
+) -> List(attribute.Attribute) {
+  list.flatten(
+    list.filter_map(events, fn(event) {
+      case event {
+        Annotated(event_span, attrs) if event_span == span -> Ok(attrs)
+        _ -> Error(Nil)
+      }
+    }),
+  )
 }
 
 pub fn check_buffered(

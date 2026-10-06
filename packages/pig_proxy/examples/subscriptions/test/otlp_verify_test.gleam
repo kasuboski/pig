@@ -2,7 +2,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleeunit/should
-import support/otlp_verify.{type Span, Number, Span, Text, Values}
+import support/otlp_verify.{type Span, Decimal, Number, Span, Text, Values}
 
 pub fn valid_metadata_fixture_test() {
   should.equal(check(fixture(False), False), Ok(Nil))
@@ -13,7 +13,34 @@ pub fn valid_capture_fixture_test() {
 }
 
 pub fn wrong_count_test() {
-  should.equal(check([], False), Error(otlp_verify.WrongCount(20, 0)))
+  should.equal(check([], False), Error(otlp_verify.WrongCount(26, 0)))
+}
+
+pub fn target_conversation_requires_priced_logical_span_test() {
+  let spans = fixture(False)
+  let changed =
+    list.index_map(spans, fn(span, index) {
+      case index == 1 {
+        True ->
+          Span(
+            ..span,
+            attributes: list.key_set(
+              span.attributes,
+              "gen_ai.usage.total_cost",
+              Decimal(0.0),
+            ),
+          )
+        False -> span
+      }
+    })
+  should.equal(
+    check(changed, False),
+    Error(otlp_verify.WrongTopology("valid span groups")),
+  )
+}
+
+pub fn catalog_warmup_traces_may_be_unpriced_test() {
+  should.equal(check(fixture(True), True), Ok(Nil))
 }
 
 pub fn duplicate_identity_test() {
@@ -156,7 +183,7 @@ pub fn rejects_content_on_server_and_rejected_spans_test() {
   )
   let leaked =
     list.index_map(spans, fn(span, index) {
-      case index == 12 {
+      case index == 18 {
         True ->
           Span(..span, attributes: [
             #("gen_ai.input.messages", Text("[]")),
@@ -252,6 +279,28 @@ fn fixture(capture: Bool) -> List(Span) {
       "zai-stream-secret",
       "chat-output-marker",
     ),
+    #(
+      "00000000000000000000000000000031",
+      "/v1/responses",
+      "responses",
+      "openai",
+      "fake-codex",
+      "chatgpt",
+      "responses-fixture",
+      "catalog-readiness",
+      "responses-output-marker",
+    ),
+    #(
+      "00000000000000000000000000000032",
+      "/v1/chat/completions",
+      "chat_completions",
+      "zai",
+      "fake-zai",
+      "zai",
+      "chat-fixture",
+      "catalog-readiness",
+      "chat-output-marker",
+    ),
   ]
   let valid =
     list.flatten(
@@ -276,6 +325,18 @@ fn fixture(capture: Bool) -> List(Span) {
             #("http.route", Text(route)),
             #("http.response.status_code", Number(200)),
           ])
+        let costs = case
+          trace == "00000000000000000000000000000031"
+          || trace == "00000000000000000000000000000032"
+        {
+          True -> []
+          False -> [
+            #("gen_ai.usage.input_cost", Decimal(0.0000175)),
+            #("gen_ai.usage.output_cost", Decimal(0.00007)),
+            #("gen_ai.usage.total_cost", Decimal(0.0000875)),
+            #("pig.cost.provenance", Text("models_dev_estimate")),
+          ]
+        }
         let content = case capture {
           True -> [
             #("pig.content.input.status", Text("captured")),
@@ -286,20 +347,29 @@ fn fixture(capture: Bool) -> List(Span) {
           False -> []
         }
         let logical =
-          make(trace, logical_id, server_id, "client", "chat", [
-            #("pig.outcome", Text("succeeded")),
-            #("gen_ai.operation.name", Text("chat")),
-            #("openai.api.type", Text(api)),
-            #("gen_ai.provider.name", Text(provider)),
-            #("gen_ai.request.model", Text(model)),
-            #("gen_ai.response.model", Text(model)),
-            #("gen_ai.response.id", Text(response)),
-            #("gen_ai.response.finish_reasons", Values([Text("stop")])),
-            #("gen_ai.usage.input_tokens", Number(11)),
-            #("gen_ai.usage.output_tokens", Number(7)),
-            #("gen_ai.usage.cache_read.input_tokens", Number(3)),
-            ..content
-          ])
+          make(
+            trace,
+            logical_id,
+            server_id,
+            "client",
+            "chat",
+            list.append(
+              [
+                #("pig.outcome", Text("succeeded")),
+                #("gen_ai.operation.name", Text("chat")),
+                #("openai.api.type", Text(api)),
+                #("gen_ai.provider.name", Text(provider)),
+                #("gen_ai.request.model", Text(model)),
+                #("gen_ai.response.model", Text(model)),
+                #("gen_ai.response.id", Text(response)),
+                #("gen_ai.response.finish_reasons", Values([Text("stop")])),
+                #("gen_ai.usage.input_tokens", Number(11)),
+                #("gen_ai.usage.output_tokens", Number(7)),
+                #("gen_ai.usage.cache_read.input_tokens", Number(3)),
+              ],
+              list.append(costs, content),
+            ),
+          )
         let attempt =
           make(trace, attempt_id, logical_id, "client", "attempt", [
             #("pig.outcome", Text("succeeded")),

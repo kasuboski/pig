@@ -1,0 +1,18 @@
+{
+  "provider-a": {
+    "id": "provider-a",
+    "models": {
+      "provider-a/shared": { "id": "provider-a/shared", "cost": { "input": 4, "output": 12, "cache_read": 1 } }
+    }
+  },
+  "provider-b": {
+    "id": "provider-b",
+    "models": {
+      "provider-b/shared": { "id": "provider-b/shared", "cost": { "input": 20, "output": 60 } },
+      "provider-b/input-only": { "id": "provider-b/input-only", "cost": { "input": 2 } },
+      "provider-b/cache-only": { "id": "provider-b/cache-only", "cost": { "cache_read": 0.5, "output": 1 } },
+      "provider-b/negative-input": { "id": "provider-b/negative-input", "cost": { "input": -2, "output": 4 } },
+      "provider-b/tiered": { "id": "provider-b/tiered", "cost": { "input": 1, "output": 5, "cache_read": 0.2, "tiers": [ { "tier": { "type": "context", "size": 1000 }, "input": 10, "output": 30, "cache_read": 3, "cache_write": 0 }, { "tier": { "type": "context", "size": 100 }, "input": 8, "output": 20, "cache_read": 2, "cache_write": 0 } ] } }
+    }
+  }
+}

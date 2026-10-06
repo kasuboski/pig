@@ -1,5 +1,5 @@
 -module(pig_proxy_trace_test_ffi).
--export([with_calls/1, calls/1, await_finishes/2, wait_closed/2, with_composite/1]).
+-export([with_calls/1, calls/1, cost_attributes/1, await_finishes/2, wait_closed/2, with_composite/1]).
 
 %% Observe shared adapter calls, not a substitute SDK/binding. Official exported
 %% hierarchy/attributes are exercised separately by the host integration suite.
@@ -9,14 +9,25 @@ with_calls(Work) ->
     Recorder = spawn_link(fun() -> record(Parent, [], #{}) end),
     erlang:trace_pattern({pig_otel, start, 3}, [{'_', [], [{return_trace}]}], [local]),
     erlang:trace_pattern({pig_otel, finish, 2}, true, [local]),
+    erlang:trace_pattern({pig_otel, annotate, 2}, true, [local]),
     erlang:trace(all, true, [call, set_on_spawn, {tracer, Recorder}]),
     try Work(Recorder)
     after
         erlang:trace(all, false, [call, set_on_spawn]),
         erlang:trace_pattern({pig_otel, start, 3}, false, [local]),
         erlang:trace_pattern({pig_otel, finish, 2}, false, [local]),
+        erlang:trace_pattern({pig_otel, annotate, 2}, false, [local]),
         Recorder ! stop
     end.
+
+cost_attributes(Attributes) ->
+    lists:sort([
+        Attribute || Attribute = {attribute, {key, Key}, _} <- Attributes,
+        lists:member(Key, [<<"gen_ai.usage.input_cost">>,
+                           <<"gen_ai.usage.output_cost">>,
+                           <<"gen_ai.usage.total_cost">>,
+                           <<"pig.cost.provenance">>])
+    ]).
 
 calls(Recorder) ->
     Ref = make_ref(),
@@ -46,6 +57,8 @@ await_record(Parent, Calls, Pending, Requester, Ref, Count) ->
                     await_record(Parent, [{started, Span, Context, Operation} | Calls], maps:remove(Pid, Pending), Requester, Ref, Count);
                 {trace, _, call, {pig_otel, finish, [Span, Outcome]}} ->
                     await_record(Parent, [{finished, Span, Outcome} | Calls], Pending, Requester, Ref, Count);
+                {trace, _, call, {pig_otel, annotate, [Span, Attributes]}} ->
+                    await_record(Parent, [{annotated, Span, Attributes} | Calls], Pending, Requester, Ref, Count);
                 _ -> await_record(Parent, Calls, Pending, Requester, Ref, Count)
             end
     end.
@@ -59,6 +72,8 @@ record(Parent, Calls, Pending) ->
             record(Parent, [{started, Span, Context, Operation} | Calls], maps:remove(Pid, Pending));
         {trace, _, call, {pig_otel, finish, [Span, Outcome]}} ->
             record(Parent, [{finished, Span, Outcome} | Calls], Pending);
+        {trace, _, call, {pig_otel, annotate, [Span, Attributes]}} ->
+            record(Parent, [{annotated, Span, Attributes} | Calls], Pending);
         {await_finishes, Requester, Ref, Count} ->
             await_record(Parent, Calls, Pending, Requester, Ref, Count);
         {snapshot, Requester, Ref} ->
@@ -77,6 +92,8 @@ drain(Parent, Calls, Pending, Barrier, Requester, Ref) ->
             drain(Parent, [{started, Span, Context, Operation} | Calls], maps:remove(Pid, Pending), Barrier, Requester, Ref);
         {trace, _, call, {pig_otel, finish, [Span, Outcome]}} ->
             drain(Parent, [{finished, Span, Outcome} | Calls], Pending, Barrier, Requester, Ref);
+        {trace, _, call, {pig_otel, annotate, [Span, Attributes]}} ->
+            drain(Parent, [{annotated, Span, Attributes} | Calls], Pending, Barrier, Requester, Ref);
         {trace_delivered, all, Barrier} ->
             Requester ! {Ref, lists:reverse(Calls)},
             record(Parent, Calls, Pending);
