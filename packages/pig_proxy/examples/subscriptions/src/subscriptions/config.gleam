@@ -11,14 +11,24 @@ import pig_otel
 import pig_otel/content/options
 import pig_proxy/config as proxy_config
 
-/// Validated proxy routes and an optional host-owned trace destination.
+/// Validated proxy routes and optional standard OTLP trace export settings.
 pub type Settings {
-  Settings(proxy: proxy_config.ProxyConfig, latitude: Option(Latitude))
+  Settings(proxy: proxy_config.ProxyConfig, otlp: Option(Otlp))
 }
 
-/// OTLP trace destination. The API key is secret and must never be printed.
-pub type Latitude {
-  Latitude(endpoint: String, api_key: String, project: String)
+/// Resolved standard OTLP environment settings used by the host.
+/// Signal-specific values take precedence over generic values.
+pub type Otlp {
+  Otlp(
+    endpoint: Option(String),
+    traces_endpoint: Option(String),
+    protocol: OtlpProtocol,
+  )
+}
+
+/// Supported official OTLP exporter protocol.
+pub type OtlpProtocol {
+  HttpProtobuf
 }
 
 /// Parse settings from an injectable lookup; errors name variables but never values.
@@ -64,12 +74,7 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
     output_source_bytes,
     output_content_bytes,
   ))
-  use latitude_enabled <- result.try(boolean(
-    lookup,
-    "PIG_LATITUDE_ENABLED",
-    False,
-  ))
-  use latitude <- result.try(latitude(lookup, latitude_enabled))
+  use otlp <- result.try(otlp(lookup))
   use codex_token <- result.try(case lookup("OPENAI_COMPAT_CODEX_TOKEN") {
     None -> Ok(None)
     Some(_) ->
@@ -115,7 +120,7 @@ pub fn parse(lookup: fn(String) -> Option(String)) -> Result(Settings, String) {
     |> proxy_config.with_models_dev_url(catalog_url)
     |> proxy_config.with_codex_seed_token(codex_token)
     |> proxy_config.with_tracing(policy)
-  Ok(Settings(proxy:, latitude:))
+  Ok(Settings(proxy:, otlp:))
 }
 
 /// Read the environment at the IO edge, then delegate to the pure parser.
@@ -263,25 +268,96 @@ fn boolean(
   }
 }
 
-fn latitude(
-  lookup: fn(String) -> Option(String),
-  enabled: Bool,
-) -> Result(Option(Latitude), String) {
+fn otlp(lookup: fn(String) -> Option(String)) -> Result(Option(Otlp), String) {
+  let endpoint = optional_url(lookup, "OTEL_EXPORTER_OTLP_ENDPOINT", False)
+  use endpoint <- result.try(endpoint)
+  let traces_endpoint =
+    optional_url(lookup, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", True)
+  use traces_endpoint <- result.try(traces_endpoint)
+  let generic_protocol = lookup("OTEL_EXPORTER_OTLP_PROTOCOL")
+  let traces_protocol = lookup("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+  use protocol <- result.try(protocol(traces_protocol, generic_protocol))
+  let traces_exporter = lookup("OTEL_TRACES_EXPORTER")
+  use _ <- result.try(validate_traces_exporter(traces_exporter))
+  let enabled =
+    traces_exporter != Some("none")
+    && {
+      endpoint != None
+      || traces_endpoint != None
+      || traces_exporter == Some("otlp")
+    }
   case enabled {
     False -> Ok(None)
-    True -> {
-      use key <- result.try(required(lookup, "LATITUDE_API_KEY"))
-      use project <- result.try(required(lookup, "LATITUDE_PROJECT"))
-      use endpoint <- result.try(url(
-        lookup,
-        "PIG_LATITUDE_ENDPOINT",
-        "https://ingest.latitude.so/v1/traces",
-      ))
-      case string.ends_with(endpoint, "/v1/traces") {
-        True -> Ok(Some(Latitude(endpoint:, api_key: key, project:)))
-        False -> Error("PIG_LATITUDE_ENDPOINT must end in /v1/traces")
+    True -> Ok(Some(Otlp(endpoint:, traces_endpoint:, protocol:)))
+  }
+}
+
+fn validate_traces_exporter(value: Option(String)) -> Result(Nil, String) {
+  case value {
+    None | Some("otlp") | Some("none") -> Ok(Nil)
+    Some(_) -> Error("OTEL_TRACES_EXPORTER must be otlp or none")
+  }
+}
+
+fn optional_url(
+  lookup: fn(String) -> Option(String),
+  key: String,
+  complete: Bool,
+) -> Result(Option(String), String) {
+  case lookup(key) {
+    None -> Ok(None)
+    Some(raw) -> {
+      let value = raw
+      let valid =
+        raw == string_trim(raw)
+        && !string.contains(raw, "\r")
+        && !string.contains(raw, "\n")
+        && case uri.parse(value) {
+          Ok(parsed) -> {
+            let scheme_host = case parsed.scheme, parsed.host {
+              Some("https"), Some(host) -> host != ""
+              Some("http"), Some(host) -> host != ""
+              _, _ -> False
+            }
+            let path_valid = case complete {
+              True -> parsed.path != ""
+              False -> True
+            }
+            let port_valid = case parsed.port {
+              Some(port) -> port > 0 && port <= 65_535
+              None -> True
+            }
+            scheme_host
+            && path_valid
+            && port_valid
+            && parsed.userinfo == None
+            && parsed.query == None
+            && parsed.fragment == None
+            && !string.contains(value, "\r")
+            && !string.contains(value, "\n")
+          }
+          Error(_) -> False
+        }
+      case valid {
+        True -> Ok(Some(value))
+        False -> Error(key <> " must be a valid HTTP or HTTPS URL")
       }
     }
+  }
+}
+
+fn protocol(
+  traces: Option(String),
+  generic: Option(String),
+) -> Result(OtlpProtocol, String) {
+  let raw = case traces {
+    Some(value) -> Some(value)
+    None -> generic
+  }
+  case raw {
+    None -> Ok(HttpProtobuf)
+    Some("http/protobuf") -> Ok(HttpProtobuf)
+    Some(_) -> Error("OTEL_EXPORTER_OTLP_PROTOCOL must be http/protobuf")
   }
 }
 

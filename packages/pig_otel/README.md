@@ -4,7 +4,7 @@ Shared OpenTelemetry semantics, propagation, and bounded conversation projection
 for Pig on the BEAM. `pig` and `pig_proxy` use the same public `Policy` and the
 same `pig_otel/content` implementation; consumer-specific lifecycle ownership
 remains in each package. The library depends on `otel_gleam` at remote Git revision
-`0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5` and official API 1.5.0. It does not
+`93b9d101426f7ab8e4ec28136acedf31d3e1e8f4` and official API 1.5.0. It does not
 start, configure, flush, or depend on the SDK/exporter in production.
 
 ## Consumer Contract
@@ -71,14 +71,19 @@ callback_error process_exit http_error upstream_error downstream_error
 
 ## Propagation
 
-The supported host propagator is the official composite Trace Context/Baggage.
-Pig implements no W3C/baggage parser. Ingress strips **all** case-insensitive
-baggage entries before detached extraction. Outbound strips **all** mixed-case
-`traceparent`, `tracestate`, and `baggage` duplicates before official explicit-
-context injection, then removes baggage recreated by injection. Unrelated headers
-retain their spelling, values and relative order. Credential/hop-by-hop protection
-remains the HTTP caller's separate responsibility. Direct baggage/custom
-propagators and throwing custom processors are outside the supported
+The subscriptions host opts in to the safe `otel_gleam_propagator_baggage`
+propagator alongside Trace Context; other hosts retain their own propagator
+configuration. Pig implements no W3C/baggage parser. Ingress extraction accepts
+only the `session.id` and `gen_ai.conversation.id` baggage keys. Identity values
+are exact, bounded values: invalid or oversized values are omitted rather than
+truncated, and values containing U+FFFD are rejected (including replacement
+characters produced while decoding malformed UTF-8). Arbitrary baggage is never
+copied to spans. Outbound strips **all** mixed-case `traceparent`, `tracestate`,
+and `baggage` duplicates before official explicit-context injection, then removes
+baggage recreated by injection. Unrelated headers retain their spelling, values
+and relative order. Credential/hop-by-hop protection remains the HTTP caller's
+separate responsibility. Direct custom propagators and throwing custom
+processors are outside the supported
 [implementation contract](../../knowledge/OPENTELEMETRY.md).
 
 ## Acceptance

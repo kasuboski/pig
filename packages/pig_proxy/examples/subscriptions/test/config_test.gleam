@@ -36,8 +36,8 @@ fn valid() -> List(#(String, String)) {
 
 pub fn defaults_and_exact_routes_test() {
   let assert Ok(settings) = check_config(valid())
-  let config.Settings(proxy:, latitude:) = settings
-  should.equal(latitude, None)
+  let config.Settings(proxy:, otlp:) = settings
+  should.equal(otlp, None)
   should.equal(proxy.bind, "127.0.0.1")
   should.equal(proxy.port, 8080)
   let assert pig_otel.Conversation(_) = proxy.tracing
@@ -169,7 +169,6 @@ pub fn parser_rejects_matrix_test() {
       "not-an-integer",
       "PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES",
     ),
-    #("PIG_LATITUDE_ENABLED", "true", "LATITUDE_API_KEY"),
     #("ZAI_API_KEY", "secret\r\ninjected: value", "ZAI_API_KEY"),
     #("PIG_CHATGPT_BASE_URL", "", "PIG_CHATGPT_BASE_URL"),
     #("PIG_ZAI_BASE_URL", "http://remote.test/v1", "PIG_ZAI_BASE_URL"),
@@ -187,6 +186,16 @@ pub fn parser_rejects_matrix_test() {
       "PIG_PROXY_MODELS_DEV_URL",
       "file:///tmp/catalog",
       "PIG_PROXY_MODELS_DEV_URL",
+    ),
+    #(
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "http://localhost:4318/v1/traces\r\ninjected: value",
+      "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ),
+    #(
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+      "http://localhost:4318/v1/traces\ninjected: value",
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     ),
   ]
   list.each(cases, fn(test_case) {
@@ -215,28 +224,132 @@ pub fn base_overrides_are_exact_test() {
   should.equal(proxy_config.provider_string(zai), "zai")
 }
 
-pub fn latitude_endpoint_validation_matrix_test() {
+pub fn otlp_endpoint_and_protocol_validation_test() {
   list.each(
     [
-      "https://ingest.latitude.so/invalid",
-      "http://remote.test/v1/traces",
-      "https://user:secret@ingest.latitude.so/v1/traces",
-      "https://ingest.latitude.so/v1/traces?key=secret",
+      #("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:secret@collector.example"),
+      #("OTEL_EXPORTER_OTLP_ENDPOINT", " https://collector.example "),
+      #(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        " https://collector.example/path ",
+      ),
+      #(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://collector.example/path?secret",
+      ),
     ],
-    fn(endpoint) {
+    fn(test_case) {
+      let #(key, value) = test_case
       let assert Error(error) =
-        check_config(
-          list.append(valid(), [
-            #("PIG_LATITUDE_ENABLED", "true"),
-            #("LATITUDE_API_KEY", "secret"),
-            #("LATITUDE_PROJECT", "test-project"),
-            #("PIG_LATITUDE_ENDPOINT", endpoint),
-          ]),
-        )
-      should.equal(string.contains(error, "PIG_LATITUDE_ENDPOINT"), True)
+        check_config(valid() |> list.append([#(key, value)]))
+      should.equal(string.contains(error, key), True)
       should.equal(string.contains(error, "secret"), False)
     },
   )
+  let assert Error(protocol_error) =
+    check_config(
+      valid()
+      |> list.append([
+        #("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example"),
+        #("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+      ]),
+    )
+  should.equal(string.contains(protocol_error, "PROTOCOL"), True)
+  list.each(["HTTP/PROTOBUF", " http/protobuf "], fn(value) {
+    let assert Error(error) =
+      check_config(
+        valid()
+        |> list.append([
+          #("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example"),
+          #("OTEL_EXPORTER_OTLP_PROTOCOL", value),
+        ]),
+      )
+    should.equal(string.contains(error, "PROTOCOL"), True)
+  })
+}
+
+pub fn standard_otlp_endpoint_selection_test() {
+  let assert Ok(config.Settings(otlp: Some(otlp), ..)) =
+    check_config(
+      valid()
+      |> list.append([
+        #("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318/base"),
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/custom/traces",
+        ),
+        #("OTEL_EXPORTER_OTLP_PROTOCOL", "unsupported-is-overridden"),
+        #("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf"),
+      ]),
+    )
+  should.equal(otlp.endpoint, Some("http://collector.example:4318/base"))
+  should.equal(
+    otlp.traces_endpoint,
+    Some("https://collector.example/custom/traces"),
+  )
+  should.equal(otlp.protocol, config.HttpProtobuf)
+}
+
+pub fn traces_exporter_values_match_sdk_raw_environment_test() {
+  let assert Ok(config.Settings(otlp: Some(_), ..)) =
+    check_config(valid() |> list.append([#("OTEL_TRACES_EXPORTER", "otlp")]))
+  let assert Ok(config.Settings(otlp: None, ..)) =
+    check_config(valid() |> list.append([#("OTEL_TRACES_EXPORTER", "none")]))
+  list.each(["OTLP", " otlp ", "jaeger", ""], fn(value) {
+    let assert Error(error) =
+      check_config(valid() |> list.append([#("OTEL_TRACES_EXPORTER", value)]))
+    should.equal(string.contains(error, "OTEL_TRACES_EXPORTER"), True)
+  })
+}
+
+pub fn traces_exporter_none_overrides_endpoints_test() {
+  list.each(
+    [
+      [#("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318")],
+      [
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/v1/traces",
+        ),
+      ],
+      [
+        #("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318"),
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/v1/traces",
+        ),
+      ],
+    ],
+    fn(endpoints) {
+      let assert Ok(config.Settings(otlp: None, ..)) =
+        check_config(
+          valid()
+          |> list.append(endpoints)
+          |> list.append([#("OTEL_TRACES_EXPORTER", "none")]),
+        )
+    },
+  )
+}
+
+pub fn otlp_requires_endpoint_test() {
+  let assert Error(protocol_error) =
+    check_config(
+      valid()
+      |> list.append([
+        #("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+      ]),
+    )
+  should.equal(string.contains(protocol_error, "PROTOCOL"), True)
+  let assert Ok(config.Settings(otlp: Some(_), ..)) =
+    check_config(
+      valid()
+      |> list.append([
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/v1/traces",
+        ),
+      ]),
+    )
 }
 
 pub fn directional_capture_budgets_accept_valid_overrides_test() {
@@ -289,19 +402,16 @@ pub fn invalid_capture_budgets_rejected_when_capture_disabled_test() {
   )
 }
 
-pub fn capture_and_latitude_are_explicit_test() {
+pub fn capture_and_otlp_are_explicit_test() {
   let env =
     valid()
     |> list.append([
       #("PIG_PROXY_CAPTURE_CONVERSATION", " true "),
-      #("PIG_LATITUDE_ENABLED", "true"),
-      #("LATITUDE_API_KEY", "private"),
-      #("LATITUDE_PROJECT", "project-a"),
+      #(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://collector.example/v1/traces",
+      ),
     ])
-  let assert Ok(config.Settings(proxy:, latitude: Some(latitude))) =
-    check_config(env)
+  let assert Ok(config.Settings(proxy:, otlp: Some(_))) = check_config(env)
   let assert pig_otel.Conversation(_) = proxy.tracing
-  should.equal(latitude.endpoint, "https://ingest.latitude.so/v1/traces")
-  should.equal(latitude.project, "project-a")
-  should.equal(latitude.api_key, "private")
 }

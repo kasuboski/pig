@@ -52,12 +52,21 @@ type State {
 
 /// Start a receiver on an assigned loopback port.
 pub fn start() -> Receiver {
+  start_with_authorization(None)
+}
+
+/// Start a receiver that requires the supplied standard OTLP authorization header.
+pub fn start_authenticated(authorization: String) -> Receiver {
+  start_with_authorization(Some(authorization))
+}
+
+fn start_with_authorization(authorization: Option(String)) -> Receiver {
   let assert Ok(collector) =
     actor.new(State([], [], None, []))
     |> actor.on_message(handle_message)
     |> actor.start
   let port_subject = process.new_subject()
-  let handler = fn(req) { receive_export(req, collector.data) }
+  let handler = fn(req) { receive_export(req, collector.data, authorization) }
   let started =
     handler
     |> mist.new
@@ -77,9 +86,14 @@ pub fn start() -> Receiver {
   }
 }
 
-/// Return the exact signal-specific traces URL.
+/// Return the generic OTLP base endpoint. The exporter appends `/v1/traces`.
 pub fn endpoint(receiver: Receiver) -> String {
-  "http://127.0.0.1:" <> int.to_string(receiver.port) <> "/v1/traces"
+  "http://127.0.0.1:" <> int.to_string(receiver.port)
+}
+
+/// Return the complete signal-specific traces URL.
+pub fn traces_endpoint(receiver: Receiver) -> String {
+  endpoint(receiver) <> "/v1/traces"
 }
 
 /// Assert the periodic exporter has not masked the shutdown gate.
@@ -118,12 +132,17 @@ pub fn stop(receiver: Receiver) -> Nil {
 fn receive_export(
   req: request.Request(mist.Connection),
   collector: process.Subject(Message),
+  authorization: Option(String),
 ) -> response.Response(mist.ResponseData) {
+  let authorization_ok = case authorization {
+    None -> request.get_header(req, "authorization") == Error(Nil)
+    Some(value) -> request.get_header(req, "authorization") == Ok(value)
+  }
   let headers_ok =
     req.method == http.Post
-    && request.get_header(req, "authorization")
-    == Ok("Bearer synthetic-latitude-key")
-    && request.get_header(req, "x-latitude-project") == Ok("synthetic-project")
+    && req.path == "/v1/traces"
+    && authorization_ok
+    && request.get_header(req, "x-latitude-project") == Error(Nil)
     && request.get_header(req, "content-type") == Ok("application/x-protobuf")
     && request.get_header(req, "content-encoding") == Error(Nil)
   let decoded = case headers_ok, mist.read_body(req, 16_777_216) {

@@ -8,6 +8,7 @@ with_calls(Work) ->
     Parent = self(),
     Recorder = spawn_link(fun() -> record(Parent, [], #{}) end),
     erlang:trace_pattern({pig_otel, start, 3}, [{'_', [], [{return_trace}]}], [local]),
+    erlang:trace_pattern({pig_otel, start_with_attributes, 4}, [{'_', [], [{return_trace}]}], [global]),
     erlang:trace_pattern({pig_otel, finish, 2}, true, [local]),
     erlang:trace_pattern({pig_otel, annotate, 2}, true, [local]),
     erlang:trace(all, true, [call, set_on_spawn, {tracer, Recorder}]),
@@ -15,6 +16,7 @@ with_calls(Work) ->
     after
         erlang:trace(all, false, [call, set_on_spawn]),
         erlang:trace_pattern({pig_otel, start, 3}, false, [local]),
+        erlang:trace_pattern({pig_otel, start_with_attributes, 4}, false, [global]),
         erlang:trace_pattern({pig_otel, finish, 2}, false, [local]),
         erlang:trace_pattern({pig_otel, annotate, 2}, false, [local]),
         Recorder ! stop
@@ -50,6 +52,11 @@ await_record(Parent, Calls, Pending, Requester, Ref, Count) ->
             record(Parent, Calls, Pending);
         false ->
             receive
+                {trace, Pid, call, {pig_otel, start_with_attributes, [_, Context, Operation, Attributes]}} ->
+                    await_record(Parent, Calls, Pending#{Pid => {Context, Operation, Attributes}}, Requester, Ref, Count);
+                {trace, Pid, return_from, {pig_otel, start_with_attributes, 4}, Span} ->
+                    {Context, Operation, Attributes} = maps:get(Pid, Pending),
+                    await_record(Parent, [{started_with_attributes, Span, Context, Operation, Attributes}, {started, Span, Context, Operation} | Calls], maps:remove(Pid, Pending), Requester, Ref, Count);
                 {trace, Pid, call, {pig_otel, start, [_, Context, Operation]}} ->
                     await_record(Parent, Calls, Pending#{Pid => {Context, Operation}}, Requester, Ref, Count);
                 {trace, Pid, return_from, {pig_otel, start, 3}, Span} ->
@@ -65,6 +72,11 @@ await_record(Parent, Calls, Pending, Requester, Ref, Count) ->
 
 record(Parent, Calls, Pending) ->
     receive
+        {trace, Pid, call, {pig_otel, start_with_attributes, [_, ParentContext, Operation, Attributes]}} ->
+            record(Parent, Calls, Pending#{Pid => {ParentContext, Operation, Attributes}});
+        {trace, Pid, return_from, {pig_otel, start_with_attributes, 4}, Span} ->
+            {ParentContext, Operation, Attributes} = maps:get(Pid, Pending),
+            record(Parent, [{started_with_attributes, Span, ParentContext, Operation, Attributes}, {started, Span, ParentContext, Operation} | Calls], maps:remove(Pid, Pending));
         {trace, Pid, call, {pig_otel, start, [_, ParentContext, Operation]}} ->
             record(Parent, Calls, Pending#{Pid => {ParentContext, Operation}});
         {trace, Pid, return_from, {pig_otel, start, 3}, Span} ->
@@ -85,6 +97,11 @@ record(Parent, Calls, Pending) ->
 
 drain(Parent, Calls, Pending, Barrier, Requester, Ref) ->
     receive
+        {trace, Pid, call, {pig_otel, start_with_attributes, [_, Context, Operation, Attributes]}} ->
+            drain(Parent, Calls, Pending#{Pid => {Context, Operation, Attributes}}, Barrier, Requester, Ref);
+        {trace, Pid, return_from, {pig_otel, start_with_attributes, 4}, Span} ->
+            {Context, Operation, Attributes} = maps:get(Pid, Pending),
+            drain(Parent, [{started_with_attributes, Span, Context, Operation, Attributes}, {started, Span, Context, Operation} | Calls], maps:remove(Pid, Pending), Barrier, Requester, Ref);
         {trace, Pid, call, {pig_otel, start, [_, Context, Operation]}} ->
             drain(Parent, Calls, Pending#{Pid => {Context, Operation}}, Barrier, Requester, Ref);
         {trace, Pid, return_from, {pig_otel, start, 3}, Span} ->

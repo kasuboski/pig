@@ -21,7 +21,7 @@ filepath = ">= 1.0.0 and < 2.0.0"
 pig_protocol = { path = "../pig_protocol" }
 pig_transport = { path = "../pig_transport" }
 pig_otel = { path = "../pig_otel" }
-otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5" }
+otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "93b9d101426f7ab8e4ec28136acedf31d3e1e8f4" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

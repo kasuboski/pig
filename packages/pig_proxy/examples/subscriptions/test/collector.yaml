@@ -1,0 +1,20 @@
+# Local opt-in acceptance only; Docker publishes OTLP on host loopback.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  file:
+    path: /evidence/traces.jsonl
+    flush_interval: 100ms
+  debug:
+    verbosity: detailed
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file, debug]

@@ -17,7 +17,7 @@ packages = [
   { name = "jscheam", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], otp_app = "jscheam", source = "hex", outer_checksum = "F8825DD6BC0C5B2BBB41A7B01A0D0AC89876B2305DF05CBB92A450E3B7734FC6" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "opentelemetry_api", version = "1.5.0", build_tools = ["rebar3", "mix"], requirements = [], otp_app = "opentelemetry_api", source = "hex", outer_checksum = "F53EC8A1337AE4A487D43AC89DA4BD3A3C99DDF576655D071DEED8B56A2D5DDA" },
-  { name = "otel_gleam", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "opentelemetry_api"], source = "git", repo = "https://github.com/kasuboski/otel_gleam.git", commit = "0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5" },
+  { name = "otel_gleam", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "opentelemetry_api"], source = "git", repo = "https://github.com/kasuboski/otel_gleam.git", commit = "93b9d101426f7ab8e4ec28136acedf31d3e1e8f4" },
   { name = "pig_protocol", version = "0.3.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_http", "gleam_httpc", "gleam_json", "gleam_stdlib", "jscheam", "logging"], source = "local", path = "../pig_protocol" },
 ]
 
@@ -26,5 +26,5 @@ gleam_json = { version = ">= 3.1.0 and < 4.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 logging = { version = ">= 1.5.0 and < 2.0.0" }
-otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5" }
+otel_gleam = { git = "https://github.com/kasuboski/otel_gleam.git", ref = "93b9d101426f7ab8e4ec28136acedf31d3e1e8f4" }
 pig_protocol = { path = "../pig_protocol" }

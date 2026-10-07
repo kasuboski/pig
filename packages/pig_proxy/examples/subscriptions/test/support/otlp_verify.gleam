@@ -240,6 +240,7 @@ fn verify_group(trace: String, group: List(Span), capture: Bool) -> Bool {
           && !has_cost_key(server)
           && !has_cost_key(attempt)
           && cost_valid(logical)
+          && identities_valid(trace, group)
           && content_valid(group, logical, capture, input, output, stream)
       }
     }
@@ -327,6 +328,28 @@ fn trace_mapping(
         "chat-output-marker",
       ))
     _ -> Error(Nil)
+  }
+}
+
+fn identities_valid(trace: String, group: List(Span)) -> Bool {
+  let #(session, conversation) = case trace {
+    "00000000000000000000000000000011" -> #("responses-session", "")
+    "00000000000000000000000000000012" -> #("", "responses-conversation")
+    "00000000000000000000000000000021" -> #("same-identity", "same-identity")
+    "00000000000000000000000000000022" -> #("café ☃", "separate-☃")
+    _ -> #("", "")
+  }
+  list.all(group, fn(span) {
+    identity_attribute(span, "session.id", session)
+    && identity_attribute(span, "gen_ai.conversation.id", conversation)
+  })
+  && list.all(group, fn(span) { !has_attr(span, "unknown.private") })
+}
+
+fn identity_attribute(span: Span, key: String, expected: String) -> Bool {
+  case expected {
+    "" -> !has_attr(span, key)
+    value -> attr_text(span, key) == value
   }
 }
 

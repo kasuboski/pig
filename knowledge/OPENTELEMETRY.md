@@ -16,9 +16,40 @@ resource and sampler
 configuration, credentials, collector settings, flush and shutdown. Production
 Pig packages do not start or configure the global SDK.
 
-Binding public API and setup: [otel_gleam README](https://github.com/kasuboski/otel_gleam/tree/0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5).
+## Subscription host OTLP export
+
+The subscriptions example owns SDK/exporter setup and uses standard
+`OTEL_EXPORTER_OTLP_*` environment settings. Either
+`OTEL_EXPORTER_OTLP_ENDPOINT` (base URL; exporter appends `/v1/traces`) or
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (complete trace URL, no path appended)
+enables export; the trace-specific endpoint wins when both are set. Protocol and
+headers are optional. The host accepts only the exact raw protocol spelling
+`http/protobuf`; no case or whitespace normalization occurs. It supports exact
+raw `OTEL_TRACES_EXPORTER` values `otlp` and `none`; an endpoint enables the SDK
+unless `OTEL_SDK_DISABLED=true` or exporter `none` opts out. Standard generic
+and trace-specific headers are supported. Pinned exporter gzip support is not
+covered by the local receiver. The subscriptions Compose `env_file` forwards these variables from
+its private env file.
+
+Latitude uses that same standard exporter path (full trace endpoint and ordinary
+OTLP headers), not a vendor-specific mode. An unauthenticated tailnet collector
+is safe only when its listener, tailnet ACLs and firewall restrict access to
+trusted peers. Never expose an unauthenticated collector publicly; the host does
+not detect tailnet trust. The example's parent-based sampler uses 100% root
+sampling for accounting while respecting valid parent decisions. Do not impose
+this as a forced backend-global sampling policy.
+
+The subscription exporter adapter bounds requests by at most four spans, not a
+strict encoded-byte limit; it processes batches sequentially and preserves span
+and resource records. The pinned exporter does not support
+`OTEL_EXPORTER_OTLP_TIMEOUT` or `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`; document
+only the existing SDK/transport timeout behavior, not a new 30-second cap.
+Queue limits, failure delivery behavior and best-effort shutdown details are in the
+[subscription deployment guide](../packages/pig_proxy/examples/subscriptions/README.md).
+
+Binding public API and setup: [otel_gleam README](https://github.com/kasuboski/otel_gleam/tree/93b9d101426f7ab8e4ec28136acedf31d3e1e8f4).
 The implementation is pinned to that actual upstream Git revision; do not
-substitute a local fork or duplicate its FFI. The related [binding contract](https://github.com/kasuboski/otel_gleam/blob/0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5/knowledge/OTEL_BINDING_SPEC.md)
+substitute a local fork or duplicate its FFI. The related [binding contract](https://github.com/kasuboski/otel_gleam/blob/93b9d101426f7ab8e4ec28136acedf31d3e1e8f4/knowledge/OTEL_BINDING_SPEC.md)
 describes generic API behavior.
 
 Convention baselines are [GenAI snapshot `8a3767d6c5d09bc0917722720973c0c44182d960`](https://github.com/open-telemetry/semantic-conventions-genai/tree/8a3767d6c5d09bc0917722720973c0c44182d960),
@@ -98,16 +129,23 @@ physical connection drain.
 
 ## Propagation
 
-Use the official composite Trace Context/Baggage propagator with explicit
-context; Pig does not parse W3C headers. Remove every case-insensitive baggage
-header before proxy extraction. Before outbound injection remove all duplicate,
+Use the safe `otel_gleam_propagator_baggage` alongside Trace Context only in
+the subscriptions host; Pig does not parse W3C headers or change propagator
+globally. Proxy ingress extracts context and considers only the exact allowlist
+`session.id` and `gen_ai.conversation.id`; arbitrary baggage is never copied to
+spans. Each supplied, validated identity is explicitly promoted to attributes
+on every proxy span in that request, including server, logical inference and
+physical attempt spans; baggage itself is not automatically converted to span
+attributes. Identity values are preserved exactly, bounded, and rejected rather
+than truncated when invalid or oversized. U+FFFD is rejected, including when
+emitted by decoding malformed UTF-8. Before outbound injection remove all duplicate,
 mixed-case `traceparent`, `tracestate` and `baggage`; inject from the selected
 operation/attempt context, then remove baggage again. Preserve unrelated headers.
 Built-in providers inject at the `openai.do_stream` request seam for both API
 routes. Proxy attempts inject their HTTP child context. Do not install overlapping
 HTTP auto-instrumentation for proxy-owned sends unless explicitly coordinated.
-Directly configured baggage/custom propagators and throwing custom processors or
-loaders are not covered by the supported contract.
+Direct custom propagators and throwing custom processors or loaders are not
+covered by the supported contract.
 
 ## Host shutdown
 

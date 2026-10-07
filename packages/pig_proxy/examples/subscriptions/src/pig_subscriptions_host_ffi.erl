@@ -1,7 +1,7 @@
 %% Only SDK/application interop and the Erlang OS-signal behaviour live here.
 -module(pig_subscriptions_host_ffi).
 -behaviour(gen_event).
--export([bootstrap/0, configure_latitude/3, configure_bounded_latitude_exporter/0,
+-export([bootstrap/0, configure_otlp_exporter/0, configure_bounded_otlp_exporter/0,
          install_signals/1, stop_sdk/0,
          init/1, handle_event/2, handle_call/2]).
 
@@ -9,25 +9,22 @@ bootstrap() ->
     {ok, _} = application:ensure_all_started(opentelemetry_exporter),
     {ok, _} = application:ensure_all_started(pig_proxy),
     opentelemetry:set_text_map_propagator(
-        otel_propagator_text_map_composite:create([trace_context, baggage])),
+        otel_propagator_text_map_composite:create([trace_context, otel_gleam_propagator_baggage])),
     nil.
 
-configure_latitude(Endpoint, Key, Project) ->
-    %% This signal-specific URL must not gain another /v1/traces suffix.
-    application:set_env(opentelemetry_exporter, otlp_traces_endpoint, Endpoint),
-    application:set_env(opentelemetry_exporter, otlp_protocol, http_protobuf),
-    application:set_env(opentelemetry_exporter, otlp_compression, undefined),
-    application:set_env(opentelemetry_exporter, otlp_headers,
-        [{"Authorization", <<"Bearer ", Key/binary>>}, {"X-Latitude-Project", Project}]),
-    configure_bounded_latitude_exporter(),
+configure_otlp_exporter() ->
+    configure_bounded_otlp_exporter(),
     application:set_env(opentelemetry, resource,
         #{<<"service.name">> => <<"pig-proxy-subscriptions">>}),
-    application:set_env(opentelemetry, text_map_propagators, [trace_context, baggage]),
+    application:set_env(opentelemetry, text_map_propagators,
+                         [trace_context, otel_gleam_propagator_baggage]),
     {ok, _} = application:ensure_all_started(opentelemetry),
     nil.
 
-configure_bounded_latitude_exporter() ->
-    GlobalExporter = application:get_env(opentelemetry, traces_exporter),
+configure_bounded_otlp_exporter() ->
+    Effective = otel_configuration:merge_with_os(application:get_all_env(opentelemetry)),
+    EffectiveExporter = maps:get(traces_exporter, Effective),
+    GlobalExporter = configured_global_exporter(EffectiveExporter),
     case application:get_env(opentelemetry, span_processor) of
         {ok, Processor} ->
             application:set_env(opentelemetry, span_processor,
@@ -42,13 +39,28 @@ configure_bounded_latitude_exporter() ->
                         rewrite_processor({otel_batch_processor, #{}}, GlobalExporter))
             end
     end,
-    %% The SDK applies traces_exporter after processor options, so wrap its
-    %% official exporter too. Custom global exporters are left untouched.
+    %% Resolve OS configuration before wrapping: OS settings otherwise win over
+    %% application env again when the SDK merges its configuration at startup.
+    %% Remove only this exporter selector after resolving it, then install the
+    %% effective exporter in application env. All other OTEL_* settings remain.
     case GlobalExporter of
         {ok, Exporter} ->
-            application:set_env(opentelemetry, traces_exporter,
-                                rewrite_exporter(Exporter));
+            case is_bounded_exporter(Exporter) of
+                true ->
+                    os:unsetenv("OTEL_TRACES_EXPORTER"),
+                    application:set_env(opentelemetry, traces_exporter,
+                                        rewrite_exporter(Exporter));
+                false -> ok
+            end;
         undefined -> ok
+    end.
+
+configured_global_exporter(EffectiveExporter) ->
+    case {application:get_env(opentelemetry, traces_exporter),
+          os:getenv("OTEL_TRACES_EXPORTER")} of
+        {{ok, _}, _} -> {ok, EffectiveExporter};
+        {undefined, false} -> undefined;
+        {undefined, _} -> {ok, EffectiveExporter}
     end.
 
 rewrite_processor(batch, GlobalExporter) ->
@@ -73,18 +85,18 @@ rewrite_processor(Processor, _GlobalExporter) ->
     Processor.
 
 is_bounded_exporter({opentelemetry_exporter, _}) -> true;
-is_bounded_exporter({pig_subscriptions_bounded_exporter, _}) -> true;
+is_bounded_exporter({pig_subscriptions_bounded_otlp_exporter, _}) -> true;
 is_bounded_exporter(_) -> false.
 
 rewrite_processor_exporter(Options) ->
     case maps:get(exporter, Options, {opentelemetry_exporter, #{}}) of
         {opentelemetry_exporter, ExporterOptions} ->
-            Options#{exporter => {pig_subscriptions_bounded_exporter, ExporterOptions}};
+            Options#{exporter => {pig_subscriptions_bounded_otlp_exporter, ExporterOptions}};
         _ -> Options
     end.
 
 rewrite_exporter({opentelemetry_exporter, Options}) ->
-    {pig_subscriptions_bounded_exporter, Options};
+    {pig_subscriptions_bounded_otlp_exporter, Options};
 rewrite_exporter(Exporter) ->
     Exporter.
 

@@ -45,9 +45,8 @@ pub fn run() -> Nil {
   let probe_environment = [
     #("OPENAI_COMPAT_CODEX_TOKEN", None),
     #("ZAI_API_KEY", None),
-    #("LATITUDE_API_KEY", None),
-    #("LATITUDE_PROJECT", None),
-    #("PIG_LATITUDE_ENABLED", Some("false")),
+    #("OTEL_EXPORTER_OTLP_ENDPOINT", None),
+    #("OTEL_EXPORTER_OTLP_HEADERS", None),
   ]
   list.each([0, 1, 2, 3, 4, 5, 6], fn(scenario) {
     let eval =
@@ -68,6 +67,130 @@ pub fn run() -> Nil {
     assert !string.contains(output, "private-lifecycle-marker")
   })
   io.println("Subscriptions HTTP, OTLP and shutdown failure acceptance passed.")
+}
+
+/// Exercise both upstream routes through the real collector endpoint.
+pub fn run_real_collector(endpoint: String) -> Nil {
+  let context = child_vm.context()
+  let auth =
+    filepath.join(
+      tmp_dir(),
+      "pig-real-collector-no-auth-" <> child_vm.unique_suffix(),
+    )
+  let assert Ok(False) = simplifile.is_file(auth)
+  let codex = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(codex) })
+  let zai = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(zai) })
+  let catalog = upstream.start()
+  use <- exception.defer(fn() { upstream.stop(catalog) })
+  let port = child_vm.free_port()
+  let env = [
+    #("PIG_CHATGPT_MODELS", Some("fake-codex")),
+    #("PIG_ZAI_MODELS", Some("fake-zai")),
+    #("ZAI_API_KEY", Some("synthetic-zai-key")),
+    #("PIG_CHATGPT_BASE_URL", Some(base_url(upstream.port(codex)) <> "/codex")),
+    #("PIG_ZAI_BASE_URL", Some(base_url(upstream.port(zai)) <> "/v1")),
+    #("PIG_PROXY_PORT", Some(int.to_string(port))),
+    #(
+      "PIG_PROXY_MODELS_DEV_URL",
+      Some(base_url(upstream.port(catalog)) <> "/catalog"),
+    ),
+    #("PIG_CODEX_AUTH_PATH", Some(auth)),
+    #("OPENAI_COMPAT_CODEX_TOKEN", Some(fake_jwt())),
+    #("PIG_PROXY_CAPTURE_CONVERSATION", Some("false")),
+    #("OTEL_EXPORTER_OTLP_ENDPOINT", Some(endpoint)),
+    #("OTEL_EXPORTER_OTLP_PROTOCOL", Some("http/protobuf")),
+    #("OTEL_EXPORTER_OTLP_HEADERS", None),
+    #("OTEL_EXPORTER_OTLP_TRACES_HEADERS", None),
+    #("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+    #("OTEL_TRACES_EXPORTER", Some("otlp")),
+    #("OTEL_SDK_DISABLED", None),
+  ]
+  let host = child_vm.start(context, host_eval, env)
+  use <- exception.defer(fn() { child_vm.cleanup(host) })
+  child_vm.await_ready(host)
+  assert request_to(port, http.Get, "/health", "", []).status == 200
+  list.each(
+    [
+      #(
+        http.Post,
+        "/v1/responses",
+        "fake-codex",
+        False,
+        "00000000000000000000000000000011",
+      ),
+      #(
+        http.Post,
+        "/v1/responses",
+        "fake-codex",
+        True,
+        "00000000000000000000000000000012",
+      ),
+      #(
+        http.Post,
+        "/v1/chat/completions",
+        "fake-zai",
+        False,
+        "00000000000000000000000000000021",
+      ),
+      #(
+        http.Post,
+        "/v1/chat/completions",
+        "fake-zai",
+        True,
+        "00000000000000000000000000000022",
+      ),
+    ],
+    fn(scenario) {
+      let #(method, path, model, stream, trace) = scenario
+      let body =
+        case path {
+          "/v1/responses" ->
+            json.object([
+              #("model", json.string(model)),
+              #("stream", json.bool(stream)),
+              #("store", json.bool(False)),
+              #("instructions", json.string("test")),
+              #("input", json.string("collector-acceptance-private-marker")),
+            ])
+          _ ->
+            json.object([
+              #("model", json.string(model)),
+              #("stream", json.bool(stream)),
+              #(
+                "messages",
+                json.array(
+                  [
+                    json.object([
+                      #("role", json.string("user")),
+                      #(
+                        "content",
+                        json.string("collector-acceptance-private-marker"),
+                      ),
+                    ]),
+                  ],
+                  fn(value) { value },
+                ),
+              ),
+            ])
+        }
+        |> json.to_string
+      let response =
+        request_to(port, method, path, body, collector_identity_headers(trace))
+      assert response.status == 200
+      assert string.contains(response.body, "output-marker")
+    },
+  )
+  assert upstream.count(codex) == 2
+  assert upstream.count(zai) == 2
+  child_vm.signal_term(host)
+  let #(status, output) = child_vm.await_exit(host, 20_000)
+  assert status == 0
+  assert !string.contains(output, "collector-acceptance-private-marker")
+  io.println(
+    "Real collector host acceptance passed: both routes, buffered and streaming.",
+  )
 }
 
 fn run_gated_catalog_startup(context: child_vm.Context, auth: String) -> Nil {
@@ -105,7 +228,11 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
   use <- exception.defer(fn() { upstream.stop(zai) })
   let catalog = upstream.start()
   use <- exception.defer(fn() { upstream.stop(catalog) })
-  let receiver = otlp_receiver.start()
+  let receiver = case mode {
+    Conversation ->
+      otlp_receiver.start_authenticated("Bearer synthetic-otlp-key")
+    _ -> otlp_receiver.start()
+  }
   use <- exception.defer(fn() { otlp_receiver.stop(receiver) })
   let port = child_vm.free_port()
   let env = environment(auth, mode, port, codex, zai, catalog, receiver)
@@ -171,7 +298,7 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
           http.Post,
           "/v1/responses",
           body,
-          traced_headers(trace),
+          identity_headers(trace),
         )
       assert response.status == 200
       assert string.contains(response.body, "responses-output-marker")
@@ -227,7 +354,7 @@ fn run_host(context: child_vm.Context, auth: String, mode: Mode) -> Nil {
           http.Post,
           "/v1/chat/completions",
           body,
-          traced_headers(trace),
+          identity_headers(trace),
         )
       assert response.status == 200
       assert string.contains(response.body, "chat-output-marker")
@@ -305,8 +432,21 @@ fn environment(
     _ -> Some("false")
   }
   let endpoint = case mode {
-    Outage -> "http://127.0.0.1:1/v1/traces"
+    Outage -> "http://127.0.0.1:1"
+    Conversation -> otlp_receiver.traces_endpoint(receiver)
     _ -> otlp_receiver.endpoint(receiver)
+  }
+  let generic_endpoint = case mode {
+    Conversation -> "http://127.0.0.1:1"
+    _ -> endpoint
+  }
+  let generic_headers = case mode {
+    Conversation -> Some("Authorization=Bearer wrong-key")
+    _ -> None
+  }
+  let traces_headers = case mode {
+    Conversation -> Some("Authorization=Bearer synthetic-otlp-key")
+    _ -> None
   }
   let catalog_url = case mode {
     Outage -> "http://127.0.0.1:1/catalog"
@@ -326,16 +466,19 @@ fn environment(
     #("PIG_CODEX_AUTH_PATH", Some(auth)),
     #("OPENAI_COMPAT_CODEX_TOKEN", Some(fake_jwt())),
     #("PIG_PROXY_CAPTURE_CONVERSATION", capture),
-    #("PIG_LATITUDE_ENABLED", Some("true")),
-    #("LATITUDE_API_KEY", Some("synthetic-latitude-key")),
-    #("LATITUDE_PROJECT", Some("synthetic-project")),
-    #("PIG_LATITUDE_ENDPOINT", Some(endpoint)),
-    #("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", Some("http://127.0.0.1:1/wrong")),
-    #("OTEL_EXPORTER_OTLP_TRACES_HEADERS", Some("Authorization=wrong-key")),
-    #("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", Some("grpc")),
-    #("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", Some("gzip")),
-    #("OTEL_TRACES_EXPORTER", Some("console")),
-    #("OTEL_SDK_DISABLED", Some("true")),
+    #("OTEL_EXPORTER_OTLP_ENDPOINT", Some(generic_endpoint)),
+    #("OTEL_EXPORTER_OTLP_PROTOCOL", Some("http/protobuf")),
+    #("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", case mode {
+      Conversation -> Some(endpoint)
+      _ -> None
+    }),
+    #("OTEL_EXPORTER_OTLP_HEADERS", generic_headers),
+    #("OTEL_EXPORTER_OTLP_TRACES_HEADERS", traces_headers),
+    #("OTEL_TRACES_EXPORTER", case mode {
+      Conversation -> Some("otlp")
+      _ -> None
+    }),
+    #("OTEL_SDK_DISABLED", None),
   ]
 }
 
@@ -370,7 +513,7 @@ fn await_catalog_pricing(
       http.Post,
       "/v1/responses",
       codex_body,
-      traced_headers("00000000000000000000000000000031"),
+      identity_headers("00000000000000000000000000000031"),
     )
   assert codex_response.status == 200
   let codex_request =
@@ -407,7 +550,7 @@ fn await_catalog_pricing(
       http.Post,
       "/v1/chat/completions",
       zai_body,
-      traced_headers("00000000000000000000000000000032"),
+      identity_headers("00000000000000000000000000000032"),
     )
   assert zai_response.status == 200
   let zai_request =
@@ -455,6 +598,7 @@ fn check_forward(
   let recorded = upstream.take(fixture)
   assert recorded.path == path
   assert header(recorded, "authorization") == Some(auth)
+  assert header(recorded, "x-otlp-auth") == None
   let model_stream = {
     use model <- decode.field("model", decode.string)
     use stream <- decode.field("stream", decode.bool)
@@ -508,7 +652,6 @@ fn check_models(port: Int) -> Nil {
     [
       "synthetic-zai-key",
       fake_jwt(),
-      "synthetic-latitude-key",
       "127.0.0.1",
       "base_url",
       "target_id",
@@ -585,6 +728,68 @@ fn json_headers() -> List(#(String, String)) {
 
 fn traced_headers(trace: String) -> List(#(String, String)) {
   [#("traceparent", "00-" <> trace <> "-1111111111111111-01"), ..json_headers()]
+}
+
+fn collector_identity_headers(trace: String) -> List(#(String, String)) {
+  let identity = case trace {
+    "00000000000000000000000000000011" -> [
+      #("baggage", "session.id=collector-session"),
+    ]
+    "00000000000000000000000000000012" -> [
+      #("baggage", "gen_ai.conversation.id=collector-conversation"),
+    ]
+    "00000000000000000000000000000021" -> [
+      #(
+        "baggage",
+        "session.id=collector-same,gen_ai.conversation.id=collector-same",
+      ),
+    ]
+    "00000000000000000000000000000022" -> [
+      #(
+        "Baggage",
+        "session.id=discarded,session.id=caf%C3%A9%20%E2%98%83,gen_ai.conversation.id=old,gen_ai.conversation.id=separate-%E2%98%83,unknown.private=never-export",
+      ),
+    ]
+    _ -> []
+  }
+  list.append(traced_headers(trace), identity)
+}
+
+fn identity_headers(trace: String) -> List(#(String, String)) {
+  let identity = case trace {
+    "00000000000000000000000000000011" -> [
+      #("baggage", "session.id=responses-session"),
+    ]
+    "00000000000000000000000000000012" -> [
+      #("baggage", "gen_ai.conversation.id=responses-conversation"),
+    ]
+    "00000000000000000000000000000021" -> [
+      #(
+        "baggage",
+        "session.id=same-identity,gen_ai.conversation.id=same-identity",
+      ),
+    ]
+    "00000000000000000000000000000022" -> [
+      #(
+        "Baggage",
+        "session.id=discarded,session.id=caf%C3%A9%20%E2%98%83,gen_ai.conversation.id=old,gen_ai.conversation.id=separate-%E2%98%83,unknown.private=never-export",
+      ),
+    ]
+    "00000000000000000000000000000032" -> [
+      #(
+        "Baggage",
+        "session.id=,session.id=%0A,session.id="
+          <> oversized_identity()
+          <> ",session.id=%EF%BF%BD,gen_ai.conversation.id=%EF%BF%BD,gen_ai.conversation.id=%00",
+      ),
+    ]
+    _ -> []
+  }
+  list.append(traced_headers(trace), identity)
+}
+
+fn oversized_identity() -> String {
+  list.repeat("x", 1025) |> string.concat
 }
 
 fn fake_jwt() -> String {

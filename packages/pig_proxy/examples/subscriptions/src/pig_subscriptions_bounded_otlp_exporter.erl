@@ -1,5 +1,5 @@
 %% Subscription-host adapter: cap each OTLP request without changing SDK queueing.
--module(pig_subscriptions_bounded_exporter).
+-module(pig_subscriptions_bounded_otlp_exporter).
 
 -export([init/1, export/3, export/4, shutdown/1]).
 

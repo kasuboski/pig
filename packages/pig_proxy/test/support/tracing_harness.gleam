@@ -26,6 +26,12 @@ pub type Calls
 
 pub type Call {
   Started(pig_otel.Span, context.Context, pig_otel.Operation)
+  StartedWithAttributes(
+    pig_otel.Span,
+    context.Context,
+    pig_otel.Operation,
+    List(attribute.Attribute),
+  )
   Finished(pig_otel.Span, pig_otel.Outcome)
   Annotated(pig_otel.Span, List(attribute.Attribute))
 }
@@ -224,6 +230,8 @@ fn attributes_for(
     list.filter_map(events, fn(event) {
       case event {
         Annotated(event_span, attrs) if event_span == span -> Ok(attrs)
+        StartedWithAttributes(event_span, _, _, attrs) if event_span == span ->
+          Ok(attrs)
         _ -> Error(Nil)
       }
     }),

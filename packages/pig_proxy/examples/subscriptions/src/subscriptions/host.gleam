@@ -26,7 +26,7 @@ pub fn main() -> Nil {
 }
 
 fn start(settings: config.Settings) -> Nil {
-  let config.Settings(proxy:, latitude:) = settings
+  let config.Settings(proxy:, otlp:) = settings
   case credentials_available(proxy.codex_seed_token) {
     False -> {
       io.println(
@@ -36,14 +36,12 @@ fn start(settings: config.Settings) -> Nil {
     }
     True -> Nil
   }
-  lifecycle.clear_otel_environment()
   bootstrap()
   let subject = process.new_subject()
   install_signals(fn() { process.send(subject, ShutdownSignal) })
-  case latitude {
-    Some(config.Latitude(endpoint:, api_key:, project:)) ->
-      configure_latitude(endpoint, api_key, project)
-    _ -> Nil
+  case otlp {
+    Some(_) -> configure_otlp_exporter()
+    None -> Nil
   }
   let state = runtime.start(proxy)
   case runtime.await_catalog(state, catalog_startup_timeout_ms) {
@@ -78,8 +76,8 @@ fn halt(status: Int) -> Nil
 @external(erlang, "pig_subscriptions_host_ffi", "bootstrap")
 fn bootstrap() -> Nil
 
-@external(erlang, "pig_subscriptions_host_ffi", "configure_latitude")
-fn configure_latitude(endpoint: String, key: String, project: String) -> Nil
+@external(erlang, "pig_subscriptions_host_ffi", "configure_otlp_exporter")
+fn configure_otlp_exporter() -> Nil
 
 fn credentials_available(seed: Option(String)) -> Bool {
   // Match runtime's persisted-first decision, including parse/read failures.

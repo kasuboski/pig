@@ -4,6 +4,7 @@ services:
     build:
       context: ../../../..
       dockerfile: packages/pig_proxy/examples/subscriptions/Dockerfile
+    # Forwards standard OTEL_EXPORTER_OTLP_* settings from the same private env file.
     env_file:
       - ${PIG_SUBSCRIPTIONS_ENV_FILE:-.env}
     environment:

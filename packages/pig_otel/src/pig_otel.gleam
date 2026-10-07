@@ -92,12 +92,35 @@ pub fn tracing_available(backend: Backend) -> Bool {
 
 /// Start without installing process-current context. The caller owns completion.
 pub fn start(backend: Backend, parent: Context, operation: Operation) -> Span {
+  start_inner(backend, parent, operation, [])
+}
+
+/// Start with additional attributes included in the span's initial options.
+/// Use this for identity or other attributes that must be visible to samplers
+/// and span-start processors. Existing callers can continue using `start`.
+pub fn start_with_attributes(
+  backend: Backend,
+  parent: Context,
+  operation: Operation,
+  additional_attributes: List(Attribute),
+) -> Span {
+  start_inner(backend, parent, operation, additional_attributes)
+}
+
+fn start_inner(
+  backend: Backend,
+  parent: Context,
+  operation: Operation,
+  additional_attributes: List(Attribute),
+) -> Span {
   case backend {
     NoTracing -> ParentOnly(parent)
     Enabled(tracer) -> {
       let #(name, kind, attributes) = describe(operation)
       let assert Ok(name) = trace.span_name(name)
-      let options = trace.options(kind) |> trace.attributes(attributes)
+      let options =
+        trace.options(kind)
+        |> trace.attributes(list.append(attributes, additional_attributes))
       Owned(trace.start(tracer, name, trace.Explicit(parent), options))
     }
   }

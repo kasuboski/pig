@@ -7,6 +7,7 @@ with_inference_annotations(Work) ->
     Parent = self(),
     Recorder = spawn_link(fun() -> record(Parent, #{}, #{}, []) end),
     erlang:trace_pattern({pig_otel, start, 3}, [{'_', [], [{return_trace}]}], [local]),
+    erlang:trace_pattern({pig_otel, start_with_attributes, 4}, [{'_', [], [{return_trace}]}], []),
     erlang:trace_pattern({pig_otel, annotate, 2}, true, [local]),
     erlang:trace(all, true, [call, set_on_spawn, {tracer, Recorder}]),
     try
@@ -19,6 +20,7 @@ with_inference_annotations(Work) ->
     after
         erlang:trace(all, false, [call, set_on_spawn]),
         erlang:trace_pattern({pig_otel, start, 3}, false, [local]),
+        erlang:trace_pattern({pig_otel, start_with_attributes, 4}, false, []),
         erlang:trace_pattern({pig_otel, annotate, 2}, false, [local]),
         Recorder ! stop
     end.
@@ -29,6 +31,11 @@ is_inference(_) -> false.
 
 record(Parent, Pending, Spans, Annotations) ->
     receive
+        {trace, Pid, call, {pig_otel, start_with_attributes, [_, _, Operation, _]}} ->
+            record(Parent, Pending#{Pid => Operation}, Spans, Annotations);
+        {trace, Pid, return_from, {pig_otel, start_with_attributes, 4}, Span} ->
+            Operation = maps:get(Pid, Pending),
+            record(Parent, maps:remove(Pid, Pending), Spans#{Span => Operation}, Annotations);
         {trace, Pid, call, {pig_otel, start, [_, _, Operation]}} ->
             record(Parent, Pending#{Pid => Operation}, Spans, Annotations);
         {trace, Pid, return_from, {pig_otel, start, 3}, Span} ->
