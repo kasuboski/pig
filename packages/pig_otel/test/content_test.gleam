@@ -26,6 +26,10 @@ pub fn input_responses_ordered_test() {
   content.check_content("input_responses_ordered")
 }
 
+pub fn input_responses_leading_developer_as_instructions_test() {
+  content.check_content("input_responses_leading_developer")
+}
+
 pub fn input_responses_native_media_test() {
   content.check_content("input_responses_native_media")
   content.check_content("input_responses_native_media_streaming")

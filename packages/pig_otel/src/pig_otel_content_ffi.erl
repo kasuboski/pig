@@ -295,19 +295,31 @@ project(O, chat_completions, V, input) ->
     {Tools, F2} = tools(O, V, chat_completions),
     {[{<<"gen_ai.input.messages">>, Messages}] ++ Tools, F1 orelse F2};
 project(O, responses, V, input) ->
-    {Messages, F1} = case required(V, <<"input">>) of
-        Text when is_binary(Text) ->
-            {Part, F} = text(O, Text), {[message(<<"user">>, [Part])], F};
-        Items -> response_inputs(O, bounded_list(Items, 64))
-    end,
-    {Instructions, F2} = case maps:get(<<"instructions">>, V, null) of
-        null -> {[], false};
-        B when is_binary(B) ->
-            {P, F3} = text(O, B), {[{<<"gen_ai.system_instructions">>, [P]}], F3};
+    {Messages, InputFiltered, FallbackInstructions} =
+        case {required(V, <<"input">>), maps:find(<<"instructions">>, V)} of
+            {Text, error} when is_binary(Text) ->
+                {Part, TextFiltered} = text(O, Text),
+                {[message(<<"user">>, [Part])], TextFiltered, []};
+            {Text, {ok, _}} when is_binary(Text) ->
+                {Part, ExplicitTextFiltered} = text(O, Text),
+                {[message(<<"user">>, [Part])], ExplicitTextFiltered, []};
+            {Items, error} ->
+                response_inputs_with_developer_instruction(O, bounded_list(Items, 64));
+            {Items, {ok, _}} ->
+                {Projected, ExplicitInputFiltered} = response_inputs(O, bounded_list(Items, 64)),
+                {Projected, ExplicitInputFiltered, []}
+        end,
+    {Instructions, InstructionsFiltered} = case maps:find(<<"instructions">>, V) of
+        error -> {FallbackInstructions, false};
+        {ok, null} -> {[], false};
+        {ok, B} when is_binary(B) ->
+            {P, ExplicitInstructionsFiltered} = text(O, B),
+            {[{<<"gen_ai.system_instructions">>, [P]}], ExplicitInstructionsFiltered};
         _ -> throw(unsupported_shape)
     end,
-    {Tools, F4} = tools(O, V, responses),
-    {[{<<"gen_ai.input.messages">>, Messages}] ++ Instructions ++ Tools, F1 orelse F2 orelse F4};
+    {Tools, ToolsFiltered} = tools(O, V, responses),
+    {[{<<"gen_ai.input.messages">>, Messages}] ++ Instructions ++ Tools,
+     InputFiltered orelse InstructionsFiltered orelse ToolsFiltered};
 project(O, chat_completions, V, output) ->
     Choices = bounded_list(required(V, <<"choices">>), 16),
     ensure(Choices =/= [], incomplete),
@@ -402,6 +414,25 @@ response_inputs(O, Items) ->
             _ -> {[], true}
         end
     end, Items).
+
+response_inputs_with_developer_instruction(O, Items) ->
+    {MessagesRev, Filtered, _Found, Instructions} = lists:foldl(fun(I, {Acc, F, Found, Instr}) ->
+        case not Found andalso is_developer_message(I) of
+            true ->
+                {M, MF} = chat_message(O, I),
+                Parts = maps:get(<<"parts">>, M),
+                {Acc, F orelse MF, true,
+                 [{<<"gen_ai.system_instructions">>, Parts}]};
+            false ->
+                {Projected, IF} = response_inputs(O, [I]),
+                {lists:reverse(Projected, Acc), F orelse IF, Found, Instr}
+        end
+    end, {[], false, false, []}, Items),
+    {lists:reverse(MessagesRev), Filtered, Instructions}.
+
+is_developer_message(#{<<"role">> := <<"developer">>} = Item) ->
+    maps:get(<<"type">>, Item, <<"message">>) =:= <<"message">>;
+is_developer_message(_) -> false.
 
 response_output(O, Items) ->
     flat_filtered(fun(I) ->

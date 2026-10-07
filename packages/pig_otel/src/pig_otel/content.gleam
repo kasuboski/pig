@@ -47,7 +47,9 @@ pub fn normalized_output(
 @external(erlang, "pig_otel_content_ffi", "incomplete")
 pub fn incomplete() -> Capture
 
-/// Project an effective request, including separate Responses instructions.
+/// Project an effective request. Responses top-level `instructions` are kept
+/// separate; when absent, the first developer input message is projected as
+/// system instructions. Other API shapes preserve developer messages as input.
 @external(erlang, "pig_otel_content_ffi", "input")
 pub fn input(options: Options, api: pig_otel.Api, body: BitArray) -> Capture
 

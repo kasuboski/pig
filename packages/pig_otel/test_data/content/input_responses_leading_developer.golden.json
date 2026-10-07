@@ -1,0 +1,30 @@
+{
+  "pig.content.input.status": "captured",
+  "pig.content.input.reason": "complete",
+  "gen_ai.input.messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "content": "Hello"
+        }
+      ]
+    },
+    {
+      "role": "developer",
+      "parts": [
+        {
+          "type": "text",
+          "content": "Later developer note"
+        }
+      ]
+    }
+  ],
+  "gen_ai.system_instructions": [
+    {
+      "type": "text",
+      "content": "Agent system prompt"
+    }
+  ]
+}
