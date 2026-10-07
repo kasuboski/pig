@@ -280,9 +280,12 @@ fn otlp(lookup: fn(String) -> Option(String)) -> Result(Option(Otlp), String) {
   let traces_exporter = lookup("OTEL_TRACES_EXPORTER")
   use _ <- result.try(validate_traces_exporter(traces_exporter))
   let enabled =
-    endpoint != None
-    || traces_endpoint != None
-    || traces_exporter == Some("otlp")
+    traces_exporter != Some("none")
+    && {
+      endpoint != None
+      || traces_endpoint != None
+      || traces_exporter == Some("otlp")
+    }
   case enabled {
     False -> Ok(None)
     True -> Ok(Some(Otlp(endpoint:, traces_endpoint:, protocol:)))

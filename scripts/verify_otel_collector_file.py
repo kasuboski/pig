@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 def attributes(items):
+    """Decode OTLP attribute values into a key/value mapping."""
     result = {}
     for item in items:
         value = item.get("value", {})
@@ -24,8 +25,9 @@ def attributes(items):
 
 
 def main(path):
+    """Assert topology, identities, usage, and privacy in Collector evidence."""
     spans = []
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         batch = json.loads(line)
         for resource_spans in batch.get("resourceSpans", []):
             resource = attributes(resource_spans.get("resource", {}).get("attributes", []))

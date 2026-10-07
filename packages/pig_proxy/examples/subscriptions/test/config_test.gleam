@@ -302,6 +302,35 @@ pub fn traces_exporter_values_match_sdk_raw_environment_test() {
   })
 }
 
+pub fn traces_exporter_none_overrides_endpoints_test() {
+  list.each(
+    [
+      [#("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318")],
+      [
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/v1/traces",
+        ),
+      ],
+      [
+        #("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318"),
+        #(
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+          "https://collector.example/v1/traces",
+        ),
+      ],
+    ],
+    fn(endpoints) {
+      let assert Ok(config.Settings(otlp: None, ..)) =
+        check_config(
+          valid()
+          |> list.append(endpoints)
+          |> list.append([#("OTEL_TRACES_EXPORTER", "none")]),
+        )
+    },
+  )
+}
+
 pub fn otlp_requires_endpoint_test() {
   let assert Error(protocol_error) =
     check_config(

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Opt-in real OpenTelemetry Collector acceptance; requires Docker and no credentials.
 set -euo pipefail
+command -v rg >/dev/null 2>&1 || {
+  echo 'Required command not found: rg' >&2
+  exit 1
+}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 image='otel/opentelemetry-collector-contrib:0.123.0@sha256:e39311df1f3d941923c00da79ac7ba6269124a870ee87e3c3ad24d60f8aee4d2'
