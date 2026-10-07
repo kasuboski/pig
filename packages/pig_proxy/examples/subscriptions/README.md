@@ -189,10 +189,13 @@ omits unsupported content; it is not raw HTTP-body recording or a general PII
 sanitizer. The subscriptions host opts in to the safe `otel_gleam_propagator_baggage`
 propagator alongside Trace Context; this does not alter other Pig hosts. Proxy
 tracing promotes only `session.id` and `gen_ai.conversation.id` baggage values.
-Values are exact and bounded: invalid, oversized, or U+FFFD-containing values
-(including replacement characters produced while decoding malformed UTF-8) are
-rejected rather than truncated. Other baggage is never copied to spans, and
-outbound baggage is stripped. Review the
+Each supplied, validated identity is explicitly added to every proxy span for
+that request, including server, logical inference and physical attempt spans;
+baggage is not automatically converted to span attributes. Values are exact and
+bounded: invalid, oversized, or U+FFFD-containing values (including replacement
+characters produced while decoding malformed UTF-8) are rejected rather than
+truncated. Other baggage is never copied to spans, and outbound baggage is
+stripped. Review the
 [capture/privacy contract](../../../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
 
 The host's default directional budgets are input 4 MiB source / 2 MiB serialized

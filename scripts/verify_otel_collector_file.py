@@ -73,13 +73,11 @@ def main(path):
                 assert "session.id" not in span_attrs
             else:
                 assert span_attrs.get("session.id") == session_id
-            if span is not logical:
+            if conversation_id is None:
                 assert "gen_ai.conversation.id" not in span_attrs
+            else:
+                assert span_attrs.get("gen_ai.conversation.id") == conversation_id
             assert "unknown.private" not in span_attrs
-        if conversation_id is None:
-            assert "gen_ai.conversation.id" not in attrs
-        else:
-            assert attrs.get("gen_ai.conversation.id") == conversation_id
         assert attrs["gen_ai.request.model"] == model
         assert attrs["gen_ai.response.model"] == model
         assert attrs["gen_ai.usage.input_tokens"] == 11

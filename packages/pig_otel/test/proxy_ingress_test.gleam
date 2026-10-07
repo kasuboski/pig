@@ -1,6 +1,5 @@
 //// Proxy-specific baggage extraction boundary tests.
 
-import gleam/option.{None, Some}
 import gleeunit/should
 import otel/context
 import pig_otel
@@ -18,13 +17,10 @@ pub fn proxy_ingress_extracts_validated_identity_and_clears_baggage_test() {
         ),
       ])
     should.equal(has_baggage(parent), False)
-    should.equal(
-      identity.for_span(extracted, identity.LogicalInference),
-      identity.Enrichment(
-        Some(must_identifier("session-1")),
-        Some(must_identifier("conversation-1")),
-      ),
-    )
+    should.equal(identity.attributes(extracted), [
+      pig_otel.string_attribute("session.id", "session-1"),
+      pig_otel.string_attribute("gen_ai.conversation.id", "conversation-1"),
+    ])
   })
 }
 
@@ -38,18 +34,14 @@ pub fn proxy_ingress_keeps_valid_trace_when_identity_is_invalid_or_missing_test(
     should.equal(pig_otel.outbound(parent, []), [
       #("traceparent", harness.parent_header),
     ])
-    should.equal(
-      identity.for_span(extracted, identity.LogicalInference),
-      identity.Enrichment(None, Some(must_identifier("ok"))),
-    )
+    should.equal(identity.attributes(extracted), [
+      pig_otel.string_attribute("gen_ai.conversation.id", "ok"),
+    ])
 
     let #(invalid_parent, no_identity) =
       proxy_ingress.extract([#("traceparent", "malformed")])
     should.equal(pig_otel.outbound(invalid_parent, []), [])
-    should.equal(
-      identity.for_span(no_identity, identity.LogicalInference),
-      identity.Enrichment(None, None),
-    )
+    should.equal(identity.attributes(no_identity), [])
   })
 }
 
@@ -59,16 +51,10 @@ pub fn official_baggage_duplicate_resolution_is_last_valid_value_test() {
       proxy_ingress.extract([
         #("baggage", "session.id=first,session.id=last"),
       ])
-    should.equal(
-      identity.for_span(extracted, identity.LogicalInference),
-      identity.Enrichment(Some(must_identifier("last")), None),
-    )
+    should.equal(identity.attributes(extracted), [
+      pig_otel.string_attribute("session.id", "last"),
+    ])
   })
-}
-
-fn must_identifier(value: String) -> identity.Identifier {
-  let assert Ok(identifier) = identity.identifier(value)
-  identifier
 }
 
 @external(erlang, "pig_otel_test_ffi", "has_baggage")

@@ -187,9 +187,11 @@ retention and exporter/backend safeguards. Dedicated headers, credentials, raw
 URLs and media fields are not copied as conversation attributes, but that does
 not sanitize secrets appearing in conversation text. Proxy tracing promotes only
 allowlisted `session.id` and `gen_ai.conversation.id` baggage values as exact,
-bounded identity attributes; it rejects invalid/oversized values and any value
-containing U+FFFD. Arbitrary baggage is never copied to spans. Outbound baggage
-continues to be stripped.
+bounded identity attributes on every proxy span for that request, including
+server, logical inference and physical attempt spans. It rejects invalid or
+oversized values and any value containing U+FFFD. Baggage is not automatically
+converted to span attributes, arbitrary baggage is never copied to spans, and
+outbound baggage continues to be stripped.
 
 Pig uses the existing API-only binding and does not configure the host SDK,
 sampler, exporter, attribute limits, or collector. Host SDK string truncation can

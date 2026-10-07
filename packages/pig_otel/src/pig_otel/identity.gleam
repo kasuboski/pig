@@ -1,6 +1,7 @@
 //// Validated Pig session/conversation identity and span enrichment policy.
 //// This module is independent of baggage parsing and transport concerns.
 
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -30,51 +31,28 @@ pub opaque type Identity {
   Identity(session_id: Option(Identifier), conversation_id: Option(Identifier))
 }
 
-/// Span classes currently relevant to proxy identity enrichment.
-pub type SpanRole {
-  ProxyServer
-  LogicalInference
-  PhysicalAttempt
-}
-
-/// Identity projection selected for a particular span role.
-/// A session is carried on every proxy span; conversation is semantic only.
-pub type Enrichment {
-  Enrichment(
-    session_id: Option(Identifier),
-    conversation_id: Option(Identifier),
-  )
-}
-
 /// Validate and retain the exact input; reject instead of trimming, hashing,
 /// normalizing, or truncating it. Control means Unicode C0/C1 controls.
 pub fn identifier(value: String) -> Result(Identifier, ValidationError) {
-  let size = string.byte_size(value)
-  case string.is_empty(value) {
-    True -> Error(Empty)
-    False ->
-      case size > max_identifier_bytes {
-        True -> Error(ExceedsByteLimit)
-        False ->
-          case
-            list.any(string.to_utf_codepoints(value), fn(codepoint) {
-              string.utf_codepoint_to_int(codepoint) == 65_533
-            })
-          {
-            True -> Error(ContainsReplacementCharacter)
-            False ->
-              case
-                list.any(string.to_utf_codepoints(value), fn(codepoint) {
-                  let codepoint = string.utf_codepoint_to_int(codepoint)
-                  codepoint <= 31 || { codepoint >= 127 && codepoint <= 159 }
-                })
-              {
-                True -> Error(ContainsControlCharacter)
-                False -> Ok(Identifier(value))
-              }
-          }
-      }
-  }
+  use <- bool.guard(when: string.is_empty(value), return: Error(Empty))
+  use <- bool.guard(
+    when: string.byte_size(value) > max_identifier_bytes,
+    return: Error(ExceedsByteLimit),
+  )
+  use <- bool.guard(
+    when: list.any(string.to_utf_codepoints(value), fn(codepoint) {
+      string.utf_codepoint_to_int(codepoint) == 65_533
+    }),
+    return: Error(ContainsReplacementCharacter),
+  )
+  use <- bool.guard(
+    when: list.any(string.to_utf_codepoints(value), fn(codepoint) {
+      let codepoint = string.utf_codepoint_to_int(codepoint)
+      codepoint <= 31 || { codepoint >= 127 && codepoint <= 159 }
+    }),
+    return: Error(ContainsControlCharacter),
+  )
+  Ok(Identifier(value))
 }
 
 /// A request with no session or conversation identity.
@@ -127,50 +105,27 @@ pub fn with_native_conversation(
   }
 }
 
-/// Pure per-span identity projection. Session appears on server, logical, and
-/// physical proxy spans; conversation appears only on logical inference spans.
-pub fn for_span(identity: Identity, role: SpanRole) -> Enrichment {
-  case identity {
-    Identity(session_id:, conversation_id:) ->
-      Enrichment(session_id:, conversation_id: case role {
-        LogicalInference -> conversation_id
-        ProxyServer | PhysicalAttempt -> None
-      })
+/// Convert the identity directly to Pig-owned OTel attributes, with no
+/// arbitrary attribute map and no dependency on baggage APIs.
+pub fn attributes(identity: Identity) -> List(Attribute) {
+  let Identity(session_id, conversation_id) = identity
+  let session = case session_id {
+    None -> []
+    Some(identifier) -> [
+      pig_otel.string_attribute("session.id", value(identifier)),
+    ]
   }
-}
-
-/// Convert the policy projection to Pig-owned OTel attributes, with no arbitrary
-/// attribute map and no dependency on baggage APIs.
-pub fn attributes(enrichment: Enrichment) -> List(Attribute) {
-  case enrichment {
-    Enrichment(session_id, conversation_id) -> {
-      let session = case session_id {
-        None -> []
-        Some(value) -> [
-          pig_otel.string_attribute("session.id", value_string(value)),
-        ]
-      }
-      let conversation = case conversation_id {
-        None -> []
-        Some(value) -> [
-          pig_otel.string_attribute(
-            "gen_ai.conversation.id",
-            value_string(value),
-          ),
-        ]
-      }
-      list.append(session, conversation)
-    }
+  let conversation = case conversation_id {
+    None -> []
+    Some(identifier) -> [
+      pig_otel.string_attribute("gen_ai.conversation.id", value(identifier)),
+    ]
   }
+  list.append(session, conversation)
 }
 
 /// Read the exact accepted identifier, for policy adapters and callers.
 pub fn value(identifier: Identifier) -> String {
   let Identifier(value) = identifier
   value
-}
-
-fn value_string(value: Identifier) -> String {
-  let Identifier(raw) = value
-  raw
 }

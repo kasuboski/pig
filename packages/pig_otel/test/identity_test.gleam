@@ -7,39 +7,26 @@ import gleeunit/should
 import pig_otel
 import pig_otel/identity
 
-pub fn absent_identity_and_independent_ids_test() {
-  let absent = identity.for_span(identity.empty(), identity.LogicalInference)
-  should.equal(absent, identity.Enrichment(None, None))
+pub fn identity_attributes_include_both_independent_ids_test() {
+  should.equal(identity.attributes(identity.empty()), [])
 
   let assert Ok(session) = identity.identifier("same")
   let assert Ok(conversation) = identity.identifier("same")
-  let projection =
-    identity.for_span(
-      identity.new(Some(session), Some(conversation)),
-      identity.LogicalInference,
-    )
-  should.equal(
-    projection,
-    identity.Enrichment(Some(session), Some(conversation)),
-  )
+  let projected =
+    identity.attributes(identity.new(Some(session), Some(conversation)))
+  should.equal(projected, [
+    pig_otel.string_attribute("session.id", "same"),
+    pig_otel.string_attribute("gen_ai.conversation.id", "same"),
+  ])
 
   let assert Ok(other) = identity.identifier("different")
-  let independent =
-    identity.for_span(
-      identity.new(Some(session), Some(other)),
-      identity.LogicalInference,
-    )
-  should.equal(independent, identity.Enrichment(Some(session), Some(other)))
-
-  let no_derived_conversation =
-    identity.for_span(
-      identity.new(Some(session), None),
-      identity.LogicalInference,
-    )
-  should.equal(
-    no_derived_conversation,
-    identity.Enrichment(Some(session), None),
-  )
+  should.equal(identity.attributes(identity.new(Some(session), Some(other))), [
+    pig_otel.string_attribute("session.id", "same"),
+    pig_otel.string_attribute("gen_ai.conversation.id", "different"),
+  ])
+  should.equal(identity.attributes(identity.new(Some(session), None)), [
+    pig_otel.string_attribute("session.id", "same"),
+  ])
 }
 
 pub fn identifier_preserves_exact_unicode_and_escaped_text_test() {
@@ -85,6 +72,18 @@ pub fn identifier_rejects_empty_and_unicode_control_characters_test() {
   )
 }
 
+pub fn identifier_validation_preserves_error_precedence_test() {
+  should.equal(identity.identifier(""), Error(identity.Empty))
+  should.equal(
+    identity.identifier(string.repeat("a", 1023) <> "\u{FFFD}\n"),
+    Error(identity.ExceedsByteLimit),
+  )
+  should.equal(
+    identity.identifier("replacement\u{FFFD}\n"),
+    Error(identity.ContainsReplacementCharacter),
+  )
+}
+
 pub fn native_conversation_precedes_validated_baggage_value_test() {
   let assert Ok(session) = identity.identifier("session")
   let assert Ok(baggage_conversation) =
@@ -94,33 +93,25 @@ pub fn native_conversation_precedes_validated_baggage_value_test() {
   let baggage = identity.new(Some(session), Some(baggage_conversation))
   let native =
     identity.with_native_conversation(baggage, Some(native_conversation))
-  let identity.Enrichment(session_id:, conversation_id:) =
-    identity.for_span(native, identity.LogicalInference)
-  should.equal(session_id, Some(session))
-  should.equal(conversation_id, Some(native_conversation))
+  should.equal(identity.attributes(native), [
+    pig_otel.string_attribute("session.id", "session"),
+    pig_otel.string_attribute("gen_ai.conversation.id", "native-conversation"),
+  ])
 
   let unchanged = identity.with_native_conversation(baggage, None)
-  let identity.Enrichment(_, conversation_id) =
-    identity.for_span(unchanged, identity.LogicalInference)
-  should.equal(conversation_id, Some(baggage_conversation))
+  should.equal(identity.attributes(unchanged), [
+    pig_otel.string_attribute("session.id", "session"),
+    pig_otel.string_attribute("gen_ai.conversation.id", "baggage-conversation"),
+  ])
 }
 
-pub fn enrichment_is_role_specific_and_metadata_only_test() {
+pub fn attributes_include_session_and_conversation_together_test() {
   let assert Ok(session) = identity.identifier("session")
   let assert Ok(conversation) = identity.identifier("conversation")
-  let value = identity.new(Some(session), Some(conversation))
-
-  let server = identity.for_span(value, identity.ProxyServer)
-  should.equal(server, identity.Enrichment(Some(session), None))
-  let logical = identity.for_span(value, identity.LogicalInference)
-  should.equal(logical, identity.Enrichment(Some(session), Some(conversation)))
-  let attempt = identity.for_span(value, identity.PhysicalAttempt)
-  should.equal(attempt, identity.Enrichment(Some(session), None))
-
-  should.equal(list.length(identity.attributes(server)), 1)
-  should.equal(list.length(identity.attributes(logical)), 2)
-  should.equal(list.length(identity.attributes(attempt)), 1)
-  should.equal(identity.attributes(logical), [
+  let attributes =
+    identity.attributes(identity.new(Some(session), Some(conversation)))
+  should.equal(list.length(attributes), 2)
+  should.equal(attributes, [
     pig_otel.string_attribute("session.id", "session"),
     pig_otel.string_attribute("gen_ai.conversation.id", "conversation"),
   ])

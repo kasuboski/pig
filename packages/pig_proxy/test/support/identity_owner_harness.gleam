@@ -90,13 +90,10 @@ fn assert_extraction(session: String, conversation: String) -> Nil {
         "session.id=" <> session <> ",gen_ai.conversation.id=" <> conversation,
       ),
     ])
-  should.equal(
-    identity.attributes(identity.for_span(extracted, identity.LogicalInference)),
-    [
-      pig_otel.string_attribute("session.id", session),
-      pig_otel.string_attribute("gen_ai.conversation.id", conversation),
-    ],
-  )
+  should.equal(identity.attributes(extracted), [
+    pig_otel.string_attribute("session.id", session),
+    pig_otel.string_attribute("gen_ai.conversation.id", conversation),
+  ])
 }
 
 fn register(
@@ -151,27 +148,22 @@ fn assert_identity(
   let relevant =
     list.filter_map(events, fn(event) {
       case event {
-        tracing_check.StartedWithAttributes(span, _, operation, _) -> {
-          let is_server_or_logical = case operation {
-            pig_otel.HttpServer(_) | pig_otel.Inference(_, _, _) -> True
+        tracing_check.StartedWithAttributes(span, _, operation, attrs) -> {
+          let is_relevant = case operation {
+            pig_otel.HttpServer(_)
+            | pig_otel.Inference(_, _, _)
+            | pig_otel.HttpAttempt(_) -> True
             _ -> False
           }
-          let is_logical = case operation {
-            pig_otel.Inference(_, _, _) -> True
-            _ -> False
-          }
-          let is_attempt = case operation {
-            pig_otel.HttpAttempt(_) -> True
-            _ -> False
-          }
-          let carries_session =
-            list.contains(
-              attributes_for(events, span),
+          case
+            is_relevant
+            && list.contains(
+              attrs,
               pig_otel.string_attribute("session.id", session),
             )
-          case is_server_or_logical || is_attempt {
-            True if carries_session -> Ok(#(span, is_logical, is_attempt))
-            _ -> Error(Nil)
+          {
+            True -> Ok(#(span, attrs))
+            False -> Error(Nil)
           }
         }
         _ -> Error(Nil)
@@ -179,16 +171,8 @@ fn assert_identity(
     })
   should.equal(list.length(relevant), 2 + expected_attempts)
   list.each(relevant, fn(entry) {
-    let attrs = attributes_for(events, entry.0)
-    should.be_true(list.contains(attrs, server))
-    case entry.1 {
-      True -> should.be_true(list.contains(attrs, conversation_attr))
-      False -> should.be_false(list.contains(attrs, conversation_attr))
-    }
-    case entry.2 {
-      True -> should.be_false(list.contains(attrs, conversation_attr))
-      False -> Nil
-    }
+    should.be_true(list.contains(entry.1, server))
+    should.be_true(list.contains(entry.1, conversation_attr))
   })
 }
 

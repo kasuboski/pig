@@ -133,9 +133,12 @@ Use the safe `otel_gleam_propagator_baggage` alongside Trace Context only in
 the subscriptions host; Pig does not parse W3C headers or change propagator
 globally. Proxy ingress extracts context and considers only the exact allowlist
 `session.id` and `gen_ai.conversation.id`; arbitrary baggage is never copied to
-spans. Identity values are preserved exactly, bounded, and rejected rather than
-truncated when invalid or oversized. U+FFFD is rejected, including when emitted
-by decoding malformed UTF-8. Before outbound injection remove all duplicate,
+spans. Each supplied, validated identity is explicitly promoted to attributes
+on every proxy span in that request, including server, logical inference and
+physical attempt spans; baggage itself is not automatically converted to span
+attributes. Identity values are preserved exactly, bounded, and rejected rather
+than truncated when invalid or oversized. U+FFFD is rejected, including when
+emitted by decoding malformed UTF-8. Before outbound injection remove all duplicate,
 mixed-case `traceparent`, `tracestate` and `baggage`; inject from the selected
 operation/attempt context, then remove baggage again. Preserve unrelated headers.
 Built-in providers inject at the `openai.do_stream` request seam for both API

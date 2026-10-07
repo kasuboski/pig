@@ -324,7 +324,7 @@ fn fixture(capture: Bool) -> List(Span) {
             #("pig.outcome", Text("succeeded")),
             #("http.route", Text(route)),
             #("http.response.status_code", Number(200)),
-            ..identity_attributes(trace, False)
+            ..identity_attributes(trace)
           ])
         let costs = [
           #("gen_ai.usage.input_cost", Decimal(0.0000175)),
@@ -364,7 +364,7 @@ fn fixture(capture: Bool) -> List(Span) {
               ],
               list.append(
                 list.append(costs, content),
-                identity_attributes(trace, True),
+                identity_attributes(trace),
               ),
             ),
           )
@@ -374,7 +374,7 @@ fn fixture(capture: Bool) -> List(Span) {
             #("pig.proxy.target.id", Text(target)),
             #("pig.proxy.attempt", Number(1)),
             #("http.response.status_code", Number(200)),
-            ..identity_attributes(trace, False)
+            ..identity_attributes(trace)
           ])
         [server, logical, attempt]
       }),
@@ -398,7 +398,6 @@ fn fixture(capture: Bool) -> List(Span) {
 
 fn identity_attributes(
   trace: String,
-  logical: Bool,
 ) -> List(#(String, otlp_verify.AttributeValue)) {
   let #(session, conversation) = case trace {
     "00000000000000000000000000000011" -> #("responses-session", "")
@@ -411,10 +410,9 @@ fn identity_attributes(
     "" -> []
     value -> [#("session.id", Text(value))]
   }
-  let conversation_attributes = case logical, conversation {
-    True, "" -> []
-    True, value -> [#("gen_ai.conversation.id", Text(value))]
-    False, _ -> []
+  let conversation_attributes = case conversation {
+    "" -> []
+    value -> [#("gen_ai.conversation.id", Text(value))]
   }
   list.append(session_attributes, conversation_attributes)
 }

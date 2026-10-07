@@ -348,10 +348,7 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           backend,
           state.registration.parent,
           pig_otel.HttpServer(state.registration.route),
-          identity.attributes(identity.for_span(
-            state.registration.identity,
-            identity.ProxyServer,
-          )),
+          identity.attributes(state.registration.identity),
         )
       let next = State(..state, backend:, server: Some(span))
       #(next, Current(pig_otel.context(span)))
@@ -362,10 +359,7 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           state.backend,
           parent(state),
           pig_otel.Inference(api, provider, bounded_model(model)),
-          identity.attributes(identity.for_span(
-            state.registration.identity,
-            identity.LogicalInference,
-          )),
+          identity.attributes(state.registration.identity),
         )
       #(
         State(
@@ -388,10 +382,7 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
           pig_otel.HttpAttempt(target),
           list.append(
             [pig_otel.int_attribute("pig.proxy.attempt", state.count + 1)],
-            identity.attributes(identity.for_span(
-              state.registration.identity,
-              identity.PhysicalAttempt,
-            )),
+            identity.attributes(state.registration.identity),
           ),
         )
       #(
