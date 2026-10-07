@@ -1,13 +1,9 @@
 //// Gleam shutdown policy and owner-bound cleanup with bounded SDK termination.
 
-import envoy
 import exception
-import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/io
-import gleam/list
-import gleam/string
 
 /// Maximum duration for the complete owner-side cleanup.
 pub const shutdown_timeout_ms = 30_000
@@ -26,19 +22,6 @@ pub type ShutdownError {
 pub type SdkStopOutcome {
   Completed(Result(Nil, Nil))
   WorkerExited
-}
-
-/// Select only names in the SDK's override namespace, without inspecting values.
-pub fn otel_override_names(names: List(String)) -> List(String) {
-  list.filter(names, fn(name) { string.starts_with(name, "OTEL_") })
-}
-
-/// Clear overrides before starting any SDK or exporter application.
-pub fn clear_otel_environment() -> Nil {
-  envoy.all()
-  |> dict.keys
-  |> otel_override_names
-  |> list.each(envoy.unset)
 }
 
 /// Classify a completion or worker death without exposing foreign error terms.

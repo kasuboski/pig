@@ -324,6 +324,7 @@ fn fixture(capture: Bool) -> List(Span) {
             #("pig.outcome", Text("succeeded")),
             #("http.route", Text(route)),
             #("http.response.status_code", Number(200)),
+            ..identity_attributes(trace, False)
           ])
         let costs = [
           #("gen_ai.usage.input_cost", Decimal(0.0000175)),
@@ -361,7 +362,10 @@ fn fixture(capture: Bool) -> List(Span) {
                 #("gen_ai.usage.output_tokens", Number(7)),
                 #("gen_ai.usage.cache_read.input_tokens", Number(3)),
               ],
-              list.append(costs, content),
+              list.append(
+                list.append(costs, content),
+                identity_attributes(trace, True),
+              ),
             ),
           )
         let attempt =
@@ -370,6 +374,7 @@ fn fixture(capture: Bool) -> List(Span) {
             #("pig.proxy.target.id", Text(target)),
             #("pig.proxy.attempt", Number(1)),
             #("http.response.status_code", Number(200)),
+            ..identity_attributes(trace, False)
           ])
         [server, logical, attempt]
       }),
@@ -389,6 +394,29 @@ fn fixture(capture: Bool) -> List(Span) {
       )
     })
   list.append(valid, rejected)
+}
+
+fn identity_attributes(
+  trace: String,
+  logical: Bool,
+) -> List(#(String, otlp_verify.AttributeValue)) {
+  let #(session, conversation) = case trace {
+    "00000000000000000000000000000011" -> #("responses-session", "")
+    "00000000000000000000000000000012" -> #("", "responses-conversation")
+    "00000000000000000000000000000021" -> #("same-identity", "same-identity")
+    "00000000000000000000000000000022" -> #("café ☃", "separate-☃")
+    _ -> #("", "")
+  }
+  let session_attributes = case session {
+    "" -> []
+    value -> [#("session.id", Text(value))]
+  }
+  let conversation_attributes = case logical, conversation {
+    True, "" -> []
+    True, value -> [#("gen_ai.conversation.id", Text(value))]
+    False, _ -> []
+  }
+  list.append(session_attributes, conversation_attributes)
 }
 
 fn make(

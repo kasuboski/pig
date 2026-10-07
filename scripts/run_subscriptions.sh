@@ -5,7 +5,6 @@ cd "$root"
 if [[ ${PIG_SUBSCRIPTIONS_MISE_ACTIVE:-0} != 1 ]]; then
   exec mise exec -- env PIG_SUBSCRIPTIONS_MISE_ACTIVE=1 "$0" "$@"
 fi
-for name in "${!OTEL_@}"; do unset "$name"; done
 example=packages/pig_proxy/examples/subscriptions
 (cd "$example/host" && rebar3 compile)
 (cd "$example" && gleam deps download && gleam build --warnings-as-errors)

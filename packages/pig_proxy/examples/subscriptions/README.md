@@ -80,8 +80,9 @@ container port and credential path, and publishes only on host `127.0.0.1`.
 `PIG_PROXY_HOST_PORT` in `.env` changes the published port without changing the
 container port. If the native proxy is already using 8080, choose a different host
 port, for example 8081. Containers sharing the Compose network can also reach the
-service, so do not attach untrusted containers. Latitude remains opt-in, and the
-same sensitive-conversation capture warning applies.
+service, so do not attach untrusted containers. OTLP settings in `.env` are
+forwarded by the existing `env_file`; no separate Compose mapping is needed.
+Export remains disabled when both endpoint variables are unset.
 
 ```sh
 docker compose logs -f subscriptions
@@ -108,7 +109,76 @@ Compose V2 is required. For an alternate env file, set `PIG_SUBSCRIPTIONS_ENV_FI
 and pass the same file to Compose, for example
 `PIG_SUBSCRIPTIONS_ENV_FILE=/path/to/config.env docker compose --env-file /path/to/config.env up -d`.
 
-## Latitude and conversation capture
+## OTLP export and conversation capture
+
+The subscriptions host exports traces through standard OpenTelemetry OTLP
+exporter environment variables. There is no Latitude-specific mode or enable
+flag: setting either endpoint enables export; with neither endpoint set, traces
+are not exported. The official exporter is pinned to 1.10.0. The host accepts only the exact raw protocol spelling `http/protobuf`; it does
+not trim whitespace or normalize case. Other values are rejected. The exporter
+itself supports gzip compression, but the local receiver checks do not cover
+gzip. The host supports `OTEL_TRACES_EXPORTER` values `otlp` and `none` only;
+they are matched exactly, without case or whitespace normalization. An endpoint
+enables the SDK unless `OTEL_SDK_DISABLED=true` or
+`OTEL_TRACES_EXPORTER=none` opts out.
+
+```dotenv
+# Base URL; exporter appends /v1/traces.
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.tailnet.example:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+
+# Or specify the complete trace URL (takes precedence over the base URL).
+# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector.tailnet.example:4318/v1/traces
+# Optional headers; trace-specific values override generic values.
+# OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer TOKEN
+```
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` is a base URL; the exporter appends `/v1/traces`.
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is the complete trace URL, used as supplied,
+and takes precedence if both are configured. Endpoint alone enables export;
+protocol and headers are optional. The trace-specific protocol
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`, when set, overrides
+`OTEL_EXPORTER_OTLP_PROTOCOL`. Generic and trace-only headers are supported
+through `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS`; trace-specific headers replace generic
+headers rather than merging.
+In pinned exporter 1.10.0, header strings are comma-separated `key=value` pairs:
+comma separates entries, the first `=` separates key and value, whitespace is
+trimmed, and one pair of surrounding double quotes is stripped from a value.
+The parser does not percent-decode. Avoid commas in values; percent-escaping
+cannot be used to pass a comma through this implementation. Keep header values
+secret and `.env` private.
+
+A tailnet collector example assumes the container can resolve and reach the
+collector hostname. This example uses no collector authentication. Restrict its
+listener to the tailnet interface and use tailnet ACLs and host/network firewall
+rules to allow only trusted senders. Never expose an unauthenticated collector
+on a public interface. The host does not detect tailnet connectivity or infer
+that an unauthenticated endpoint is safe.
+
+Latitude uses the same standard settings, without a vendor mode or special
+flag. Direct ingestion can be configured as:
+
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://ingest.latitude.so/v1/traces
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer YOUR_API_KEY,X-Latitude-Project=your-project-slug
+```
+
+Use the header names and project slug required by your account; the API key is
+secret. A local receiver acknowledgement proves local OTLP delivery only, not
+remote ingestion or persistence. For an opt-in acceptance against the real
+pinned OpenTelemetry Collector (no model credentials required), run
+`nix-shell shell.nix --run 'mise run test-integration-otel-collector'` from the
+repository root. It exercises both routes in buffered and streaming modes and
+validates the Collector file export, including parentage, usage/cost, and
+metadata-only privacy. This verifies local Collector delivery, not deployed
+Latitude grouping, accounting, or persistence.
+
+The host uses parent-based sampling with 100% root sampling for accounting:
+new roots are sampled, while valid parent sampling decisions are honored. Do not
+force a backend-wide sampling policy to configure this host; set backend policy
+for its own requirements.
 
 For this subscription host, **bounded conversation capture is enabled by default**
 (as requested for this setup). Prompts, instructions, and model responses can leave
@@ -116,7 +186,14 @@ this machine when export is enabled; treat traces as sensitive data. Set
 `PIG_PROXY_CAPTURE_CONVERSATION=false` for metadata-only traces. The reusable
 `pig_proxy` library still defaults to metadata-only. Projection is bounded and
 omits unsupported content; it is not raw HTTP-body recording or a general PII
-sanitizer. Review the [capture/privacy contract](../../../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
+sanitizer. The subscriptions host opts in to the safe `otel_gleam_propagator_baggage`
+propagator alongside Trace Context; this does not alter other Pig hosts. Proxy
+tracing promotes only `session.id` and `gen_ai.conversation.id` baggage values.
+Values are exact and bounded: invalid, oversized, or U+FFFD-containing values
+(including replacement characters produced while decoding malformed UTF-8) are
+rejected rather than truncated. Other baggage is never copied to spans, and
+outbound baggage is stripped. Review the
+[capture/privacy contract](../../../../knowledge/OPENTELEMETRY_CONTENT_CAPTURE.md).
 
 The host's default directional budgets are input 4 MiB source / 2 MiB serialized
 content and output 4 MiB source / 64 KiB serialized content. Override them with
@@ -125,7 +202,7 @@ positive decimal integers, each independently bounded by 4 MiB for source and
 from the metadata SSE framer's 4 MiB per-event limit: an oversized event is
 skipped through its delimiter so later events can still supply metadata, while
 events above that finite limit are not parsed. A small cumulative capture budget
-can omit conversation content without suppressing completion usage or identity.
+can omit conversation content without suppressing completion usage or response-ID metadata.
 
 | Setting | Default | Maximum |
 | --- | ---: | ---: |
@@ -135,27 +212,22 @@ can omit conversation content without suppressing completion usage or identity.
 | `PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES` | 65,536 | 2,097,152 |
 
 Invalid values fail host configuration even when conversation capture is
-switched off. When Latitude export is enabled, a subscription-host exporter adapter traverses
-SDK export batches sequentially and sends at most four spans in each OTLP
-request. It preserves span and resource records. Four is chosen because
-configurable input and output content limits can each reach 2 MiB; four spans
-can approach 16 MiB of captured content, leaving headroom against the 32 MiB
-ingestion default in the inspected Latitude source. Eight spans could reach
-32 MiB before encoding overhead. The hosted service's configured limit is not
-independently verified. This is a span-count bound, not a strict encoded
-request-byte bound.
+switched off. The exporter adapter processes SDK batches sequentially and sends
+at most four spans per OTLP request, preserving span and resource records. Four
+is a count heuristic: input and output content limits can each reach 2 MiB, so
+four spans can approach 16 MiB of content; eight could reach 32 MiB before
+encoding overhead. This leaves headroom against the 32 MiB ingestion default
+inspected in Latitude source, though that service limit is not independently
+verified. The bound is on span count, not encoded request bytes.
 
-The default batch processor queue is finite (2,048 spans). Its export-attempt
-deadline defaults to 300,000 ms (five minutes) to accommodate a full reviewed
-queue of up to 512 sequential requests: about 51 seconds at 100 ms/request or
-256 seconds at 500 ms/request. The five-minute minimum is applied directly to
-each standard processor whose effective exporter is the wrapped official
-exporter. An explicit `traces_exporter` takes precedence over processor
-exporters, as it does in the SDK. Custom global exporters and processors using
-custom exporters retain their processor options and timeouts. Explicit SDK-level
-timeout settings continue to be honored by the SDK. User-supplied
-queue sizes are retained and can exceed 2,048 (or be unbounded with `infinity`),
-and long endpoint stalls can still exceed the export deadline. Failed batches
+The default batch processor queue is finite (2,048 spans). For standard
+processors using the wrapped official exporter, the host applies a minimum
+300,000 ms export-attempt deadline; this is not a per-request HTTP timeout.
+The pinned exporter does not support `OTEL_EXPORTER_OTLP_TIMEOUT` or
+`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`. These variables must not be confused with
+SDK processor/export deadlines. User-supplied queue sizes are retained and can
+exceed 2,048 (or be unbounded with `infinity`), and transport stalls can still
+outlast shutdown deadlines. Failed batches
 are dropped, not retried. The host's 15-second SDK-stop deadline and 30-second
 overall shutdown watchdog are shorter, so shutdown flush is best effort and
 cannot promise draining a full queue. Configured processor pipelines and
@@ -163,26 +235,10 @@ options are retained; official OTLP exporter entries on standard batch/simple
 processors are wrapped, while non-OTLP exporters and custom processors are left
 unchanged.
 
-Latitude export is disabled unless `PIG_LATITUDE_ENABLED=true`. Configure it before
-starting the host:
-
-```sh
-export PIG_LATITUDE_ENABLED=true
-export LATITUDE_API_KEY="..."
-export LATITUDE_PROJECT="your-project-slug"
-mise run run-subscriptions
-```
-
-Both `LATITUDE_API_KEY` and `LATITUDE_PROJECT` are required when enabled. The
-default endpoint is `https://ingest.latitude.so/v1/traces`; override it with
-`PIG_LATITUDE_ENDPOINT` for a local receiver. The host sets OTLP/HTTP protobuf,
-no compression, and the authorization/project headers directly. Both the
-provided `run_subscriptions.sh` startup script and `subscriptions@host:main()`
-clear `OTEL_*` environment overrides before SDK bootstrap, so direct host startup
-also avoids conflicting operating-system OTEL settings. This config is not
-evidence of cloud delivery. Exporter 1.10.0 drops failed batches and does not retry Latitude
-429/503 responses or honor their Retry-After headers. Monitor exporter diagnostics;
-shutdown flush is best effort and does not prove remote persistence.
+OTLP export is best effort. The pinned exporter drops failed batches rather than
+retrying failed HTTP responses; monitor exporter diagnostics. Graceful shutdown
+attempts a final SDK stop/flush, but cannot promise queue drain or remote
+persistence.
 
 Discover the configured models with:
 
@@ -258,8 +314,8 @@ tests check route paths, model/body forwarding, provider-specific bearer and
 Codex account headers, Chat-only stream usage injection, rejected requests and
 zero upstream calls for validation/routing failures. SIGTERM must exit zero and
 close the listener; missing and corrupt isolated auth files must fail startup.
-A loopback OTLP receiver checks the exact `/v1/traces` path, fake Latitude auth
-and project headers, uncompressed protobuf, and `service.name`. It decodes and
+A loopback OTLP receiver checks the standard trace endpoint/path, configured
+headers, protobuf payload and `service.name`. It decodes and
 acknowledges 26 spans per capture mode: 18 from successful requests and 8 from
 rejections. Each export request must contain at most four spans, with no spans
 lost across batches. Assertions cover span relationships, provider/model/API, response
@@ -268,9 +324,11 @@ mode exports no conversation; the host's default capture mode includes fixture
 prompts and responses for both APIs in buffered and SSE form. A refused exporter
 endpoint must leave business requests and graceful shutdown working. The gate
 delays the SDK's scheduled batch timer and asserts zero exports before SIGTERM,
-so shutdown must deliver the observed spans. Conflicting OTEL endpoint, header,
-protocol, compression, and console-export settings are injected into the child
-process to verify that they cannot redirect or print captured content. Isolated
+so shutdown must deliver the observed spans. Standard endpoint and header settings are exercised through the host
+configuration path. Protocol parsing rejects unsupported values. The local
+receiver exercises uncompressed protobuf only; gzip and console-export behavior
+are not covered. Local receiver
+acknowledgement does not prove remote backend delivery. Isolated
 child-VM probes also exercise SDK worker crashes, explicit SDK errors, hung SDK
 stop, hung cleanup and secret-bearing exceptions; each must exit nonzero without
 leaking its marker. Successful cleanup must remain alive past the shortened test
@@ -289,6 +347,6 @@ readiness, and admission-snapshot tests without model calls.
 
 No real credential file or external provider is used. The acceptance suite is
 compiled with normal tests and prints an explicit skip unless
-`PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1` is set. Receiver acknowledgement proves local
-wire delivery, not Latitude cloud ingestion; check your project's Traces view on
-the first live run.
+`PIG_RUN_SUBSCRIPTIONS_INTEGRATION=1` is set. Receiver acknowledgement proves
+local OTLP delivery only, not remote backend ingestion or persistence; verify a
+live deployment separately.

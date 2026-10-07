@@ -120,6 +120,39 @@ contract and out-of-scope guarantees are in
 [OPENTELEMETRY_CONTENT_CAPTURE.md](OPENTELEMETRY_CONTENT_CAPTURE.md). Do not
 mistake skipped network wrappers for the enabled local integration run.
 
+## Subscription host deployment checks
+
+The subscriptions example accepts standard OTLP environment configuration. Verify
+both endpoint forms independently: the generic endpoint is a base URL to which
+`/v1/traces` is appended, while the trace-specific endpoint is the complete URL
+and takes precedence. An endpoint alone enables export. The currently supported
+protocol is the exact raw spelling `http/protobuf`; values with different
+case or surrounding whitespace are not normalized and are rejected. The host
+also accepts exact raw `OTEL_TRACES_EXPORTER` values `otlp` and `none`. An
+endpoint enables the SDK unless `OTEL_SDK_DISABLED=true` or exporter `none`
+opts out. Header values
+use the pinned official exporter 1.10.0 parser (comma-separated pairs, first
+`=` as key/value separator, trim whitespace and strip one enclosing quote pair;
+values are not percent-decoded; trace-specific headers override, rather than
+merge with, generic headers). A local receiver acknowledgement verifies only
+local delivery, not remote service ingestion or persistence.
+
+The subscription adapter's four-span request cap is a heuristic and is not a
+hard encoded-byte bound. It processes sequentially; queue capacity, existing
+SDK/exporter/transport timeout behavior, failure drops/no retries, and
+best-effort shutdown are deployment limits, not delivery guarantees. The pinned
+exporter does not support `OTEL_EXPORTER_OTLP_TIMEOUT` or
+`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`. Gzip is supported by the pinned exporter,
+but is not exercised by the local receiver. The host uses parent-based sampling with 100%
+root sampling to support accounting while honoring parent decisions; this is not
+a mandate to force backend-global sampling policy. Unauthenticated tailnet
+collectors require tailnet ACL and listener/firewall restrictions and must never
+be exposed publicly. No automatic tailnet detection is provided. Proxy baggage
+identity is limited to the `session.id` and `gen_ai.conversation.id` allowlist;
+invalid/oversized values and values containing U+FFFD are rejected, and outbound
+baggage is stripped. See the deployment guide for the exact
+examples and preserved limits.
+
 ## Warning policy
 
 The clean dependency graph emits exactly nine known `gleam_http.Header`

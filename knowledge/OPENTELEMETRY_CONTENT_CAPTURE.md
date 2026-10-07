@@ -172,8 +172,8 @@ in bounded 16 KiB binary blocks rather than a per-byte list. An event exceeding
 metadata decoding. This finite cap is not a guarantee that arbitrarily large
 provider events will be parsed. The separate cumulative stream source budget for
 conversation capture is currently 4 MiB (provisional): a response can therefore
-retain usage, identity and finish metadata while its conversation projection is
-omitted by that budget. The cumulative content budget does not enlarge the
+retain usage, response-ID and finish metadata while its conversation projection
+is omitted by that budget. The cumulative content budget does not enlarge the
 metadata per-event cap or resolve gaps in output-capture eligibility.
 
 ## Privacy and deployment
@@ -185,7 +185,11 @@ contain sensitive values not recognized by configured rules. Capture is an
 explicit privacy boundary. Obtain appropriate consent and apply access control,
 retention and exporter/backend safeguards. Dedicated headers, credentials, raw
 URLs and media fields are not copied as conversation attributes, but that does
-not sanitize secrets appearing in conversation text.
+not sanitize secrets appearing in conversation text. Proxy tracing promotes only
+allowlisted `session.id` and `gen_ai.conversation.id` baggage values as exact,
+bounded identity attributes; it rejects invalid/oversized values and any value
+containing U+FFFD. Arbitrary baggage is never copied to spans. Outbound baggage
+continues to be stripped.
 
 Pig uses the existing API-only binding and does not configure the host SDK,
 sampler, exporter, attribute limits, or collector. Host SDK string truncation can
@@ -228,5 +232,5 @@ for current gate details and operational limits.
 
 - [GenAI span guidance and content policy](https://github.com/open-telemetry/semantic-conventions-genai/blob/8a3767d6c5d09bc0917722720973c0c44182d960/docs/gen-ai/gen-ai-spans.md)
 - [Pinned message schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/8a3767d6c5d09bc0917722720973c0c44182d960/model/gen-ai/gen-ai-input-messages.json), [output schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/8a3767d6c5d09bc0917722720973c0c44182d960/model/gen-ai/gen-ai-output-messages.json), [system instructions](https://github.com/open-telemetry/semantic-conventions-genai/blob/8a3767d6c5d09bc0917722720973c0c44182d960/model/gen-ai/gen-ai-system-instructions.json), and [tool definitions](https://github.com/open-telemetry/semantic-conventions-genai/blob/8a3767d6c5d09bc0917722720973c0c44182d960/model/gen-ai/gen-ai-tool-definitions.json)
-- [Gleam OTel binding API pin](https://github.com/kasuboski/otel_gleam/tree/0ad06026ba0cdbdd3adfc9dd6ec882cfb8a1c2a5)
+- [Gleam OTel binding API pin](https://github.com/kasuboski/otel_gleam/tree/93b9d101426f7ab8e4ec28136acedf31d3e1e8f4)
 - [Official API attribute storage](https://github.com/open-telemetry/opentelemetry-erlang/blob/opentelemetry_api/v1.5.0/apps/opentelemetry_api/src/otel_attributes.erl) and [SDK configuration](https://github.com/open-telemetry/opentelemetry-erlang/blob/opentelemetry/v1.7.0/apps/opentelemetry/src/otel_configuration.erl)

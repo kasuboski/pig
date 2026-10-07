@@ -45,6 +45,10 @@ env = { PIG_RUN_MODEL_CATALOG_INTEGRATION = "1" }
 description = "Validate local official SDK recording and actual OTLP export (no model credentials)"
 run = "scripts/validate_otel.sh"
 
+[tasks.test-integration-otel-collector]
+description = "Run subscription OTLP acceptance against pinned official otelcol-contrib with file evidence"
+run = "scripts/test_integration_otel_collector.sh"
+
 [tasks.proxy]
 description = "Run the pig_proxy server (reads OPENAI_COMPAT_* / PIG_PROXY_* env)"
 run = "cd packages/pig_proxy && gleam run"

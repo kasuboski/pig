@@ -17,6 +17,8 @@ import otel/context.{type Context}
 import pig_otel
 import pig_otel/content
 import pig_otel/content/options
+import pig_otel/identity
+import pig_otel/proxy_ingress
 import pig_proxy/model_catalog
 import pig_proxy/trace_metadata
 import pig_transport as transport
@@ -31,6 +33,7 @@ pub type Registration {
     caller: process.Pid,
     policy: pig_otel.Policy,
     parent: Context,
+    identity: identity.Identity,
     route: String,
   )
 }
@@ -193,8 +196,8 @@ pub fn register_with_policy(
   headers: List(#(String, String)),
   route: String,
 ) -> Owner {
-  let boot =
-    Registration(process.self(), policy, pig_otel.ingress(headers), route)
+  let #(parent, identity) = proxy_ingress.extract(headers)
+  let boot = Registration(process.self(), policy, parent, identity, route)
   let assert Ok(started) = factory.start_child(factory.get_by_name(name), boot)
   let _ = call(started.data, Activate)
   started.data
@@ -341,20 +344,28 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
       }
       let backend = pig_otel.backend(policy, application_marker)
       let span =
-        pig_otel.start(
+        pig_otel.start_with_attributes(
           backend,
           state.registration.parent,
           pig_otel.HttpServer(state.registration.route),
+          identity.attributes(identity.for_span(
+            state.registration.identity,
+            identity.ProxyServer,
+          )),
         )
       let next = State(..state, backend:, server: Some(span))
       #(next, Current(pig_otel.context(span)))
     }
     BeginInference(api, provider, model, pricing) -> {
       let logical =
-        pig_otel.start(
+        pig_otel.start_with_attributes(
           state.backend,
           parent(state),
           pig_otel.Inference(api, provider, bounded_model(model)),
+          identity.attributes(identity.for_span(
+            state.registration.identity,
+            identity.LogicalInference,
+          )),
         )
       #(
         State(
@@ -371,14 +382,18 @@ fn perform_command(state: State, command: Command) -> #(State, Reply) {
     }
     BeginAttempt(target) -> {
       let span =
-        pig_otel.start(
+        pig_otel.start_with_attributes(
           state.backend,
           parent(state),
           pig_otel.HttpAttempt(target),
+          list.append(
+            [pig_otel.int_attribute("pig.proxy.attempt", state.count + 1)],
+            identity.attributes(identity.for_span(
+              state.registration.identity,
+              identity.PhysicalAttempt,
+            )),
+          ),
         )
-      pig_otel.annotate(span, [
-        pig_otel.int_attribute("pig.proxy.attempt", state.count + 1),
-      ])
       #(
         State(
           ..state,
