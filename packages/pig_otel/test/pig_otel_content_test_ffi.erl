@@ -1,6 +1,19 @@
 -module(pig_otel_content_test_ffi).
 -export([scenario/1, golden/1, normalize/1, chunks/2, partitions/2,
-         validate/2, check_validation_cases/1, read_fixture/1]).
+         validate/2, check_validation_cases/1, read_fixture/1,
+         oversized_stream_chunk/0, large_input_body/0, large_input_body_size/1,
+         large_output_body/0]).
+
+oversized_stream_chunk() -> binary:copy(<<"x">>, 600).
+large_input_body() -> large_input_body_size(1200000).
+large_input_body_size(Size) ->
+    Prefix = <<"{\"messages\":[{\"role\":\"user\",\"content\":\"">>,
+    Suffix = <<"\"}]}" >>,
+    PayloadSize = max(0, Size - byte_size(Prefix) - byte_size(Suffix)),
+    iolist_to_binary([Prefix, binary:copy(<<"x">>, PayloadSize), Suffix]).
+large_output_body() ->
+    iolist_to_binary([<<"{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"">>,
+                       binary:copy(<<"x">>, 70000), <<"\"}}]}" >>]).
 
 read_fixture(Path) ->
     case file:read_file(Path) of

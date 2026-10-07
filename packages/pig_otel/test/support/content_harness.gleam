@@ -1,5 +1,6 @@
 //// Centralized pure content checks; fixture reads are the only IO boundary.
 
+import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -23,6 +24,18 @@ pub type Scenario {
     complete: Bool,
   )
 }
+
+@external(erlang, "pig_otel_content_test_ffi", "oversized_stream_chunk")
+fn oversized_stream_chunk() -> BitArray
+
+@external(erlang, "pig_otel_content_test_ffi", "large_input_body")
+fn large_input_body() -> BitArray
+
+@external(erlang, "pig_otel_content_test_ffi", "large_input_body_size")
+fn large_input_body_size(size: Int) -> BitArray
+
+@external(erlang, "pig_otel_content_test_ffi", "large_output_body")
+fn large_output_body() -> BitArray
 
 @external(erlang, "pig_otel_content_test_ffi", "read_fixture")
 fn read_fixture(path: String) -> Result(String, Nil)
@@ -249,6 +262,215 @@ pub fn check_normalized_projection() -> Nil {
   )
 }
 
+fn input_messages(capture: content.Capture) -> String {
+  let assert Ok(messages_key) = attribute.key("gen_ai.input.messages")
+  let assert Ok(messages) =
+    list.find(content.attributes(capture, content.Input), fn(attr) {
+      let attribute.Attribute(key, _) = attr
+      key == messages_key
+    })
+  let assert attribute.Attribute(_, attribute.StringValue(value)) = messages
+  value
+}
+
+fn input_messages_bytes(capture: content.Capture) -> Int {
+  bit_array.byte_size(bit_array.from_string(input_messages(capture)))
+}
+
+fn check_status(
+  capture: content.Capture,
+  direction: content.Direction,
+  expected: String,
+) -> Nil {
+  let assert Ok(status_key) =
+    attribute.key(case direction {
+      content.Input -> "pig.content.input.status"
+      content.Output -> "pig.content.output.status"
+    })
+  let assert Ok(status) =
+    list.find(content.attributes(capture, direction), fn(attr) {
+      let attribute.Attribute(key, _) = attr
+      key == status_key
+    })
+  let assert attribute.Attribute(_, attribute.StringValue(value)) = status
+  should.equal(value, expected)
+}
+
+/// Exercise budgets above the historical defaults and verify they remain directional.
+pub fn check_directional_budgets() -> Nil {
+  let long_text = string.repeat("x", 70_000)
+  let default_options = content_options.defaults()
+  let large_body_capture =
+    content.input(default_options, pig_otel.ChatCompletions, large_input_body())
+  check_status(large_body_capture, content.Input, "captured")
+  should.be_true(input_messages_bytes(large_body_capture) > 262_144)
+
+  let large_normalized_capture =
+    content.normalized_input(
+      default_options,
+      None,
+      [message.User(string.repeat("n", 1_200_000) <> "large-input-end")],
+      [],
+    )
+  check_status(large_normalized_capture, content.Input, "captured")
+  should.be_true(input_messages_bytes(large_normalized_capture) > 262_144)
+  should.be_true(string.contains(
+    input_messages(large_normalized_capture),
+    "large-input-end",
+  ))
+
+  let one_character_projection =
+    content.normalized_input(default_options, None, [message.User("c")], [])
+  let exact_content_text_bytes =
+    2_097_152 - input_messages_bytes(one_character_projection) + 1
+  let exact_content_capture =
+    content.normalized_input(
+      default_options,
+      None,
+      [message.User(string.repeat("c", exact_content_text_bytes))],
+      [],
+    )
+  check_status(exact_content_capture, content.Input, "captured")
+  should.equal(input_messages_bytes(exact_content_capture), 2_097_152)
+  let content_overflow_capture =
+    content.normalized_input(
+      default_options,
+      None,
+      [message.User(string.repeat("c", exact_content_text_bytes + 1))],
+      [],
+    )
+  check_attributes(
+    content_overflow_capture,
+    content.Input,
+    "{\"pig.content.input.status\":\"omitted\",\"pig.content.input.reason\":\"content_limit\"}",
+    "{}",
+  )
+
+  let normalized_source_overflow =
+    content.normalized_input(
+      default_options,
+      None,
+      [message.User(string.repeat("s", 4_194_305))],
+      [],
+    )
+  check_attributes(
+    normalized_source_overflow,
+    content.Input,
+    "{\"pig.content.input.status\":\"omitted\",\"pig.content.input.reason\":\"source_limit\"}",
+    "{}",
+  )
+
+  let source_at_limit =
+    content.input(
+      default_options,
+      pig_otel.ChatCompletions,
+      large_input_body_size(4_194_304),
+    )
+  check_attributes(
+    source_at_limit,
+    content.Input,
+    "{\"pig.content.input.status\":\"omitted\",\"pig.content.input.reason\":\"content_limit\"}",
+    "{}",
+  )
+
+  let source_overflow =
+    content.input(
+      default_options,
+      pig_otel.ChatCompletions,
+      large_input_body_size(4_194_305),
+    )
+  check_attributes(
+    source_overflow,
+    content.Input,
+    "{\"pig.content.input.status\":\"omitted\",\"pig.content.input.reason\":\"source_limit\"}",
+    "{}",
+  )
+  check_status(
+    content.normalized_input(
+      default_options,
+      None,
+      [message.User(long_text)],
+      [],
+    ),
+    content.Input,
+    "captured",
+  )
+  check_status(
+    content.normalized_output(
+      default_options,
+      message.Assistant(long_text, [], None, None),
+      Some(stop_reason.Stop),
+    ),
+    content.Output,
+    "omitted",
+  )
+
+  let assert Ok(output_options) =
+    content_options.with_direction_limits(
+      default_options,
+      content_options.OutputLimits(100_000, 100_000),
+    )
+  check_status(
+    content.normalized_output(
+      output_options,
+      message.Assistant(long_text, [], None, None),
+      Some(stop_reason.Stop),
+    ),
+    content.Output,
+    "captured",
+  )
+  check_status(
+    content.buffered(
+      output_options,
+      pig_otel.ChatCompletions,
+      large_output_body(),
+    ),
+    content.Output,
+    "captured",
+  )
+  check_status(
+    content.normalized_input(
+      output_options,
+      None,
+      [message.User(long_text)],
+      [],
+    ),
+    content.Input,
+    "captured",
+  )
+
+  let source_options =
+    content_options.with_direction_limits(
+      default_options,
+      content_options.InputLimits(100_000, 100_000),
+    )
+  let assert Ok(source_options) = source_options
+  let source_only = string.repeat("z", 70_000)
+  check_status(
+    content.normalized_input(
+      source_options,
+      None,
+      [message.User(source_only)],
+      [],
+    ),
+    content.Input,
+    "captured",
+  )
+
+  let assert Ok(stream_options) =
+    content_options.with_direction_limits(
+      default_options,
+      content_options.OutputLimits(1024, 65_536),
+    )
+  let stream = content.new_stream(stream_options, pig_otel.ChatCompletions)
+  let first_chunk = content.push(stream, oversized_stream_chunk())
+  should.equal(content.retained_bytes(first_chunk), 600)
+  let failed = content.push(first_chunk, oversized_stream_chunk())
+  should.equal(content.retained_bytes(failed), 0)
+  check_status(content.finish(failed, True), content.Output, "omitted")
+  Nil
+}
+
 /// Invalid budgets and rules must fail at configuration time, without echoing data.
 pub fn check_options() -> Nil {
   let base = content_options.defaults()
@@ -261,13 +483,34 @@ pub fn check_options() -> Nil {
     Error(content_options.InvalidLimits),
   )
   should.equal(
-    content_options.with_limits(base, 1_048_577, 1),
+    content_options.with_limits(base, 4_194_305, 1),
     Error(content_options.InvalidLimits),
   )
   should.equal(
-    content_options.with_limits(base, 1, 262_145),
+    content_options.with_limits(base, 1, 2_097_153),
     Error(content_options.InvalidLimits),
   )
+  let assert Ok(_at_caps) =
+    content_options.with_limits(base, 4_194_304, 2_097_152)
+  should.equal(
+    content_options.with_direction_limits(
+      base,
+      content_options.InputLimits(4_194_305, 1),
+    ),
+    Error(content_options.InvalidLimits),
+  )
+  should.equal(
+    content_options.with_direction_limits(
+      base,
+      content_options.OutputLimits(1, 2_097_153),
+    ),
+    Error(content_options.InvalidLimits),
+  )
+  let assert Ok(_output_caps) =
+    content_options.with_direction_limits(
+      base,
+      content_options.OutputLimits(4_194_304, 2_097_152),
+    )
   should.equal(
     content_options.with_redacted_keys(base, [string.repeat("k", 129)]),
     Error(content_options.InvalidRule),

@@ -11,7 +11,7 @@ import pig_protocol/inference
 import pig_protocol/sse
 import pig_protocol/stop_reason
 
-/// Incremental framing state, capped at 64 KiB per event. Oversized events
+/// Incremental framing state, capped at 4 MiB per event. Oversized events
 /// are discarded through their delimiter, not parsed as truncated JSON.
 pub type Framer
 
@@ -29,6 +29,10 @@ fn frames(framer: Framer, chunk: BitArray) -> #(Framer, List(String))
 
 @external(erlang, "pig_proxy_trace_metadata_ffi", "finish")
 fn trailing(framer: Framer) -> List(String)
+
+/// Bytes retained by the current frame, excluding discarded oversized data.
+@external(erlang, "pig_proxy_trace_metadata_ffi", "retained_bytes")
+pub fn retained_bytes(framer: Framer) -> Int
 
 /// No absent field is replaced with a fabricated zero.
 pub fn empty() -> Observed {

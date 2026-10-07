@@ -39,7 +39,7 @@ pub fn target_conversation_requires_priced_logical_span_test() {
   )
 }
 
-pub fn catalog_warmup_traces_may_be_unpriced_test() {
+pub fn first_catalog_readiness_inferences_require_prices_test() {
   should.equal(check(fixture(True), True), Ok(Nil))
 }
 
@@ -325,18 +325,12 @@ fn fixture(capture: Bool) -> List(Span) {
             #("http.route", Text(route)),
             #("http.response.status_code", Number(200)),
           ])
-        let costs = case
-          trace == "00000000000000000000000000000031"
-          || trace == "00000000000000000000000000000032"
-        {
-          True -> []
-          False -> [
-            #("gen_ai.usage.input_cost", Decimal(0.0000175)),
-            #("gen_ai.usage.output_cost", Decimal(0.00007)),
-            #("gen_ai.usage.total_cost", Decimal(0.0000875)),
-            #("pig.cost.provenance", Text("models_dev_estimate")),
-          ]
-        }
+        let costs = [
+          #("gen_ai.usage.input_cost", Decimal(0.0000175)),
+          #("gen_ai.usage.output_cost", Decimal(0.00007)),
+          #("gen_ai.usage.total_cost", Decimal(0.0000875)),
+          #("pig.cost.provenance", Text("models_dev_estimate")),
+        ]
         let content = case capture {
           True -> [
             #("pig.content.input.status", Text("captured")),

@@ -11,16 +11,29 @@ pub type OptionsError {
   InvalidRule
 }
 
-/// Defaults: 64 KiB source and 16 KiB final escaped JSON per direction.
+/// Defaults: input source 4 MiB/content 2 MiB; output source 4 MiB/content 64 KiB.
 @external(erlang, "pig_otel_content_ffi", "defaults")
 pub fn defaults() -> Options
 
-/// Set positive byte budgets (source <= 1 MiB, content <= 256 KiB).
+/// Set positive byte budgets for both directions (source <= 4 MiB, content <= 2 MiB).
 @external(erlang, "pig_otel_content_ffi", "with_limits")
 pub fn with_limits(
   options: Options,
   source_bytes: Int,
   content_bytes: Int,
+) -> Result(Options, OptionsError)
+
+/// Direction-specific validated budgets.
+pub type Limits {
+  InputLimits(source_bytes: Int, content_bytes: Int)
+  OutputLimits(source_bytes: Int, content_bytes: Int)
+}
+
+/// Set one direction's budgets (source <= 4 MiB, content <= 2 MiB).
+@external(erlang, "pig_otel_content_ffi", "with_direction_limits")
+pub fn with_direction_limits(
+  options: Options,
+  limits: Limits,
 ) -> Result(Options, OptionsError)
 
 /// Extend default case-insensitive key-fragment rules (32 rules, 128 bytes each).

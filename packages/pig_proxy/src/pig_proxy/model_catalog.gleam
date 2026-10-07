@@ -118,6 +118,12 @@ pub fn start_named(
 @external(erlang, "pig_proxy_model_catalog_cache_ffi", "cached")
 pub fn cached(name: process.Name(CatalogMsg)) -> Catalog
 
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "await_ready")
+pub fn await_ready(name: process.Name(CatalogMsg), timeout_ms: Int) -> Bool
+
+@external(erlang, "pig_proxy_model_catalog_cache_ffi", "reset")
+fn reset_cache(name: process.Name(CatalogMsg)) -> Nil
+
 @external(erlang, "pig_proxy_model_catalog_cache_ffi", "publish")
 fn publish(name: process.Name(CatalogMsg), catalog: Catalog) -> Nil
 
@@ -378,7 +384,7 @@ fn initialise(
   ) {
   fn(subject) {
     case cache_key {
-      Some(name) -> publish(name, empty())
+      Some(name) -> reset_cache(name)
       None -> Nil
     }
     // Schedule the first refresh immediately so the catalog populates

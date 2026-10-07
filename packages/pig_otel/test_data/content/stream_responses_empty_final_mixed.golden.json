@@ -1,0 +1,5 @@
+{
+  "pig.content.output.status": "filtered",
+  "pig.content.output.reason": "redacted_or_excluded",
+  "gen_ai.output.messages": [{"role":"assistant","parts":[{"type":"text","content":"COMPLETE_MARKER"}],"finish_reason":"stop"}]
+}

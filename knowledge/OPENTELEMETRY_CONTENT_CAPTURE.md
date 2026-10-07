@@ -36,14 +36,18 @@ let cfg = config.new(targets)
   |> config.with_tracing(pig_otel.Conversation(capture_options))
 ```
 
-`options.with_limits(options, source_bytes, content_bytes)` also returns a
-`Result`. Both values must be positive; source is capped at 1 MiB and serialized
-content at 256 KiB per direction. Defaults are 64 KiB source and 16 KiB content
-per direction. For example, handle validation the same way:
-
-```gleam
-use capture_options <- result.try(options.with_limits(capture_options, 32_768, 8_192))
-```
+`options.with_limits(options, source_bytes, content_bytes)` remains the common
+builder: it applies one source/content pair to both directions. Values must be
+positive; source is capped at 4 MiB and serialized content at 2 MiB. Use
+`options.with_direction_limits` with `InputLimits` and `OutputLimits` when the
+directions differ. Current defaults are 4 MiB source / 2 MiB serialized content
+for input and 4 MiB source / 64 KiB serialized content for output. The
+subscriptions host exposes four optional, independently validated environment
+overrides: `PIG_PROXY_CAPTURE_INPUT_SOURCE_BYTES`,
+`PIG_PROXY_CAPTURE_INPUT_CONTENT_BYTES`,
+`PIG_PROXY_CAPTURE_OUTPUT_SOURCE_BYTES`, and
+`PIG_PROXY_CAPTURE_OUTPUT_CONTENT_BYTES`. Host values must be positive integers
+within the same respective 4 MiB source and 2 MiB serialized-content caps.
 
 Key rules are limited to 32 entries of 128 bytes each and extend
 the built-in case-insensitive fragments `secret`, `token`, `password`, `auth`,
@@ -99,10 +103,11 @@ attribute when the bounded projection cannot truthfully represent it. This is
 not full provider JSON, wire bytes, a replay record, or proof that every item was
 observed.
 
-The defaults are 64 KiB of relevant source and 16 KiB final escaped JSON per
-direction. The proxy source budget counts SSE framing and ignored metadata;
-direct Pig counts relevant normalized string bytes. Limits are hard-capped as
-described above. Over-limit,
+The default directional budgets are 4 MiB of source and 2 MiB final escaped JSON
+for input, and 4 MiB of source and 64 KiB final escaped JSON for output. The
+proxy source budget counts SSE framing and ignored metadata; direct Pig counts
+relevant normalized string bytes. Limits are hard-capped as described above.
+Over-limit,
 malformed, incomplete, unsupported, or unsafe projections are omitted rather
 than emitted as invalid JSON prefixes or raw fallback. The optional private
 `pig.content.{input,output}.status` attributes can report captured, filtered, or
@@ -153,9 +158,23 @@ without a recording SDK/sampler.
 
 Proxy capture accepts only supported identity-encoded content; do not assume compressed,
 binary or arbitrary content types are captured. Capture eligibility depends on
-the observed response form and status. A 2xx SSE response is not complete merely
-because a finish marker arrived; ordered terminal/EOF completion is required.
-No promise is made about downstream receipt or wire delivery.
+the observed response form and status. In streaming mode, a missing `Content-Type`
+allows the bounded, API-specific SSE projector to validate the response. An
+explicit unsupported or conflicting type, or non-identity encoding, still
+prevents capture. A 2xx SSE response is not complete merely because a finish
+marker arrived; ordered terminal/EOF completion is required. A completed Responses
+terminal with an empty `output` array preserves previously completed streamed
+items; a non-empty final array remains authoritative, and unfinished items are
+still omitted. No promise is made about downstream receipt or wire delivery. The metadata SSE
+framer accepts an individual event/frame up to 4 MiB, retaining accepted bytes
+in bounded 16 KiB binary blocks rather than a per-byte list. An event exceeding
+4 MiB is skipped through its delimiter; later events remain eligible for
+metadata decoding. This finite cap is not a guarantee that arbitrarily large
+provider events will be parsed. The separate cumulative stream source budget for
+conversation capture is currently 4 MiB (provisional): a response can therefore
+retain usage, identity and finish metadata while its conversation projection is
+omitted by that budget. The cumulative content budget does not enlarge the
+metadata per-event cap or resolve gaps in output-capture eligibility.
 
 ## Privacy and deployment
 

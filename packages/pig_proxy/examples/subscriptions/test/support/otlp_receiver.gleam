@@ -33,22 +33,27 @@ type WireFailure {
 type Message {
   Record(Result(List(otlp_verify.Span), WireFailure), process.Subject(Nil))
   Inspect(process.Subject(Result(List(otlp_verify.Span), WireFailure)))
-  Await(process.Subject(Result(List(otlp_verify.Span), WireFailure)))
+  Await(
+    process.Subject(#(Result(List(otlp_verify.Span), WireFailure), List(Int))),
+  )
   Stop
 }
 
 type State {
   State(
     spans: List(otlp_verify.Span),
+    batch_sizes: List(Int),
     failure: Option(WireFailure),
-    waiters: List(process.Subject(Result(List(otlp_verify.Span), WireFailure))),
+    waiters: List(
+      process.Subject(#(Result(List(otlp_verify.Span), WireFailure), List(Int))),
+    ),
   )
 }
 
 /// Start a receiver on an assigned loopback port.
 pub fn start() -> Receiver {
   let assert Ok(collector) =
-    actor.new(State([], None, []))
+    actor.new(State([], [], None, []))
     |> actor.on_message(handle_message)
     |> actor.start
   let port_subject = process.new_subject()
@@ -85,8 +90,12 @@ pub fn assert_no_export(receiver: Receiver) -> Nil {
 
 /// Await the acknowledged export and verify the complete span contract.
 pub fn verify(receiver: Receiver, capture: Bool) -> Nil {
-  let assert Ok(spans) = actor.call(receiver.collector, 15_000, Await)
+  let #(decoded, batch_sizes) = actor.call(receiver.collector, 15_000, Await)
+  let assert Ok(spans) = decoded
   let assert Ok(Nil) = otlp_verify.verify(spans, capture)
+  assert list.length(batch_sizes) >= 3
+  assert list.all(batch_sizes, fn(size) { size > 0 && size <= 4 })
+  assert list.fold(batch_sizes, 0, int.add) == list.length(spans)
   Nil
 }
 
@@ -156,9 +165,12 @@ fn handle_message(
       actor.continue(state)
     }
     Await(reply) -> {
-      case list.length(state.spans) >= 20 || state.failure != None {
+      case list.length(state.spans) >= 26 || state.failure != None {
         True -> {
-          process.send(reply, snapshot(state))
+          process.send(reply, #(
+            snapshot(state),
+            list.reverse(state.batch_sizes),
+          ))
           actor.continue(state)
         }
         False ->
@@ -167,14 +179,21 @@ fn handle_message(
     }
     Record(decoded, reply) -> {
       let next = case decoded {
-        Ok(spans) -> State(..state, spans: list.append(state.spans, spans))
+        Ok(spans) ->
+          State(..state, spans: list.append(state.spans, spans), batch_sizes: [
+            list.length(spans),
+            ..state.batch_sizes
+          ])
         Error(failure) -> State(..state, failure: Some(failure))
       }
       process.send(reply, Nil)
-      case list.length(next.spans) >= 20 || next.failure != None {
+      case list.length(next.spans) >= 26 || next.failure != None {
         True -> {
           list.each(next.waiters, fn(waiter) {
-            process.send(waiter, snapshot(next))
+            process.send(waiter, #(
+              snapshot(next),
+              list.reverse(next.batch_sizes),
+            ))
           })
           actor.continue(State(..next, waiters: []))
         }

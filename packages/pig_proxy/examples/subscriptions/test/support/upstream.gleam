@@ -30,6 +30,10 @@ type State {
   State(requests: List(RecordedRequest), total: Int)
 }
 
+type CatalogGate {
+  CatalogGate(observed: process.Subject(process.Subject(Nil)))
+}
+
 /// The fixture's owned listener and synchronized collector.
 pub opaque type Fixture {
   Fixture(
@@ -42,13 +46,27 @@ pub opaque type Fixture {
 
 /// Start a provider on an assigned loopback port.
 pub fn start() -> Fixture {
+  start_fixture(None)
+}
+
+/// Start a provider whose catalog response waits for an explicit release.
+pub fn start_gated_catalog() -> #(
+  Fixture,
+  process.Subject(process.Subject(Nil)),
+) {
+  let observed = process.new_subject()
+  let gate = CatalogGate(observed)
+  #(start_fixture(Some(gate)), observed)
+}
+
+fn start_fixture(catalog_gate: Option(CatalogGate)) -> Fixture {
   let assert Ok(collector) =
     actor.new(State([], 0))
     |> actor.on_message(handle_message)
     |> actor.start
   let ready = process.new_subject()
   let started =
-    fn(req) { handle_request(req, collector.data) }
+    fn(req) { handle_request(req, collector.data, catalog_gate) }
     |> mist.new
     |> mist.bind("127.0.0.1")
     |> mist.port(0)
@@ -101,12 +119,22 @@ pub fn stop(fixture: Fixture) -> Nil {
 fn handle_request(
   req: request.Request(mist.Connection),
   collector: process.Subject(Message),
+  catalog_gate: Option(CatalogGate),
 ) -> response.Response(mist.ResponseData) {
   let assert Ok(read) = mist.read_body(req, 1_048_576)
   let assert Ok(body) = bit_array.to_string(read.body)
   actor.call(collector, 1000, fn(reply) {
     Record(RecordedRequest(req.path, req.headers, body), reply)
   })
+  case req.path, catalog_gate {
+    "/catalog", Some(CatalogGate(observed:)) -> {
+      let release = process.new_subject()
+      let _ = process.send(observed, release)
+      let assert Ok(Nil) = process.receive(release, 30_000)
+      Nil
+    }
+    _, _ -> Nil
+  }
   let #(content_type, payload) = case req.path {
     "/catalog" -> #("application/json", catalog_fixture.body())
     _ -> {

@@ -239,7 +239,7 @@ fn verify_group(trace: String, group: List(Span), capture: Bool) -> Bool {
           && attr_int(attempt, "http.response.status_code") == 200
           && !has_cost_key(server)
           && !has_cost_key(attempt)
-          && cost_valid(trace, logical)
+          && cost_valid(logical)
           && content_valid(group, logical, capture, input, output, stream)
       }
     }
@@ -365,21 +365,8 @@ fn content_valid(
   }
 }
 
-fn cost_valid(trace: String, logical: Span) -> Bool {
-  case
-    list.contains(
-      [
-        "00000000000000000000000000000011",
-        "00000000000000000000000000000012",
-        "00000000000000000000000000000021",
-        "00000000000000000000000000000022",
-      ],
-      trace,
-    )
-  {
-    True -> exact_cost_attributes(logical)
-    False -> !has_cost_key(logical) || exact_cost_attributes(logical)
-  }
+fn cost_valid(logical: Span) -> Bool {
+  exact_cost_attributes(logical)
 }
 
 fn exact_cost_attributes(logical: Span) -> Bool {

@@ -5,6 +5,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
+import gleam/string
 import gleeunit/should
 import otel/attribute
 import otel/context
@@ -235,6 +236,47 @@ pub fn check_buffered(
   expected: trace_metadata.Observed,
 ) -> Nil {
   should.equal(trace_metadata.buffered(api, body), expected)
+}
+
+pub fn check_malformed_oversize_recovers(
+  api: pig_otel.Api,
+  expected: trace_metadata.Observed,
+) -> Nil {
+  let #(framer, observed) =
+    trace_metadata.push(
+      api,
+      trace_metadata.new_framer(),
+      trace_metadata.empty(),
+      bit_array.from_string(
+        "data: {\"ignored\":\"" <> string.repeat("x", 4_194_300),
+      ),
+    )
+  let #(framer, observed) = trace_metadata.push(api, framer, observed, <<255>>)
+  let #(framer, observed) =
+    trace_metadata.push(api, framer, observed, bit_array.from_string("\"}\n\n"))
+  let #(framer, observed) =
+    trace_metadata.push(
+      api,
+      framer,
+      observed,
+      bit_array.from_string("data: {\"usage\":{\"prompt_tokens\":5}}\n\n"),
+    )
+  should.equal(trace_metadata.finish(api, framer, observed), expected)
+}
+
+pub fn check_retained_bytes(
+  api: pig_otel.Api,
+  bytes: String,
+  expected: Int,
+) -> Nil {
+  let #(framer, _) =
+    trace_metadata.push(
+      api,
+      trace_metadata.new_framer(),
+      trace_metadata.empty(),
+      bit_array.from_string(bytes),
+    )
+  should.equal(trace_metadata.retained_bytes(framer), expected)
 }
 
 pub fn check_incremental(

@@ -24,6 +24,8 @@ pub fn failed_startup_fetch_is_retried_and_cached_test() {
           10_000,
           name,
         )
+      assert model_catalog.await_ready(name, 10_000)
+      assert model_catalog.await_ready(name, 0)
       let cached = await_cached_model(name, 120)
       stop_failure_then_success_server(started.pid)
       stop_failure_then_success_server(server_pid)

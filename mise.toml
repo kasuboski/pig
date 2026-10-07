@@ -36,6 +36,11 @@ description = "Run pig_proxy integration tests (boots the proxy + forwards a cha
 run = "cd packages/pig_proxy && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
 
+[tasks.test-integration-catalog]
+description = "Verify local catalog publication, readiness, and retry behavior without model calls"
+run = "cd packages/pig_proxy && env -u PIG_RUN_INTEGRATION gleam test"
+env = { PIG_RUN_MODEL_CATALOG_INTEGRATION = "1" }
+
 [tasks.test-integration-otel]
 description = "Validate local official SDK recording and actual OTLP export (no model credentials)"
 run = "scripts/validate_otel.sh"
