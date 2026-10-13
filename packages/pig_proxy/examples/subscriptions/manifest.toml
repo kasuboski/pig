@@ -21,7 +21,7 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "glisten", version = "9.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "logging"], otp_app = "glisten", source = "hex", outer_checksum = "7795AA50830656F3A0316A6B26595F893C83272DA901B3405E31339CAA31A10B" },
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
-  { name = "h2", version = "0.12.3", build_tools = ["rebar3"], requirements = [], otp_app = "h2", source = "hex", outer_checksum = "996AF98698F7DC68BCC7688D70D97384B53DDD0286BA07E6D4A9AC54F1970D32" },
+  { name = "h2", version = "0.12.4", build_tools = ["rebar3"], requirements = [], otp_app = "h2", source = "hex", outer_checksum = "238553579D2599E823F1F7B1CACB763362EE6E2DF8E8F3B0C8FC67DA982C0675" },
   { name = "hackney", version = "4.8.4", build_tools = ["rebar3"], requirements = ["certifi", "h2", "idna", "mimerl", "parse_trans", "quic", "ssl_verify_fun", "webtransport"], otp_app = "hackney", source = "hex", outer_checksum = "4D3F3575C1D9A50A66E0469E303477FE72ACFFE98B108CD164621B75C22BB583" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "idna", version = "7.1.0", build_tools = ["rebar3"], requirements = [], otp_app = "idna", source = "hex", outer_checksum = "6AE959A025BF36DF61A8CAB8508D9654891B5426A84C44D82DEAFFD6DDF8C71F" },
@@ -34,13 +34,13 @@ packages = [
   { name = "parse_trans", version = "3.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "parse_trans", source = "hex", outer_checksum = "4C25347DE3B7C35732D32E69AB43D1CEEE0BEAE3F3B3ADE1B59CBD3DD224D9CA" },
   { name = "pig_otel", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "logging", "otel_gleam", "pig_protocol"], source = "local", path = "../../../pig_otel" },
   { name = "pig_protocol", version = "0.3.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_http", "gleam_httpc", "gleam_json", "gleam_stdlib", "jscheam", "logging"], source = "local", path = "../../../pig_protocol" },
-  { name = "pig_proxy", version = "0.2.0", build_tools = ["gleam"], requirements = ["envoy", "filepath", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "hackney", "logging", "mist", "otel_gleam", "pig_otel", "pig_protocol", "pig_transport", "simplifile", "telemetry"], source = "local", path = "../.." },
+  { name = "pig_proxy", version = "0.3.0", build_tools = ["gleam"], requirements = ["envoy", "filepath", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "hackney", "logging", "mist", "otel_gleam", "pig_otel", "pig_protocol", "pig_transport", "simplifile", "telemetry"], source = "local", path = "../.." },
   { name = "pig_transport", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib", "hackney"], source = "local", path = "../../../pig_transport" },
-  { name = "quic", version = "2.1.0", build_tools = ["rebar3"], requirements = [], otp_app = "quic", source = "hex", outer_checksum = "58B250AE21045BD3838A448DE0592E2CD61B73586307BD6CDCBAB1BF246F52ED" },
+  { name = "quic", version = "2.1.1", build_tools = ["rebar3"], requirements = [], otp_app = "quic", source = "hex", outer_checksum = "305D78A857298D940F6621A9ACD7391C02980555D5E7FFFEF364ECCD330FD64D" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "ssl_verify_fun", version = "1.1.7", build_tools = ["mix", "rebar3", "make"], requirements = [], otp_app = "ssl_verify_fun", source = "hex", outer_checksum = "FE4C190E8F37401D30167C8C405EDA19469F34577987C76DDE613E838BBC67F8" },
   { name = "telemetry", version = "1.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "928F6495066506077862C0D1646609EED891A4326BEE3126BA54B60AF61FEBB1" },
-  { name = "webtransport", version = "0.4.7", build_tools = ["rebar3"], requirements = ["h2", "quic"], otp_app = "webtransport", source = "hex", outer_checksum = "9D2FCBFC561A172CF6F2EEF00B89FC89774C039CE850414356964C147707F85E" },
+  { name = "webtransport", version = "0.4.8", build_tools = ["rebar3"], requirements = ["h2", "quic"], otp_app = "webtransport", source = "hex", outer_checksum = "08477A2195CCBF944DA0B78F85DC4E6EE4498790E3DD7FE84EE7A245938E1B26" },
 ]
 
 [requirements]
