@@ -3,8 +3,10 @@ import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import gleeunit
 import pig_proxy/circuit_actor
+import pig_proxy/compatibility
 import pig_proxy/config
 import pig_proxy/execution
 import pig_proxy/vault
@@ -68,6 +70,89 @@ fn exec_with(
   )
 }
 
+pub fn target_auth_and_exact_model_compatibility_matrix_test() {
+  let api_key = openai()
+  let codex = config.codex_target("codex", "http://x/v1")
+  let preserve_codex =
+    config.with_prompt_cache_options(codex, compatibility.Preserve)
+  let omit_api_key =
+    config.with_prompt_cache_options(api_key, compatibility.Omit)
+  list.each(
+    [
+      #(api_key, "m", True),
+      #(codex, "m", False),
+      #(config.with_codex(api_key), "m", False),
+      #(preserve_codex, "m", True),
+      #(omit_api_key, "m", False),
+      #(
+        config.with_model_prompt_cache_options(
+          omit_api_key,
+          "m",
+          compatibility.Preserve,
+        ),
+        "m",
+        True,
+      ),
+      #(
+        config.with_model_prompt_cache_options(
+          preserve_codex,
+          "m",
+          compatibility.Omit,
+        ),
+        "m",
+        False,
+      ),
+      #(
+        config.with_model_prompt_cache_options(api_key, "m", compatibility.Omit),
+        "m-other",
+        True,
+      ),
+      #(
+        config.with_model_prompt_cache_options(api_key, "m", compatibility.Omit),
+        "M",
+        True,
+      ),
+      #(
+        api_key
+          |> config.with_model_prompt_cache_options("m", compatibility.Omit)
+          |> config.with_model_prompt_cache_options("m", compatibility.Preserve),
+        "m",
+        True,
+      ),
+    ],
+    fn(row) { check_target_cache_policy(row.0, row.1, row.2) },
+  )
+}
+
+fn check_target_cache_policy(
+  target: config.UpstreamTarget,
+  model: String,
+  retained: Bool,
+) {
+  let assert Ok(s) = in_memory_transport.start([ok200()], transport_error())
+  let body =
+    " {\"model\":\""
+    <> model
+    <> "\",\"prompt_cache_options\":{\"mode\":\"explicit\"}} "
+  let request =
+    execution.ProxyRequest(..req(), path: "/v1/responses", model:, body:)
+  let assert execution.Committed(status: 200, ..) =
+    execution.orchestrate(
+      exec_with(in_memory_transport.transport(s), None),
+      request,
+      execution.FallbackChain([target]),
+    )
+  let assert Some(sent) = in_memory_transport.last_request(s)
+  case retained {
+    True -> {
+      assert sent.body == body
+    }
+    False -> {
+      assert !string.contains(sent.body, "prompt_cache_options")
+    }
+  }
+}
+
 // ── Commit ──────────────────────────────────────────────────────
 
 pub fn commit_on_first_success_test() {
@@ -84,6 +169,67 @@ pub fn commit_on_first_success_test() {
   assert status == 200
   assert usage.prompt == Some(5)
   assert usage.completion == Some(3)
+}
+
+pub fn streaming_prompt_cache_body_is_restored_for_fallback_target_test() {
+  let assert Ok(s) =
+    in_memory_transport.start_stream(
+      [
+        in_memory_transport.RejectStream(500, [], <<>>),
+        in_memory_transport.CommitStream(
+          200,
+          [],
+          [],
+          in_memory_transport.StreamDone,
+        ),
+      ],
+      in_memory_transport.stream_exhausted_default,
+    )
+  let omit = config.with_prompt_cache_options(openai(), compatibility.Omit)
+  let original =
+    " {\"model\":\"m\",\"prompt_cache_options\":{\"mode\":\"explicit\"},\"stream\":true} "
+  let assert execution.CommittedStream(target_id: "ollama", run:, ..) =
+    execution.orchestrate_stream(
+      execution.with_retries_per_target(
+        exec_with(in_memory_transport.transport(s), None),
+        0,
+      ),
+      execution.ProxyRequest(..req(), path: "/v1/responses", body: original),
+      execution.FallbackChain([omit, ollama()]),
+    )
+  let assert Some(sent) = in_memory_transport.last_request(s)
+  assert sent.body == original
+  transport.cancel(run)
+}
+
+pub fn prompt_cache_body_is_restored_for_fallback_target_test() {
+  let assert Ok(s) =
+    in_memory_transport.start(
+      [status500(), ok200()],
+      transport.TransportError("x"),
+    )
+  let omit_target =
+    config.openai_target("omit", "http://x/v1", "k")
+    |> config.with_prompt_cache_options(compatibility.Omit)
+  let preserve_target = config.openai_target("preserve", "http://y/v1", "k2")
+  let outcome =
+    execution.orchestrate(
+      execution.with_retries_per_target(
+        exec_with(in_memory_transport.transport(s), None),
+        0,
+      ),
+      execution.ProxyRequest(
+        method: "POST",
+        path: "/v1/responses",
+        headers: [],
+        body: "{\"model\":\"m\",\"prompt_cache_options\":{\"enabled\":true}}",
+        model: "m",
+      ),
+      execution.FallbackChain([omit_target, preserve_target]),
+    )
+  let assert execution.Committed(target_id: "preserve", ..) = outcome
+  let assert Some(last_request) = in_memory_transport.last_request(s)
+  assert string.contains(last_request.body, "prompt_cache_options")
 }
 
 pub fn commit_treats_client_4xx_as_a_response_test() {

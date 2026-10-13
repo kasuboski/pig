@@ -6,7 +6,26 @@
 %%
 %% Uses the Erlang `json` module shipped with OTP 27+.
 
--export([ensure_stream_usage/1]).
+-export([ensure_stream_usage/1, omit_prompt_cache_options/1]).
+
+%% Omit only the top-level Responses parameter. Decode/re-encode only when
+%% removal is needed; pass-through, malformed, and non-object bodies keep their
+%% original bytes. OTP's JSON codec preserves arbitrary nested values.
+omit_prompt_cache_options(Body) ->
+    try
+        case json:decode(Body) of
+            Value when is_map(Value) ->
+                case maps:is_key(<<"prompt_cache_options">>, Value) of
+                    true ->
+                        iolist_to_binary(json:encode(
+                            maps:remove(<<"prompt_cache_options">>, Value)));
+                    false -> Body
+                end;
+            _ -> Body
+        end
+    catch
+        _:_ -> Body
+    end.
 
 %% If `Body` is a JSON object, ensure it contains `stream_options` with
 %% `include_usage: true`. Existing `stream_options` keys are preserved. On any

@@ -4,11 +4,13 @@
 //// credential injection, and the listening port.
 
 import envoy
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import pig_otel
+import pig_proxy/compatibility
 
 /// How an upstream target authenticates: a static API key, or
 /// ChatGPT/Codex OAuth whose live token is resolved from the credential
@@ -64,6 +66,11 @@ pub type UpstreamTarget {
     provider: Option(String),
     /// API endpoints this target can serve.
     api_support: ApiSupport,
+    /// Explicit Responses prompt-cache default. None derives from auth:
+    /// API-key targets preserve; Codex targets omit.
+    prompt_cache_options: Option(compatibility.FieldPolicy),
+    /// Exact model-specific overrides, scoped to this target.
+    model_prompt_cache_options: Dict(String, compatibility.FieldPolicy),
   )
 }
 
@@ -199,6 +206,8 @@ pub fn openai_target(
     auth: ApiKey(api_key),
     provider: None,
     api_support: BothApis,
+    prompt_cache_options: None,
+    model_prompt_cache_options: dict.new(),
   )
 }
 
@@ -212,6 +221,34 @@ pub fn codex_target(id: String, base_url: String) -> UpstreamTarget {
     auth: Codex,
     provider: None,
     api_support: OnlyApi(pig_otel.Responses),
+    prompt_cache_options: None,
+    model_prompt_cache_options: dict.new(),
+  )
+}
+
+/// Override this target's authentication-based Responses prompt-cache default.
+/// Exact model overrides take precedence. Other APIs are unaffected.
+pub fn with_prompt_cache_options(
+  target: UpstreamTarget,
+  policy: compatibility.FieldPolicy,
+) -> UpstreamTarget {
+  UpstreamTarget(..target, prompt_cache_options: Some(policy))
+}
+
+/// Override Responses prompt-cache behavior for one exact model on this target.
+/// Calling again for the same model replaces its previous override.
+pub fn with_model_prompt_cache_options(
+  target: UpstreamTarget,
+  model: String,
+  policy: compatibility.FieldPolicy,
+) -> UpstreamTarget {
+  UpstreamTarget(
+    ..target,
+    model_prompt_cache_options: dict.insert(
+      target.model_prompt_cache_options,
+      model,
+      policy,
+    ),
   )
 }
 

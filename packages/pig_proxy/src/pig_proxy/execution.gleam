@@ -30,6 +30,7 @@ import logging
 import otel/context
 import pig_otel
 import pig_proxy/circuit_actor
+import pig_proxy/compatibility
 import pig_proxy/config.{type UpstreamTarget}
 import pig_proxy/proxy
 import pig_proxy/retry
@@ -472,9 +473,27 @@ fn build_transport_request(
         streaming,
       ),
     ),
-    body: request.body,
+    // Always derive from the logical request, never from a previous attempt's
+    // effective body. Different targets can have different capabilities.
+    body: compatibility.apply(
+      request.body,
+      request_api(request.path),
+      request.model,
+      compatibility.codex_default(config.is_codex_target(target)),
+      compatibility.Policy(
+        target.prompt_cache_options,
+        target.model_prompt_cache_options,
+      ),
+    ),
     timeout_ms: executor.upstream_timeout_ms,
   )
+}
+
+fn request_api(path: String) -> pig_otel.Api {
+  case path {
+    "/v1/responses" -> pig_otel.Responses
+    _ -> pig_otel.ChatCompletions
+  }
 }
 
 fn retry_after_of(headers: List(#(String, String))) -> Option(String) {
