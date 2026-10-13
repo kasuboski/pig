@@ -50,7 +50,13 @@ Unicode/escaped strings, JSON null/bools/floats/large integers, nested options,
 Chat Completions isolation and exact/case-sensitive override precedence.
 Execution tests cover authentication defaults, `with_codex`, explicit target
 and model overrides, replacement of an override, and restoration of the original
-body on both buffered and streaming fallback.
+body on both buffered and streaming fallback. Both fallback tests assert the
+entire two-request sequence: the first request has the option omitted while the
+second receives the exact original bytes. During CodeRabbit follow-up verification,
+changing both first targets from `Omit` to `Preserve` produced exactly those two
+test failures (`263 passed, 2 failures`); restoring `Omit` yielded `265 passed,
+no failures`. This mutation confirms the assertions detect skipped omission,
+not merely successful pass-through on the last attempt.
 
 Focused loopback output:
 

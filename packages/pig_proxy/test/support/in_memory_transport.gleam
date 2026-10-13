@@ -11,7 +11,7 @@
 //// wait for `start`, forward chunks), so streaming retry/fallback and
 //// relay forwarding are both testable in-process.
 ////
-//// The adapter also records the most recent outgoing `Request`
+//// The adapter also records outgoing `Request`s in attempt order
 //// (sync or stream), so tests can assert on the auth/URL that execution
 //// actually put on the wire — closing the auth-wiring gap without a socket.
 
@@ -32,6 +32,7 @@ pub type InMemoryMsg {
     reply_to: process.Subject(StreamScript),
   )
   GetLastRequest(reply_to: process.Subject(Option(transport.Request)))
+  GetRequests(reply_to: process.Subject(List(transport.Request)))
 }
 
 /// A scripted streaming outcome. `CommitStream` reports a committed head
@@ -65,42 +66,50 @@ type State {
     sync_exhausted: transport.Response,
     stream_queue: List(StreamScript),
     stream_exhausted: StreamScript,
-    last_request: Option(transport.Request),
+    reversed_requests: List(transport.Request),
   )
 }
 
 fn handle_message(state: State, msg: InMemoryMsg) {
   case msg {
     TakeSync(request:, reply_to:) -> {
+      let state =
+        State(..state, reversed_requests: [request, ..state.reversed_requests])
       case state.sync_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(
-            State(..state, sync_queue: rest, last_request: Some(request)),
-          )
+          actor.continue(State(..state, sync_queue: rest))
         }
         [] -> {
           process.send(reply_to, state.sync_exhausted)
-          actor.continue(State(..state, last_request: Some(request)))
+          actor.continue(state)
         }
       }
     }
     TakeStream(request:, reply_to:) -> {
+      let state =
+        State(..state, reversed_requests: [request, ..state.reversed_requests])
       case state.stream_queue {
         [next, ..rest] -> {
           process.send(reply_to, next)
-          actor.continue(
-            State(..state, stream_queue: rest, last_request: Some(request)),
-          )
+          actor.continue(State(..state, stream_queue: rest))
         }
         [] -> {
           process.send(reply_to, state.stream_exhausted)
-          actor.continue(State(..state, last_request: Some(request)))
+          actor.continue(state)
         }
       }
     }
     GetLastRequest(reply_to:) -> {
-      process.send(reply_to, state.last_request)
+      let last = case state.reversed_requests {
+        [request, ..] -> Some(request)
+        [] -> None
+      }
+      process.send(reply_to, last)
+      actor.continue(state)
+    }
+    GetRequests(reply_to:) -> {
+      process.send(reply_to, list.reverse(state.reversed_requests))
       actor.continue(state)
     }
   }
@@ -143,7 +152,7 @@ pub fn start_with(
       sync_exhausted:,
       stream_queue:,
       stream_exhausted:,
-      last_request: None,
+      reversed_requests: [],
     )
     |> actor.new
     |> actor.on_message(handle_message)
@@ -174,6 +183,15 @@ pub fn last_request(
 ) -> Option(transport.Request) {
   actor.call(subject, waiting: 5000, sending: fn(reply_to) {
     GetLastRequest(reply_to:)
+  })
+}
+
+/// All outgoing requests in physical attempt order, including exhausted scripts.
+pub fn requests(
+  subject: process.Subject(InMemoryMsg),
+) -> List(transport.Request) {
+  actor.call(subject, waiting: 5000, sending: fn(reply_to) {
+    GetRequests(reply_to:)
   })
 }
 

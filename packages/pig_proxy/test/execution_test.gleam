@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -197,8 +198,7 @@ pub fn streaming_prompt_cache_body_is_restored_for_fallback_target_test() {
       execution.ProxyRequest(..req(), path: "/v1/responses", body: original),
       execution.FallbackChain([omit, ollama()]),
     )
-  let assert Some(sent) = in_memory_transport.last_request(s)
-  assert sent.body == original
+  check_fallback_cache_bodies(s, original, "{\"model\":\"m\",\"stream\":true}")
   transport.cancel(run)
 }
 
@@ -212,6 +212,7 @@ pub fn prompt_cache_body_is_restored_for_fallback_target_test() {
     config.openai_target("omit", "http://x/v1", "k")
     |> config.with_prompt_cache_options(compatibility.Omit)
   let preserve_target = config.openai_target("preserve", "http://y/v1", "k2")
+  let original = "{\"model\":\"m\",\"prompt_cache_options\":{\"enabled\":true}}"
   let outcome =
     execution.orchestrate(
       execution.with_retries_per_target(
@@ -222,14 +223,24 @@ pub fn prompt_cache_body_is_restored_for_fallback_target_test() {
         method: "POST",
         path: "/v1/responses",
         headers: [],
-        body: "{\"model\":\"m\",\"prompt_cache_options\":{\"enabled\":true}}",
+        body: original,
         model: "m",
       ),
       execution.FallbackChain([omit_target, preserve_target]),
     )
   let assert execution.Committed(target_id: "preserve", ..) = outcome
-  let assert Some(last_request) = in_memory_transport.last_request(s)
-  assert string.contains(last_request.body, "prompt_cache_options")
+  check_fallback_cache_bodies(s, original, "{\"model\":\"m\"}")
+}
+
+fn check_fallback_cache_bodies(
+  subject: process.Subject(in_memory_transport.InMemoryMsg),
+  original: String,
+  omitted: String,
+) {
+  let assert [first, fallback] = in_memory_transport.requests(subject)
+  assert json.parse(first.body, decode.dynamic)
+    == json.parse(omitted, decode.dynamic)
+  assert fallback.body == original
 }
 
 pub fn commit_treats_client_4xx_as_a_response_test() {
