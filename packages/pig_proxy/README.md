@@ -372,6 +372,70 @@ route table is invalid. Configurations without explicit routes accept requests
 only when exactly one target is configured. Retries may repeat attempts to the
 selected target; the proxy does not advertise cross-provider fallback.
 
+## Responses prompt-cache compatibility
+
+Pi may send `prompt_cache_options: {"mode":"explicit"}` during compaction,
+even when ordinary requests omit it. Some Responses backends reject this
+parameter. Pig applies a target-specific policy **after selecting the upstream,
+on every physical attempt**, for both buffered and streaming Responses requests:
+
+- API-key targets preserve the parameter by default.
+- Codex OAuth targets omit it by default, including targets converted with
+  `config.with_codex`. This default follows direct ChatGPT sign-in behavior;
+  it is not a claim that every custom Codex backend rejects the parameter.
+- Explicit target defaults and exact-model overrides take precedence over
+  these authentication-based defaults. Model names are matched exactly, not
+  by prefix or provider-wide heuristics.
+
+```gleam
+import pig_proxy/compatibility
+import pig_proxy/config
+
+let upstream =
+  config.openai_target("gateway", "https://your-gateway/v1", "your-key")
+  |> config.with_model_prompt_cache_options(
+    "verified-incompatible-model",
+    compatibility.Omit,
+  )
+
+// For a custom Codex backend verified to support the option:
+let custom_codex =
+  config.codex_target("custom-codex", "https://your-backend/v1")
+  |> config.with_prompt_cache_options(compatibility.Preserve)
+```
+
+These builders configure `UpstreamTarget` values programmatically; they do not
+change Pi's model registry or infer capabilities from model names. Only the
+**top-level** `prompt_cache_options` field is removed. Cache keys, retention,
+and nested fields are retained; Chat Completions requests are untouched.
+Requests needing no removal remain byte-for-byte unchanged. Execution retries
+and fallback always start from the original body, so an omission for one target
+cannot leak into a subsequent supporting target. An upstream 400 is forwarded,
+not automatically retried with different parameters.
+
+**Limitation:** omitting the unsupported option restores the backend's default
+caching behavior. It cannot enforce Pi's request to suppress cache writes on a
+backend that does not implement explicit prompt-cache mode. Configure exceptions
+only for routes whose incompatibility has been verified.
+
+Verification commands:
+
+```sh
+# Real loopback HTTP; buffered/streaming rejection, omission, preservation.
+mise run test-integration-prompt-cache
+
+# Opt-in real inference; requires uv, defaults to http://llms/v1.
+# Uses gpt-6-luna, low reasoning, and records/asserts effective wire bodies
+# in memory. Override UPSTREAM_BASE_URL / UPSTREAM_API_KEY if needed.
+mise run test-live-prompt-cache
+```
+
+The live service currently requires `stream:true`; the live probe verifies
+streaming completion and the loopback suite verifies both request paths.
+Neither test claims to exercise Pi's automatic token-threshold trigger. See the
+[verification record](../../knowledge/PROMPT_CACHE_COMPATIBILITY_VALIDATION.md)
+for observed live output, regression coverage, and limits.
+
 ## OpenTelemetry
 
 Both POST inference routes have server, logical GenAI, and physical HTTP attempt

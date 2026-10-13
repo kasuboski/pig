@@ -36,6 +36,15 @@ description = "Run pig_proxy integration tests (boots the proxy + forwards a cha
 run = "cd packages/pig_proxy && gleam test"
 env = { PIG_RUN_INTEGRATION = "1" }
 
+[tasks.test-integration-prompt-cache]
+description = "Verify Responses prompt-cache compatibility through real loopback HTTP (no provider credentials)"
+run = "cd packages/pig_proxy && gleam run -m integration/prompt_cache_compat_test"
+env = { PIG_RUN_INTEGRATION = "1" }
+
+[tasks.test-live-prompt-cache]
+description = "Opt-in gpt-6-luna low-reasoning compatibility probe against tailnet llms (requires uv)"
+run = "scripts/validate_prompt_cache_live.sh"
+
 [tasks.test-integration-catalog]
 description = "Verify local catalog publication, readiness, and retry behavior without model calls"
 run = "cd packages/pig_proxy && env -u PIG_RUN_INTEGRATION gleam test"
